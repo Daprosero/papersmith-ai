@@ -3671,6 +3671,16 @@ def cmd_probe(args) -> dict:
             **remote,
             **jobs,
             "necessity": necessity,
+            # The join nothing checked: whether the notebook each job would
+            # run is one the pilot actually walked. Both operands are already
+            # held by this command and are threaded in rather than recomputed
+            # -- `jobs["jobs"]` carries each job's own declared notebook, read
+            # out of the same `run-config.json` its staleness came from, and
+            # `pilot` carries every notebook the declared flow opened. A
+            # second read of either here could disagree with the branch above
+            # that published it. Reports and refuses nothing; see
+            # `JOB_NOTEBOOK_PILOT_NOTE`.
+            "notebookPilot": job_notebook_pilot_state(jobs["jobs"], pilot),
         },
         "nextStep": next_step,
         # What to do about that answer, published by the engine rather than
@@ -3937,6 +3947,79 @@ def scaffold_destinations(name: str) -> list[str]:
             "tests/admissibility.py",
             "tests/test_audit.py", "tests/test_remedies.py",
             f"{name}/Notebooks/verification.ipynb"]
+
+
+#: Which `materialize --stage` answers which `structure` gap key, and whether
+#: that stage needs a `--seed`. One roster, read by the publisher below, so a
+#: fourth stage added to `materialize` has one place to be classified in rather
+#: than three sites to remember. `(gap key, stage, needs a seed)`.
+STRUCTURE_GAP_STAGES = (
+    ("scaffoldGaps", "scaffold", True),
+    ("objectGaps", "objects", True),
+    ("harnessGaps", "harness", False),
+)
+
+#: Why a `structure` gap publishes a QUESTION and not the command that fills
+#: it, stated once for all three.
+#:
+#: **The act exists and this file owns it.** `materialize --stage <stage>`
+#: writes exactly the destinations the gap key names, out of this skill's own
+#: kit. Nothing about it is another skill's.
+#:
+#: **Two of its arguments are a human's, by design.** `--plan` is the approval
+#: gate: `materialize --stage` refuses `PLAN_REQUIRED` without an approved plan
+#: and `PLAN_STALE` when the repository moved since approval, and the plan's
+#: CONTENT is derivable here (`build_plan` is a pure function of the
+#: repository) exactly as the position reinstall's payload is. Publishing a
+#: command that generated its own approval and handed it to the gate would make
+#: the gate tautological -- an act that clears the check by answering it, which
+#: is the one thing a published exit must never be. `--seed` is worse: it is
+#: the number the scaffolded experiment draws from, and a skill that picked one
+#: for a repository would be choosing a scientific parameter on the operator's
+#: behalf.
+#:
+#: So the exit published is the question, it NAMES the command and the exact
+#: destinations, and it says which two answers are the human's. Its `discuss`
+#: command runs unedited.
+STRUCTURE_GAP_RESOLUTION_LIMIT = (
+    "is the act that writes them, out of this skill's own kit. It is not "
+    "published ready to run and that is deliberate: `--plan` is an approval a "
+    "human gives, and a command that generated its own approval would answer "
+    "the gate instead of passing it")
+
+
+def structure_gap_resolutions(target: Path, name: str,
+                              gaps: dict) -> list[dict]:
+    """One published exit per `structure` gap key that names anything --
+    `[]` when the repository is fully materialized.
+
+    A list, and always a list, because these are three independent states with
+    three independent acts: a repository can owe its harness and owe nothing
+    else. One `resolve` slot would make a reader ask which of the three it was
+    about, and an empty list says "nothing owed" in the same shape a full one
+    says what is.
+
+    `gaps` is the mapping this command already computed, threaded in rather
+    than recomputed: two reads of one fact inside one command is how the
+    published act comes to name destinations the reported key does not.
+    """
+    published = []
+    for key, stage, needs_seed in STRUCTURE_GAP_STAGES:
+        missing = gaps.get(key) or []
+        if not missing:
+            continue
+        seed = (", and `--seed` is the number the scaffolded experiment draws "
+                "from, which no skill may choose for a repository"
+                if needs_seed else "")
+        published.append(_reported_state_question(
+            target, name, about="record",
+            question=(
+                f"these destinations this skill's own kit ships are absent "
+                f"from the repository: {missing}. `materialize --stage "
+                f"{stage}` {STRUCTURE_GAP_RESOLUTION_LIMIT}{seed}. Run `plan`, "
+                f"get it approved, and materialize the stage -- or record why "
+                f"these files stay absent, and why?")))
+    return published
 
 
 def scaffold_gaps(target: Path, name: str) -> list[str]:
@@ -7413,6 +7496,102 @@ def _load_remote_execution_ledger():
     return module
 
 
+def _reported_state_question(target: Path, name: str, *, about: str,
+                             question: str) -> dict:
+    """A published exit for a REPORTED state -- the question a human answers,
+    and the `discuss` command that opens it.
+
+    `_refusal_question`'s exact shape, one surface out. That one is read at the
+    `except Refused` chokepoint and builds itself from the refused call's own
+    `args`; a reported state has no refusal and no `args`, so it is handed the
+    pair it already holds. Both produce `{kind, question, command}`, because a
+    reader who has learnt one publication shape has learnt them all, and a
+    second shape here would be a second thing to learn for no reason.
+
+    The command runs unedited. That is the whole requirement and it is the one
+    a published exit fails at silently: `discuss` needs only the target, the
+    name, a bucket and the question text, all four of which every caller here
+    holds, and every one is `shlex.quote`d by `_discuss_command`.
+    """
+    return {"kind": "question", "question": question,
+            "command": _discuss_command(target, name, about=about,
+                                        question=question)}
+
+
+#: Why the ledger's two work states publish a QUESTION and not the command
+#: that clears them, stated once rather than argued twice below.
+#:
+#: **The act exists and is mechanical.** `remote_cli reconcile` is what settles
+#: a ledger in drift or one this check could not fully read; the Decision Gates
+#: table has said so in prose since the state existed.
+#:
+#: **This file may not spell it.** `reconcile` requires four flags. Two are
+#: derivable here -- `--target` and `--entrypoint`, both already in this
+#: payload. The other two are values this skill is forbidden to print, and the
+#: prohibition is not incidental to this key, it IS this key's own rule:
+#: `workers` is reported as a COUNT precisely because a worker id is a service
+#: account's username, and `--backend` is the name a concrete adapter was
+#: registered under, which is a service name outright. A command published with
+#: either filled in would break the one sentence this section exists to keep;
+#: published with them blank it would not run, which is worse than prose,
+#: because prose does not claim to be runnable.
+#:
+#: So the exit published is the question, and the question NAMES the command,
+#: names the two values only the operator can supply, and says why. That is a
+#: published exit of the second kind -- and its `discuss` command runs unedited,
+#: which is the half a reader can actually execute.
+REMOTE_EXECUTION_RESOLUTION_LIMIT = (
+    "`remote_cli reconcile` is the act that settles this, and this skill "
+    "cannot hand it over ready to run: it requires `--worker` and `--backend`, "
+    "and both are values this section is forbidden to print -- a worker id is "
+    "a service account's username, which is why `workers` here is a count, and "
+    "a backend name is a service name. Run it for the account and the backend "
+    "this repository submits through")
+
+REMOTE_EXECUTION_DRIFT_QUESTION = (
+    "this repository's remote-execution ledger and the service no longer "
+    "agree, or a result arrived for a submission the source has already moved "
+    "past. Nothing read out of that ledger is trustworthy until it is settled, "
+    "and waiting does not settle it. "
+    + REMOTE_EXECUTION_RESOLUTION_LIMIT +
+    ", and report what it finds before anything is offered on the strength of "
+    "this ledger -- or record why a run is being taken against a ledger nobody "
+    "reconciled, and why?")
+
+REMOTE_EXECUTION_UNRELIABLE_QUESTION = (
+    "a line of this repository's remote-execution ledger could not be read at "
+    "all, so nothing it says about what is out there is trustworthy -- not what "
+    "is still pending, not what came back, not how many. "
+    + REMOTE_EXECUTION_RESOLUTION_LIMIT +
+    ", and report what it finds before offering any run -- or record why an "
+    "unreadable ledger is being read past, and why?")
+
+#: The ledger states that name work somebody has to do, and the question each
+#: publishes. A closed roster rather than an `if` chain, so a third work state
+#: added to the fold has a place to be classified into and a test that fails
+#: until it is -- `GATING_REFUSALS`' own shape, one surface out.
+REMOTE_EXECUTION_WORK_STATES = {
+    "drift": REMOTE_EXECUTION_DRIFT_QUESTION,
+    "unreliable": REMOTE_EXECUTION_UNRELIABLE_QUESTION,
+}
+
+
+def remote_execution_resolution(target: Path, name: str,
+                                status: str) -> dict | None:
+    """What clears `status`, or `None` where there is nothing to clear.
+
+    `None` for `ok`, `pending` and `absent`, and that is not an omission:
+    `position_finding_resolution`'s own rule, that a resolution published over
+    a report with no finding in it is an act nobody needs to run, and the
+    reader who meets one learns to skip the key.
+    """
+    question = REMOTE_EXECUTION_WORK_STATES.get(status)
+    if question is None:
+        return None
+    return _reported_state_question(target, name, about="record",
+                                    question=question)
+
+
 def remote_execution_state(target: Path, name: str, package: str) -> dict:
     """What went out to a remote worker, what came back, and what changed since.
 
@@ -7441,12 +7620,16 @@ def remote_execution_state(target: Path, name: str, package: str) -> dict:
     sentence — "No service is named here, and none should be" — the moment
     somebody ran this command.
     """
+    # `resolve` is spelled on the absent returns too, and never omitted from
+    # them: a payload whose SHAPE varies with its state makes every consumer
+    # test for the key before reading it, and the one that forgets reads
+    # `None` and cannot tell "nothing to do" from "this key is not here".
     if not REMOTE_EXECUTION_LEDGER_SCRIPT.is_file():
-        return {"status": "absent"}
+        return {"status": "absent", "resolve": None}
 
     ledger_path = target / name / ".remote-execution" / "ledger.jsonl"
     if not ledger_path.is_file():
-        return {"status": "absent"}
+        return {"status": "absent", "resolve": None}
 
     ledger = _load_remote_execution_ledger()
     lines = ledger_path.read_text(encoding="utf-8").splitlines()
@@ -7486,6 +7669,14 @@ def remote_execution_state(target: Path, name: str, package: str) -> dict:
         "quarantined": quarantined,
         "unreadableLines": state.unreadable_lines,
         "workers": workers,
+        # What to do about `status`, published by the engine rather than left
+        # in a doctrine table for whoever is reading to find. `None` for every
+        # state that names no work. See `remote_execution_resolution` and
+        # `REMOTE_EXECUTION_RESOLUTION_LIMIT`: the act is `remote_cli
+        # reconcile`, and two of its four required flags are values this
+        # section may not print, so what is published is the question that
+        # names them -- whose own `discuss` command runs unedited.
+        "resolve": remote_execution_resolution(target, name, status),
     }
 
 
@@ -7636,6 +7827,166 @@ def _proposal_digest(events: list, campaign: dict) -> str | None:
     return None
 
 
+def _run_block_notebook(run_config: dict) -> str | None:
+    """The notebook a job's NORMAL run declares, or `None`.
+
+    A plain mapping read over a shape the `remote-execution` skill owns, and
+    deliberately not a call into that skill's own `declared_notebooks()`: that
+    function unions `run.notebook` with `run.smoke`'s, which is right for the
+    question IT answers (*which notebooks must arrive in the checkout*) and
+    wrong for this one (*which notebook would this job run*). Folding a
+    rehearsal's artefact in here would report a smoke notebook as the thing a
+    campaign sends. Nothing in that skill is reached or changed by this.
+
+    Every non-string and every blank reads as `None` -- the same "declares
+    nothing knowable" this file gives a config it could not open. This is a
+    reporting path: `jobfolder.validate_run_config()` already refuses a
+    malformed block at the one place it guards an act, and refusing again here
+    would turn a read-only report into a second gate on somebody else's rule.
+    """
+    run_block = (run_config or {}).get("run")
+    if not isinstance(run_block, dict):
+        return None
+    notebook = run_block.get("notebook")
+    return notebook if isinstance(notebook, str) and notebook.strip() else None
+
+
+def _product_relative_notebook(notebook: str | None,
+                               product: str | None) -> str | None:
+    """A job's repository-relative notebook path, restated in the vocabulary
+    the pilot speaks, or `None` when it cannot be.
+
+    The two halves of this join name the same file in two different
+    vocabularies, and neither one is wrong. A job's `run.notebook` is
+    REPOSITORY-relative: the remote-execution skill resolves it against the
+    clone (`git cat-file -e <commit>:<notebook>`), so it carries the product
+    segment. `_pilot_notebooks` speaks PRODUCT-relative (`Notebooks/<file>`),
+    the same tail `impl_position._derive_notebook` matches on. Comparing the
+    two as written would report every job as unpiloted, which is the failure
+    mode a join has to be built not to have.
+
+    Segment-wise and never `str.startswith`, for `_owns`' own reason: a
+    product named `Method` must not swallow a path under `Method_Benchmark/`.
+
+    `None` when the job names no product, when the notebook does not sit under
+    it, or when there is nothing to translate. `None` is never read as a match:
+    a path this vocabulary cannot even express is certainly not one the pilot
+    walked, and saying so is the honest answer rather than a silent pass.
+    """
+    if not isinstance(notebook, str) or not notebook.strip():
+        return None
+    if not isinstance(product, str) or not product.strip():
+        return None
+    parts = [part for part in notebook.split("/") if part]
+    product_parts = [part for part in product.split("/") if part]
+    if len(parts) <= len(product_parts):
+        return None
+    if parts[:len(product_parts)] != product_parts:
+        return None
+    return "/".join(parts[len(product_parts):])
+
+
+#: The three answers this join can give, named once rather than respelled at
+#: each site that branches on one. `not-applicable` is a member and not an
+#: absence: a job declaring the callable shape carries no notebook to compare,
+#: and reporting that as `unpiloted` would accuse a legitimate job of a
+#: mismatch it cannot have.
+JOB_NOTEBOOK_PILOT_STATUSES = ("piloted", "unpiloted", "not-applicable")
+
+#: What the notebook/pilot join is, said in the payload rather than left to a
+#: reader to infer from three status words -- `WALK_NOTE`'s own doctrine.
+#:
+#: **The measured gap this closes.** Both halves already existed and nothing
+#: compared them. A job's run block can name a notebook and the worker runs
+#: that exact file from the pinned clone; `pilot_completeness_state` knows
+#: which notebooks the declared flow actually walked. Between them sat the
+#: only question that decides whether a campaign is worth its quota -- *is the
+#: artefact about to be sent one that has been executed and read here first* --
+#: and no key answered it, so an operator could read a complete pilot beside a
+#: job pointing at a notebook that pilot never opened, and nothing said a word.
+#:
+#: **Reported, never gating, and that is the whole posture.** This sits in
+#: front of the expensive door, and a refusal there that an operator cannot
+#: clear corners them at exactly the point where the alternatives all cost
+#: money. A repository may legitimately generate a job before it pilots, or
+#: pilot through one notebook and send another on purpose. What must never
+#: happen is that nobody is told.
+#:
+#: **`not-applicable` is a first-class answer, not a blank.** A job declaring
+#: the callable shape names no notebook at all -- `run_block_kind()` in the
+#: remote-execution skill admits exactly one of the two shapes -- so there is
+#: nothing to compare, and that is a different fact from a comparison that
+#: came out wrong. Off a payload that reported only mismatches the two read
+#: identically, which is the reading this key exists to stop.
+JOB_NOTEBOOK_PILOT_NOTE = (
+    "whether the notebook each generated job would run is one the pilot "
+    "actually walked. A pilot is the declared flow walked with the declared "
+    "notebooks, so that the artefact later sent to a worker has been executed "
+    "and read before anybody commits machine time to it -- and a job pointing "
+    "at a notebook that pilot never opened spends that time on a file nothing "
+    "here has ever run. Three answers, and the shape is the same in all "
+    "three: `piloted` (the pilot walked this exact notebook), `unpiloted` (it "
+    "did not, or the job's path is not one the pilot's vocabulary can even "
+    "express), and `not-applicable` (this job declares the callable shape and "
+    "names no notebook, so there is nothing to compare). Nothing here refuses "
+    "anything: a repository may generate a job before it pilots, or pilot one "
+    "notebook and send another deliberately. It is named because the "
+    "alternative reading is silence.")
+
+
+def job_notebook_pilot_state(jobs: list[dict], pilot: dict) -> dict:
+    """Whether the notebook each job would run is one the pilot walked --
+    `{"status", "jobs", "unpiloted", "walked", "note"}`, and never a refusal.
+
+    Pure: both operands are already computed by the caller and threaded in --
+    `remote_execution_jobs_state()`'s own `jobs` list and
+    `pilot_completeness_state()`'s own return. No filesystem walk, no second
+    `JOBFOLDER.read()`, no re-derivation of either half. Two reads of one fact
+    inside one command is how the two come to disagree, which is the restraint
+    `classify_remote_necessity` already keeps one key over.
+
+    `walked` is the union of every notebook every step's row names, in sorted
+    order and de-duplicated: two steps may render into one root, and the
+    question here is set membership, never which step got there first.
+
+    `status` is `"ok"` when no job is `unpiloted` and `"unpiloted"` when one
+    is. It gates nothing -- see `JOB_NOTEBOOK_PILOT_NOTE` -- and it is a
+    headline rather than a verdict, so a reader who scans one key still meets
+    the fact.
+
+    Every row carries all four of `job`, `notebook`, `pilotRelative` and
+    `status`, in every one of the three states. A payload whose shape varies
+    with its answer makes each consumer test for a key before reading it, and
+    the one that forgets reads `None`.
+    """
+    walked = sorted({notebook
+                     for row in (pilot or {}).get("steps") or []
+                     if isinstance(row, dict)
+                     for notebook in row.get("notebooks") or []
+                     if isinstance(notebook, str)})
+    rows = []
+    for job in jobs or []:
+        raw = job.get("notebook")
+        # Re-normalized here rather than trusted, because this function is
+        # pure and its `jobs` operand is whatever a caller hands it: a test,
+        # a future second producer, or the loop above. `None` and a blank
+        # string are the same absence and must not read as two.
+        notebook = raw if isinstance(raw, str) and raw.strip() else None
+        relative = _product_relative_notebook(notebook, job.get("product"))
+        if notebook is None:
+            status = "not-applicable"
+        elif relative is not None and relative in walked:
+            status = "piloted"
+        else:
+            status = "unpiloted"
+        rows.append({"job": job.get("job"), "notebook": notebook,
+                     "pilotRelative": relative, "status": status})
+    unpiloted = [row["job"] for row in rows if row["status"] == "unpiloted"]
+    return {"status": "unpiloted" if unpiloted else "ok",
+            "jobs": rows, "unpiloted": unpiloted, "walked": walked,
+            "note": JOB_NOTEBOOK_PILOT_NOTE}
+
+
 def remote_execution_jobs_state(target: Path) -> dict:
     """`probe`'s own job-folder fact (design #744 section 9): what job
     folders exist on disk right now, reported alongside
@@ -7723,6 +8074,13 @@ def remote_execution_jobs_state(target: Path) -> dict:
                 "staleness": {"status": "unreadable", "reason": str(exc)},
                 "accelerator": None,
                 "localBudget": None,
+                # Spelled on this row too, and never omitted from it: a row
+                # whose SHAPE varies with state makes every consumer test for
+                # the key before reading it, and the one that forgets reads
+                # `None` and calls it "declares no notebook". A config nobody
+                # could read declares nothing knowable, which is what `None`
+                # says here -- and `staleness` beside it already says why.
+                "notebook": None,
             })
             continue
 
@@ -7740,6 +8098,20 @@ def remote_execution_jobs_state(target: Path) -> dict:
             "staleness": dict(job_folder.staleness),
             "accelerator": run_config.get("accelerator"),
             "localBudget": run_config.get("localBudget"),
+            # What this job would RUN, when what it runs is a notebook --
+            # read out of the same open `run_config`, exactly as the two
+            # fields above it are, and never a second `JOBFOLDER.read()`.
+            # `None` for a job declaring the callable shape, which is the
+            # majority: `run_block_kind()` in the remote-execution skill
+            # admits exactly one of the two and refuses a block carrying
+            # both, so an absent `notebook` here is that skill's own answer
+            # rather than a guess taken here. Read as a plain mapping
+            # lookup and never through that skill's `declared_notebooks()`:
+            # this is the job's NORMAL run, and folding `run.smoke`'s
+            # notebook in beside it would report a rehearsal's artefact as
+            # the thing a campaign sends. Nothing in the other skill is
+            # reached, read differently, or changed by this.
+            "notebook": _run_block_notebook(run_config),
         })
 
         if not isinstance(product, str) or not product:
@@ -13333,6 +13705,13 @@ def cmd_verify(args: argparse.Namespace) -> dict:
     scaffold_recorded = scaffold_structure_gaps(target, name)
     object_recorded = object_structure_gaps(target, name)
     harness_recorded = harness_structure_gaps(target, name)
+    # Computed once, here, and read twice below: by the three reported keys
+    # and by the acts published beside them. Two calls in two slots would let
+    # a published `materialize` name destinations the key it answers does not,
+    # which is the one way an exit can be runnable and still wrong.
+    structure_gaps = {"scaffoldGaps": scaffold_gaps(target, name),
+                      "objectGaps": object_gaps(target, name),
+                      "harnessGaps": harness_gaps(target, name)}
     structure_ok = (not missing_dirs and not stray and not stale_refs
                     and not unparsable
                     and not scaffold_gaps(target, name)
@@ -13661,15 +14040,23 @@ def cmd_verify(args: argparse.Namespace) -> dict:
             "strayModules": stray,
             "unparsableTests": unparsable,
             "staleReferences": stale_refs,
-            "scaffoldGaps": scaffold_gaps(target, name),
+            "scaffoldGaps": structure_gaps["scaffoldGaps"],
             "scaffoldDrift": scaffold_recorded["drift"],
             "unrecordedScaffold": scaffold_recorded["unrecorded"],
-            "objectGaps": object_gaps(target, name),
+            "objectGaps": structure_gaps["objectGaps"],
             "objectDrift": object_recorded["drift"],
             "unrecordedObjects": object_recorded["unrecorded"],
-            "harnessGaps": harness_gaps(target, name),
+            "harnessGaps": structure_gaps["harnessGaps"],
             "harnessDrift": harness_recorded["drift"],
             "unrecordedHarness": harness_recorded["unrecorded"],
+            # What to do about the three gap keys above, published by the
+            # engine rather than left in a doctrine paragraph for whoever is
+            # reading to find. One entry per key that names anything, `[]`
+            # when nothing is owed. See `structure_gap_resolutions`: the act
+            # is `materialize --stage`, and two of its arguments are a
+            # human's by design, so what is published is the question that
+            # names them -- whose own `discuss` command runs unedited.
+            "resolve": structure_gap_resolutions(target, name, structure_gaps),
         },
         "priorWork": prior_work_state(target, package_name(name)),
         "agreements": agreements_state(target, name),

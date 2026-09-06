@@ -465,6 +465,7 @@ exactly what stops a launcher from being able to claim it implements anything.
 | `verify` reports structure drift | Report it as its own finding, ask before fixing |
 | `verify` reports stale modules | Report revision drift separately; ask before rewriting |
 | `verify` reports `unreachedModules` | An arm declares mathematics it never calls: report before any run |
+| `verify` reports a non-empty `structure.scaffoldGaps`/`objectGaps`/`harnessGaps` | Kit destinations this skill ships are absent from the repository. `structure.resolve` publishes one entry per gap key that names anything, each naming the exact `materialize --stage` that writes them and the exact files it would write, with a `discuss` command that runs unedited. It is a question and not the command on purpose: `--plan` is an approval a human gives, and a published command that generated its own approval would answer the gate instead of passing it; `--seed` is the number the scaffolded experiment draws from, which no skill may choose for a repository |
 | `verify` reports `fidelity: "undeclared"` | The Benchmark package exists and every block of `__benchmark__` is still at its scaffolded empty value: fill the declaration before quoting any fidelity result, because nothing measured against it has been checked yet |
 | `probe` reports `nextStep: "declare-first"` | The benchmark has no `src/<Package>_Benchmark/` at all, or has one whose every block is still at its scaffolded empty value: report before offering a run built on a declaration that has not happened |
 | `probe` reports `nextStep: "poll-first"` | A submission is already out to a remote worker with no result back yet: report before offering another run |
@@ -473,8 +474,9 @@ exactly what stops a launcher from being able to claim it implements anything.
 | `probe` reports `nextStep: "pilot-decisions"` | The flow finished at pilot and each of its steps now owes its own decision about how the full run carries it: publish the per-step questions, read `remoteExecution.necessity` beside them, and decide one step at a time. Show `report.liveFindings` first when it names anything — those decisions are taken over artefacts that carry live findings, and the acknowledgement holds this rung until it is answered |
 | `probe` reports a job with `smokeReady: false` | A job folder exists that no rehearsal has ever passed on its pinned commit: read it before offering a campaign, because a rehearsal finds cheaply what the long run would find expensively |
 | `probe` reports a job whose `staleness` is `drift` | The repository moved past the commit that job is pinned to: regenerate the job, or say plainly that the run measures the older code, before offering a campaign |
-| `probe` reports `remoteExecution: "drift"` | The ledger and the service no longer agree, or a stale result arrived: run `remote_cli reconcile` before reading anything else out of that ledger. Waiting fixes nothing |
-| `probe` reports `remoteExecution: "unreliable"` | A line of the ledger could not be read, so nothing about what is out there is trustworthy: run `remote_cli reconcile` and report what it finds before offering a run |
+| `probe` reports a job in `remoteExecution.notebookPilot.unpiloted` | That job would run a notebook this pilot never opened, so the artefact about to cost machine time has not been executed and read here first: name the notebook and say so before offering a campaign. Nothing refuses it — a repository may generate a job before it pilots, or send a different notebook on purpose — but a campaign offered without saying it is a campaign offered on an untested file |
+| `probe`/`verify` report `remoteExecution: "drift"` | The ledger and the service no longer agree, or a stale result arrived: run `remote_cli reconcile` before reading anything else out of that ledger. Waiting fixes nothing. The state publishes its own exit now — `remoteExecution.resolve` carries the question and a `discuss` command that runs unedited. It is a question and not the command because `reconcile` requires `--worker` and `--backend`, and this section may print neither: a worker id is a service account's username (which is why `workers` is a count) and a backend name is a service name |
+| `probe`/`verify` report `remoteExecution: "unreliable"` | A line of the ledger could not be read, so nothing about what is out there is trustworthy: run `remote_cli reconcile` and report what it finds before offering a run. `remoteExecution.resolve` publishes that question with a runnable `discuss` command, for the same reason and with the same limit as the row above |
 | `verify`/`probe` report `position: "stale"` | The section's header is bound to a revision whose bytes no longer match: run `position` again to rebind it before trusting any tick on it |
 | `verify`/`probe` report `position.disagreements` | A recorded mark contradicts its own measured evidence: report before gating or closing anything on it, and run `position` to correct it |
 | `verify`/`probe`/`position` report `position.unbacked` | A mark is ticked and nothing measured it: an assertion, not a reading, and `gate`/`close` refuse on it. **A refresh does not clear it** — `position` deliberately never rewrites a mark it could not measure, which is what makes a derived mark worth reading. The exit is a reinstall of the same sequence (`--sequence - --replace`), which installs every item blank and re-derives it in the same call, so measured marks come straight back and only the assertions go. Run `position` and paste the `resolve.command` it prints: the array that command consumes is already inside it, so it runs unedited. `verify` and `probe` report the finding and publish no command for it — a `position` write is stamped with the caller's own `--session`, and neither of those commands carries one to stamp |
@@ -576,6 +578,21 @@ date. Drift is Flow B's fourth step, not a reason to start over.
    and `test_remedies.py` both open by importing them, so a tree without them is
    not collected at all. `admissibility.py` belongs in `tests/` specifically —
    it reads the ruling from beside itself, which is where `admit` writes it.
+
+   **Both kit notebooks open with a cell this skill does not own.** Its first
+   code cell binds `ROOT`, every later cell reads it, and its bytes are a copy
+   of `remote-execution`'s `assets/notebook_repo_root.py` — bound by a forge
+   test that goes red the moment the two differ. Do not edit it here and do not
+   re-answer that question further down the notebook. The reason lives in that
+   skill: locating the repository two directories above the working directory
+   is right on a person's own machine and wrong on a remote worker, where the
+   kernel's working directory is the runner's own, the clone sits one level
+   inside it, and two directories up names a directory that exists anyway — so
+   the wrong tree goes on the path and the run dies much later naming a missing
+   package rather than a wrong root. The cell reads a clone directory and a
+   pinned commit from the environment when a runner exported them, proves the
+   checkout is at that commit, refuses a half-exported pair, and falls back to
+   the local layout only when nothing at all was handed over.
 
    `materialize --stage scaffold` substitutes the scaffold-time `{{TOKEN}}`
    placeholders (`{{PKG}}`, `{{SEED}}`) itself; the step-9 tokens are left
@@ -1322,8 +1339,8 @@ belongs here is which reported state routes to which one:
 | `poll` | `nextStep: "poll-first"` — a submission is out and its answer has not come back | `--backend`, `--submission-id` | the `remote-execution` skill |
 | `fetch` | A submission the ledger calls returned whose result is not on disk yet | `--backend`, `--entrypoint`, `--submission-id`, `--target` | the `remote-execution` skill |
 | `reconcile` | `remoteExecution` reporting `drift` or `unreliable`: the ledger and the service disagree, or a line of the log could not be read | `--backend`, `--entrypoint`, `--target`, `--worker` | the `remote-execution` skill |
-| `generate-job` | No job folder for the campaign about to be offered — `remoteExecution.jobs` empty, or naming none that matches | `--job-name`, `--product`, `--repo-ref`, `--repo-url`, `--run-function`, `--run-module`, `--service`, `--target` | the `remote-execution` skill |
-| `generate-job` | A job folder exists and its declared pin no longer matches what the clone paths hold — `staleness` reports `drift`: regenerate (`--regenerate`) rather than offer a run against a repository that has moved | `--job-name`, `--product`, `--repo-ref`, `--repo-url`, `--run-function`, `--run-module`, `--service`, `--target` | the `remote-execution` skill |
+| `generate-job` | No job folder for the campaign about to be offered — `remoteExecution.jobs` empty, or naming none that matches | `--job-name`, `--product`, `--repo-ref`, `--repo-url`, `--service`, `--target` | the `remote-execution` skill |
+| `generate-job` | A job folder exists and its declared pin no longer matches what the clone paths hold — `staleness` reports `drift`: regenerate (`--regenerate`) rather than offer a run against a repository that has moved | `--job-name`, `--product`, `--repo-ref`, `--repo-url`, `--service`, `--target` | the `remote-execution` skill |
 | `distribute` | A campaign whose units outnumber what one account can hold at once: it reports which account each unit would go to and which ones do not fit, and sends nothing | `--backend`, `--entrypoint`, `--target`, `--unit` | the `remote-execution` skill |
 | `smoke record` | `smokeReady: false` for a job that has rehearsed and whose verdict was never written down | `--from-artifact`, `--job-dir`, `--worker` | the `remote-execution` skill |
 | `readiness` | `smokeReady` itself: it is the function `probe` calls to compute that fact, and asking it directly is how you see the reason | `--job-dir`, `--worker` | the `remote-execution` skill |
@@ -2367,14 +2384,14 @@ in no doctrine at all, so a reader met them first in the JSON:
 
 | Status | What it reports | Gates? |
 | --- | --- | --- |
-| `structure` | Missing directories, stray modules, unparsable tests, stale references and scaffold gaps | Yes — `drift` is a layout that no longer matches |
+| `structure` | Missing directories, stray modules, unparsable tests, stale references and scaffold gaps, plus `resolve` — one published exit per gap key that names anything, `[]` when nothing is owed | Yes — `drift` is a layout that no longer matches |
 | `priorWork` | That prior work is untouched | Reported whatever it says |
 | `agreements` | The state of `AGREEMENTS.md`, item by item, plus a nested `witness` dimension: `unwitnessed`/`unmeasured`/`disagrees` texts and a `summary` field ("N of M witnessed") printed on every run, including "0 of 0 witnessed" | `open` items: yes — never report work done while one is `open`. `witness.disagrees`: **never here** — reported only; `close` is the sole place that refuses `AGREEMENT_DISAGREES` |
 | `position` | The execution sequence's derived state, read from `<Name>/AGREED.md`'s own position section: which steps are measured done, which disagree with their disk mark, which this invocation could not measure at all | **Never** — a derived fact, reported so a human can decide about it |
 | `prose` | Historical revision mentions and symbol-shaped configuration keys | Reported whatever it says; these are facts, not verdicts |
 | `search` | Whether a declared search says enough about itself for its chosen value to mean anything | Yes |
 | `distribution` | What a run split across shards declares, and whether the shards that arrived agree | Yes |
-| `remoteExecution` | The state of the remote-execution ledger and its job folders | Yes |
+| `remoteExecution` | The state of the remote-execution ledger and its job folders, plus `resolve` — the published exit for `drift` and `unreliable`, `null` for every state that names no work | Yes |
 | `coupling` | Which notebook cells reach into the target's internals instead of its declared surface | **Never** — a static fact, reported so somebody can decide about it |
 | `fidelity` | The revision each module is bound to, provenance, untested invariants, and how the revision was resolved | Yes |
 | `lfs` | Which large files are real content and which are unfetched pointers | Reported whatever it says |
@@ -2427,13 +2444,13 @@ is a fact nobody reads:
 | `baselines` | The prior implementations there are to compare against | Yes — nothing to compare against outranks everything else on the ladder |
 | `comparable` | Whether that list is non-empty, stated once so nobody re-derives it | Reported whatever it says |
 | `coupling` | Which notebook cells reach into the target's internals instead of its declared surface | **Never** — a static fact, reported so somebody can decide about it |
-| `harnessStatus` | Where the target's own declaration says its harness module is: `undeclared`, present at `path`, or `declaredMissing` naming `declaredModule` and `searchedPath`. `declaredFunction` echoes `entry.function` beside it, and `note` names what a blank one costs: nothing in this skill reads that field, but `generate-job --run-function` is a required argument with no default, and this declaration is where its value comes from | Reported whatever it says |
+| `harnessStatus` | Where the target's own declaration says its harness module is: `undeclared`, present at `path`, or `declaredMissing` naming `declaredModule` and `searchedPath`. `declaredFunction` echoes `entry.function` beside it, and `note` names what a blank one costs: nothing in this skill reads that field, but a job generated in the callable shape needs `generate-job --run-function`, and this declaration is where its value comes from | Reported whatever it says |
 | `nextStep` | The one thing to do next | This is the answer, not a fact feeding it |
 | `notebook` | Where the pilot notebook is, or `null` | Reported whatever it says |
 | `position` | The execution sequence's derived state, read from `<Name>/AGREED.md`'s own position section. `probe` takes no `--shards`, so every `@shard` witness reports `unmeasured` here, never a false "did not arrive" | **Never** — a derived fact, reported so a human can decide about it |
 | `pilotCompleteness` | Whether the flow the target declared has actually finished at pilot, step by step: `status` (`undeclared` when no `__steps__` entry carries an `advances` ordinal at all), one row per **declared** step — ordinal-carrying ones first and in that order, the rest after in name order — naming its `advances` (`null` where it declares none), whether it `ran` and returned, the `notebooks` it owes and whether all of them are executed against these sources (`notebooksCurrent`), how many the pilot opens for it (`notebookCount`, on every row and zero included), and `producesDeclared`; plus `incomplete` — the steps still short — `unmeasurable` beside it, the steps whose output nobody could look at because they declare no `produces` roots, and `withoutNotebook`, the steps the pilot walked without opening a notebook at all, each list with its own note | Yes — an unfinished flow is `pilot-first`, and a finished one whose steps have not each been decided is `pilot-decisions` |
 | `walk` | Where this repository stands in its own declared flow, step by step: `status` (`undeclared`/`notStarted`/`walking`/`walked`), the declared `levels` and `topRung`, one row per declared step (`walk` — `notWalked`, `unfinished` (a `started` ledger event with no terminal partner, a run that was killed) or `walked` — plus `lastOutcome`, `lastAt`, the `rung` its position item grades at, `atTopRung`, and the output roots it `renders`), and one row per result-rendering artefact in the product tree, each inheriting the state of the step that renders it (`renderedBy`, `walk`, `rung`, `witnessed`). An artefact no declared step renders reads `outsideTheWalk` — a description of that artefact, not an accusation about it. Every input is already held: the ledger's step events, the position sequence and its rungs, and each step's own `produces` roots; **no target declaration is introduced** | **Never** — a walk report answers *where am I*, not *what is broken*. Nothing in it is a finding: a step nobody has walked is a state, a flow that has not started is where every repository begins, and reporting either as a defect would greet an operator with noise on their first clean run |
-| `remoteExecution` | The ledger's fold, plus the job folders that exist on disk right now | Yes — a submission already out is `poll-first` |
+| `remoteExecution` | The ledger's fold, plus the job folders that exist on disk right now, plus its own `resolve` — the published exit for `drift` and `unreliable`, `null` otherwise. Distinct from the top-level `resolve`, which answers `nextStep` | Yes — a submission already out is `poll-first` |
 | `report` | Whether the document a human reads agrees with the run | Yes — a document in drift is `report-first` |
 | `resolve` | What to do about `nextStep`, published by the engine rather than composed by whoever reads it: `{kind: "command", command}` for a step this flow can name completely, `{kind: "question", question, command}` for a step whose next act is a decision, and `null` only for the two steps the roster declares terminal | **Never** — a published action, not a verdict; publishing it proves the decision reached the record, never that the operator took it |
 | `results` | What the last pilot measured, and at what scale | Yes — below scale is `piloted`, at scale is `already-benchmarked` |
@@ -2453,7 +2470,7 @@ worker and what came back. These three say what exists on disk right now:
 
 | Job fact | What it reports | Gates? |
 | --- | --- | --- |
-| `jobs` | Every generated job folder found under `tools/`, each with its product and its own `staleness` verdict | **Never** — reported beside the answer, read before a campaign |
+| `jobs` | Every generated job folder found under `tools/`, each with its product, its own `staleness` verdict, and the `notebook` its run block declares (`null` for the callable shape, and for a config that could not be read at all) | **Never** — reported beside the answer, read before a campaign |
 | `services` | How many services those folders are spread across, as a count | **Never** — a count, so that no service is ever named here |
 | `smokeReady` | Per job, whether a rehearsal has already passed on the commit that job is pinned to | **Never** — for the reason below |
 
@@ -2471,6 +2488,51 @@ So both are reported, and the Decision Gates table is what sends a reader to
 them. If the fact ever grew a per-job link to the campaign about to be offered —
 tying an unrehearsed job to *this* run rather than to the repository in general —
 the difference becomes expressible and this position should be revisited.
+
+### Is the notebook this job would run one the pilot walked?
+
+`remoteExecution.notebookPilot` answers exactly that, and until it existed
+nothing did. Both halves were already on the page: a job's run block can name a
+notebook, and the worker runs that exact file out of the sparse clone at the
+pinned commit; `pilotCompleteness` already knows which notebooks the declared
+flow opened. Nobody compared them, so a repository could show a complete pilot
+beside a job pointing at a notebook that pilot never touched, and every key read
+clean.
+
+Three answers, one shape:
+
+| `status` | What it means |
+| --- | --- |
+| `piloted` | The pilot walked this exact notebook. The file about to cost machine time has been executed and read here first |
+| `unpiloted` | It did not — or the job's path is not one the pilot's vocabulary can express at all, which is the same answer for the same reason: nothing here has run that file |
+| `not-applicable` | This job declares the callable shape and names no notebook, so there is nothing to compare. A first-class answer, never a blank |
+
+Every row carries `job`, `notebook`, `pilotRelative` and `status` in all three
+states. A payload whose shape changes with its answer makes each reader test for
+a key before reading it, and the one that forgets reads `null` and calls it
+"not applicable".
+
+**It reports and it refuses nothing.** This sits in front of the expensive
+door, and a refusal there an operator cannot clear corners them at the one point
+where every alternative costs money. A repository may generate a job before it
+pilots, or pilot through one notebook and send another deliberately. What must
+never happen is that nobody is told — so the Decision Gates row above sends a
+reader to `unpiloted` before a campaign is offered, and the answer is computed on
+every run rather than only on the run where it turns out to matter.
+
+**The two vocabularies are joined, never assumed equal.** A job's
+`run.notebook` is repository-relative, because the remote-execution skill
+resolves it against the clone; the pilot's notebooks are product-relative. The
+job's path is restated in the pilot's vocabulary segment-wise, and `pilotRelative`
+reports the result so a reader can see what was actually compared. `null` there
+is not a match: a path the pilot's vocabulary cannot express is not a notebook
+the pilot walked.
+
+**Nothing in `remote-execution` is read differently or changed for this.** The
+notebook comes out of the same open `run-config.json` this command already reads
+each job's staleness from — `run.notebook` alone, never that skill's own
+`declared_notebooks()`, whose union with `run.smoke` answers a different
+question and would report a rehearsal's artefact as the thing a campaign sends.
 
 ### The rehearsal is the agent's to run
 

@@ -1,9 +1,26 @@
 #!/usr/bin/env python3
 """Cell 1 of the generated runner notebook — copied byte for byte.
 
-Resolves `run.module` / `run.function` / `run.kwargs` from
-`run-config.json` (or the `smoke` variant, when `run_config["mode"] ==
-"smoke"`) through `importlib`, and calls it. Cell 0
+Runs whichever of the two shapes the selected block declares.
+
+- A CALLABLE block (`module` / `function` / `kwargs`) resolves through
+  `importlib` and is called.
+- A NOTEBOOK block (`notebook`) is read out of the clone, executed in a
+  kernel with the clone's `src` on its `PYTHONPATH`, and written back
+  executed into the runner's own working directory, which is what makes
+  its outputs part of what a fetch returns.
+
+Both stay reachable, deliberately. The notebook shape exists so that what
+a worker runs can be the notebook a pilot validated, rather than a second
+implementation of it whose agreement nothing checks. The callable shape
+stays because a worker asked to settle one question is legitimately a
+function call, and some entries cannot be named by a `module`/`function`
+contract at all. `block_kind()` decides between them and refuses a block
+that declares neither or both — never a default, because on this side of
+the wire every default costs the same quota as the right answer.
+
+The `smoke` variant is selected the same way for both shapes, when
+`run_config["mode"] == "smoke"`. Cell 0
 (`runner_bootstrap.py`) has already sparse-cloned the pinned commit and
 put its `src/` on `sys.path` before this cell ever runs — `SystemExit`
 there means this cell never runs at all — so the module named here
@@ -26,6 +43,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import os
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
@@ -37,6 +55,136 @@ class InvokeError(Exception):
 
 
 CONFIG_FILENAME = "run-config.json"
+
+# `runner_bootstrap.py` clones into `<base>/clone`, and this cell has to
+# find the same directory to reach a declared notebook inside it. The two
+# assets have no import between them — they are two cells of one notebook,
+# each copied byte for byte — so this constant MIRRORS that one rather
+# than importing it, exactly the way each file already holds its own
+# subprocess-environment allowlist. A forge test binds the two spellings
+# together; a divergence is a defect the suite catches, never a runtime
+# surprise.
+CLONE_DIRNAME = "clone"
+
+# What an executed notebook is written back as, beside `run-config.json`
+# and `bootstrap.json` in the runner's own working directory. A prefix and
+# not an in-place overwrite: the clone is the pinned input and stays the
+# pinned input, and the fetched artifact then carries both the notebook
+# that was sent and the outputs it produced.
+EXECUTED_NOTEBOOK_PREFIX = "executed-"
+
+DEFAULT_KERNEL_NAME = "python3"
+
+SRC_DIRNAME = "src"
+
+# The handoff this cell owes the kernel it starts, beside the `PYTHONPATH`
+# it already sets. Two names, forge-owned and deliberately generic — they
+# are the contract between a runner and the notebook it starts, never a
+# name borrowed from one repository — and mirrored, byte for byte, by
+# `assets/notebook_repo_root.py`, the cell on the reading side. A forge
+# test binds the two spellings together the way one already binds
+# `CLONE_DIRNAME` to cell 0's.
+#
+# Why both, and never just the root: a directory handed over is still a
+# directory nobody proved. The commit travels beside it so the reading
+# cell can check the checkout it was pointed at rather than trust it, and
+# a job that runs the wrong commit RUNS — it returns numbers shaped
+# exactly like the right ones.
+CLONE_ROOT_ENV = "FORGE_CLONE_ROOT"
+CLONE_COMMIT_ENV = "FORGE_CLONE_COMMIT"
+
+
+def kernel_python_path(clone_root: str | Path, existing: str | None) -> str:
+    """`PYTHONPATH` for the kernel a notebook executes in — the clone's own
+    `src`, ahead of whatever was already there.
+
+    Cell 0's `sys.path.insert(0, <clone>/src)` puts the pinned code on the
+    path of the RUNNER process, and a notebook executes in a SEPARATE
+    kernel process that inherits none of it. Without this, a notebook
+    whose first cell imports the target's own package dies with
+    `ModuleNotFoundError` on a worker whose clone is sitting right there
+    — the pinned code delivered, and unreachable.
+
+    Prepended rather than replacing: an existing `PYTHONPATH` belongs to
+    the worker's own image and this has no business discarding it. The
+    clone goes first for the same reason cell 0 inserts at position 0 —
+    a copy of the same package installed elsewhere must never win against
+    the commit this job pinned.
+    """
+    clone_src = str((Path(clone_root) / SRC_DIRNAME).resolve())
+    if existing:
+        return clone_src + os.pathsep + existing
+    return clone_src
+
+
+def kernel_environment(
+    clone_root: str | Path,
+    commit: str,
+    existing: Mapping[str, str] | None = None,
+) -> dict:
+    """Everything the kernel receives from this cell, composed in one place.
+
+    Three variables, and this function is the only thing that decides them:
+    the `PYTHONPATH` that makes the pinned code importable, and the two that
+    tell the notebook WHERE the pinned code is and WHICH commit it is. The
+    single composition point is the point — a second place that exported
+    either of these would be a second place that decides which tree a
+    notebook runs against, and the whole reason this handoff exists is that
+    a notebook left to work that out on its own resolves a directory that
+    exists on any worker and fails much later, naming a package rather than
+    a root.
+
+    `existing` is the environment being extended, so `PYTHONPATH` is
+    prepended to rather than replaced; the two forge-owned names are set
+    outright, because the only thing that could already be carrying them is
+    an earlier runner and this one's clone is the one that counts.
+    """
+    existing = {} if existing is None else existing
+    return {
+        "PYTHONPATH": kernel_python_path(clone_root, existing.get("PYTHONPATH")),
+        CLONE_ROOT_ENV: str(Path(clone_root).resolve()),
+        CLONE_COMMIT_ENV: str(commit),
+    }
+
+
+def block_kind(block: Mapping[str, Any]) -> str:
+    """Which of the two shapes a selected block declares — `"callable"`
+    (a `module`/`function` pair) or `"notebook"` (a `notebook` path) —
+    refusing anything that is neither and anything that is both.
+
+    The mirror of `jobfolder.run_block_kind()`, held here on its own for
+    the reason every guard in these two assets is: this cell runs against
+    whatever `run-config.json` the kernel was actually handed, not against
+    the one a generator validated. A block that declares neither shape is
+    refused rather than defaulted, and a block that declares both is
+    refused rather than resolved by precedence — a silent precedence rule
+    would decide, on the worker, which of two disagreeing declarations the
+    operator paid for.
+    """
+    if not isinstance(block, Mapping):
+        raise InvokeError(f"selected block {block!r} is not an object")
+    notebook = block.get("notebook")
+    module = block.get("module")
+    function = block.get("function")
+    if notebook is not None and (module is not None or function is not None):
+        raise InvokeError(
+            f"selected block declares BOTH a notebook ({notebook!r}) and a "
+            f"module/function pair ({module!r}/{function!r}); a block "
+            "declares exactly one of the two"
+        )
+    if notebook is not None:
+        if not isinstance(notebook, str) or not notebook.strip():
+            raise InvokeError(
+                f"selected block declares notebook {notebook!r}: a notebook "
+                "path must be a non-empty string"
+            )
+        return "notebook"
+    if module and function:
+        return "callable"
+    raise InvokeError(
+        f"selected block {dict(block)!r} declares neither a "
+        "'module'/'function' pair nor a 'notebook'"
+    )
 
 
 def select_block(run_config: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -86,15 +234,177 @@ def resolve_callable(
     return func
 
 
+def _default_notebook_client(notebook: Any, *, kernel_name: str, cwd: Path) -> Any:
+    """The real executor, built only when a notebook run actually reaches
+    it — never at import time, so the forge suite can drive every other
+    function in this file on a machine that has no kernel at all.
+
+    `nbclient` is what executes; `resources.metadata.path` is the working
+    directory it starts the kernel in. That directory is the RUNNER's own
+    working directory and deliberately not the notebook's location inside
+    the clone: a notebook writing a relative path is writing an output,
+    and an output written inside the clone is an output the fetch never
+    sees. The clone is the pinned input; the working directory is what
+    comes back.
+    """
+    from nbclient import NotebookClient
+
+    return NotebookClient(
+        notebook,
+        kernel_name=kernel_name,
+        resources={"metadata": {"path": str(cwd)}},
+    )
+
+
+def execute_notebook(
+    block: Mapping[str, Any],
+    base_dir: str | Path | None = None,
+    *,
+    commit: Any = None,
+    client_factory: Callable[..., Any] = _default_notebook_client,
+) -> dict:
+    """Execute the declared notebook — the notebook half of cell 1.
+
+    The notebook is read from the CLONE (`<base>/clone/<notebook>`, the
+    pinned bytes cell 0 fetched), executed with the kernel it names, and
+    written back — outputs and all — to `<base>/executed-<name>.ipynb`,
+    the runner's own working directory. That destination is the whole of
+    "the outputs come back": the fetch materializes the files the worker
+    left in its working directory, which is already how `bootstrap.json`
+    returns, so an executed notebook written there needs nothing added
+    anywhere else in this skill to arrive.
+
+    The kernel is started with `kernel_environment()`'s three variables:
+    the clone's `src` first on `PYTHONPATH`, and the clone's directory and
+    the pinned commit under the two forge-owned names the notebook's own
+    first cell reads. That handoff is why `commit` is a parameter of this
+    function at all — it comes from `run-config.json` by way of
+    `invoke()`, and it is the only thing that lets the notebook check the
+    checkout it is pointed at instead of trusting it.
+
+    Four things this refuses rather than works around:
+
+    - a run with no commit to hand over. This is the metered path; a
+      notebook started without the pin is a notebook that has to work the
+      repository out for itself, and the answer it works out is a
+      directory that exists on any worker. Refused BEFORE the kernel
+      starts, because a job that runs the wrong commit works;
+    - a notebook path that escapes the clone, or is not a file inside it
+      (cell 0 already proves this for a declared notebook, and this cell
+      proves it again because it is the cell that opens the file);
+    - a missing `nbformat`/`nbclient` — an `ImportError` becomes an
+      `InvokeError` naming `environment.install` as the remedy, the same
+      remedy cell 0's own executor gate names;
+    - an execution that raises — the partially-executed notebook is
+      written to the same destination BEFORE the failure is re-raised, so
+      the fetched artifact carries the traceback in the cell that
+      produced it instead of nothing at all.
+
+    `client_factory` exists only so the forge suite can drive this
+    function without a kernel; the default is the real one.
+    """
+    if not isinstance(commit, str) or not commit.strip():
+        raise InvokeError(
+            f"cannot start a notebook kernel: the pinned commit is {commit!r}, "
+            f"so neither {CLONE_ROOT_ENV} nor {CLONE_COMMIT_ENV} can be handed "
+            "over as a pair. Half a handoff is refused on the reading side too; "
+            "a notebook left to locate the repository on its own resolves a "
+            "directory that exists on any worker and fails much later, naming a "
+            "package rather than a root"
+        )
+    base = Path(base_dir) if base_dir is not None else Path.cwd()
+    name = block["notebook"]
+    clone_root = (base / CLONE_DIRNAME).resolve()
+    notebook_path = (clone_root / name).resolve()
+    try:
+        notebook_path.relative_to(clone_root)
+    except ValueError:
+        raise InvokeError(
+            f"declared notebook {name!r} resolves to {notebook_path}, outside "
+            f"the clone at {clone_root}"
+        ) from None
+    if not notebook_path.is_file():
+        raise InvokeError(
+            f"declared notebook {name!r} is not at {notebook_path}; the "
+            "sparse checkout delivered nothing for it"
+        )
+    try:
+        import nbformat
+    except ImportError as exc:
+        raise InvokeError(
+            "cannot execute a notebook: 'nbformat' is not importable in this "
+            "runtime. Declare it in run-config.json's environment.install "
+            f"(--environment-requirement): {exc}"
+        ) from exc
+
+    notebook = nbformat.read(str(notebook_path), as_version=4)
+    kernelspec = (notebook.get("metadata") or {}).get("kernelspec") or {}
+    kernel_name = str(kernelspec.get("name") or DEFAULT_KERNEL_NAME)
+    executed_path = base / f"{EXECUTED_NOTEBOOK_PREFIX}{notebook_path.name}"
+
+    try:
+        client = client_factory(notebook, kernel_name=kernel_name, cwd=base)
+    except ImportError as exc:
+        raise InvokeError(
+            "cannot execute a notebook: 'nbclient' is not importable in this "
+            "runtime. Declare it in run-config.json's environment.install "
+            f"(--environment-requirement): {exc}"
+        ) from exc
+
+    handoff = kernel_environment(clone_root, commit, os.environ)
+    saved = {variable: os.environ.get(variable) for variable in handoff}
+    os.environ.update(handoff)
+    try:
+        client.execute()
+    finally:
+        for variable, previous in saved.items():
+            if previous is None:
+                os.environ.pop(variable, None)
+            else:
+                os.environ[variable] = previous
+        # Written on the failure path too, and that is the point: a
+        # notebook that died halfway is the only record of WHERE it died,
+        # and losing it means paying the quota again to find out.
+        nbformat.write(notebook, str(executed_path))
+
+    return {
+        "notebook": name,
+        "kernel": kernel_name,
+        "executed": str(executed_path),
+        "cells": len(notebook.get("cells") or []),
+    }
+
+
 def invoke(
     run_config: Mapping[str, Any],
     *,
     import_module: Callable[[str], Any] = importlib.import_module,
+    base_dir: str | Path | None = None,
+    client_factory: Callable[..., Any] = _default_notebook_client,
 ) -> Any:
-    """The whole of cell 1: select the block, resolve the callable, call
-    it with its declared kwargs, and return whatever it returns.
+    """The whole of cell 1: select the block, decide which of the two
+    shapes it declares, and run that one.
+
+    A callable block resolves through `importlib` and is called with its
+    declared kwargs, exactly as it always was. A notebook block is
+    executed from the clone and written back executed. `block_kind()`
+    decides, and it refuses a block that is neither or both — this
+    function has no default branch, because the only default available
+    costs the same quota as the right answer.
+
+    `run_config["commit"]` is read here and handed down rather than looked
+    up again lower: this is where the config is, and a pin re-read
+    somewhere else would be a second place that decides which commit a
+    notebook runs against. Read with `.get()` and never `[...]` — a
+    missing pin becomes `execute_notebook()`'s own refusal, which says
+    what could not be handed over, instead of a `KeyError` that says only
+    that a dictionary was missing a key.
     """
     block = select_block(run_config)
+    if block_kind(block) == "notebook":
+        return execute_notebook(block, base_dir,
+                                commit=run_config.get("commit"),
+                                client_factory=client_factory)
     func = resolve_callable(block, import_module=import_module)
     kwargs = dict(block.get("kwargs") or {})
     return func(**kwargs)

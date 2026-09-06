@@ -1549,6 +1549,43 @@ oversight: the fact as computed cannot tell a repository that is not ready apart
 from one that never sends work anywhere. `SKILL.md`'s Output Contract carries the
 argument and states what would change it.
 
+**A reported state that names work publishes the way out of it.** Two of them
+do, beside the fact itself, in the same `{kind, question, command}` shape a
+refusal's own `resolve` carries:
+
+- **`remoteExecution.resolve`** — non-`null` exactly when the ledger reports
+  `drift` or `unreliable`, on `verify` and on `probe` alike, because both read
+  one function. It publishes the QUESTION rather than the command, and the
+  question says why: `remote_cli reconcile` is the act, and two of its four
+  required flags are values this section may not print — a worker id is a
+  service account's username, which is why `workers` beside it is a count, and
+  a backend name is a service name. The `discuss` command it carries does run
+  unedited; paste it, answer it, and the answer lands in the record.
+- **`structure.resolve`** — a list, one entry per gap key (`scaffoldGaps`,
+  `objectGaps`, `harnessGaps`) that names anything, `[]` when the repository is
+  fully materialized. Each entry names the exact `materialize --stage` that
+  writes those files and the exact files it would write. A question again, and
+  again the reason is in it: `--plan` is an approval a human gives, and a
+  published command that generated its own approval would answer the gate
+  rather than pass it; `--seed` is the number the scaffolded experiment draws
+  from, which no skill may pick for a repository.
+
+**`notebookPilot` is the third, and it is a join rather than a fact.**
+`remoteExecution.notebookPilot` asks, per generated job, whether the notebook
+that job would run is one the pilot actually walked. It reads no disk of its
+own: the job's `run.notebook` comes out of the same `run-config.json` its
+`staleness` came from, and the walked set is `pilotCompleteness`'s own. Three
+answers and one shape — `piloted`, `unpiloted`, `not-applicable` — with every
+row carrying `job`, `notebook`, `pilotRelative` and `status` whichever answer it
+got. `unpiloted` means the pilot never opened that file, or that the job's path
+is not one the pilot's vocabulary can express; `not-applicable` means the job
+declares the callable shape and names no notebook, which is a different fact
+from a comparison that came out wrong and is reported as one. `status` is `"ok"`
+or `"unpiloted"` for the whole set, `unpiloted` names the jobs, and `walked`
+names every notebook the pilot opened, so a mismatch can be read without
+re-deriving either side. It gates nothing: read it before offering a campaign,
+and say plainly which notebook is about to be run untested.
+
 **`pilotCompleteness` is a rung, and two of them.** It answers whether the flow
 the target declared has actually finished at pilot: `status: "undeclared"` when
 no `__steps__` entry carries an `advances` ordinal at all (the rule does not

@@ -593,14 +593,53 @@ executable — no test in this suite reaches the network or a real account).
   standalone `validate_run_config()` any future reader can call again;
   `clonePaths` is validated structurally at generation (non-empty, no
   absolute path, no `..`) by `validate_clone_paths()`.
+
+  **A run declares one of two shapes, and a notebook is one of them.**
+  `run` (and `run.smoke`) is a UNION: either a `module`/`function` pair or
+  a `notebook` path, never both and never neither. `jobfolder.
+  run_block_kind()` is the single judge, and it is re-run on every READ,
+  so a job folder that acquired a shapeless or double-shaped block any
+  other way — hand-edited, written by an older generator, copied between
+  machines — is refused at `submit`, the decision point that spends the
+  quota. Declared at the CLI as `--run-notebook`/`--smoke-notebook`
+  (`--run-module` therefore lost `required=True`; the refusal for
+  declaring no shape at all moved into `run_block_kind()`, where both
+  shapes are visible and argparse's own error could not have named the
+  second one).
+
+  **Why the notebook shape exists.** A callable that documents itself as
+  *"exactly what the pilot notebook's own cells run"* is an assertion
+  nothing checks, and it has already drifted: the notebook gained a
+  second pass, the callable did not, and what a pilot validated stopped
+  being what a worker would run while the docstring still claimed it was.
+  A job that names the notebook itself cannot drift from it. **The
+  callable shape stays reachable**, deliberately — a worker asked to
+  settle one question is legitimately a function call, and some entries
+  cannot be named by a `module`/`function` contract at all. This adds a
+  way to send a notebook; it removes nothing.
+
+  **A notebook is an entry to the import cross-check too.** Nothing
+  imports a notebook, so `resolve_clone_paths()`'s module queue can never
+  reach one; `entry_notebooks` seeds it by path instead, parsing the
+  notebook's code cells (`notebook_code_source()`, which drops `%` magic
+  and `!` shell lines — a named transformation, not a silent tolerance:
+  `%run other.ipynb` reaches nobody) and walking every import they make
+  through the identical machinery a module's imports go through. Without
+  it, a notebook importing a package no `--clone-path` declares generated
+  cleanly, pushed, and died in the kernel with `ModuleNotFoundError`
+  after the quota was spent — the failure the module-side cross-check was
+  built to close, left open on the one entry the pilot actually
+  validated. A notebook never becomes a `computed` clone path of its own:
+  it is not a module and maps to no package directory, and whether it is
+  DELIVERED is condition (4)'s question, asked of the pin.
   `runnerTemplate` records each runner asset's path and sha256 as inert
   provenance — deliberately not a drift check; adding one would be a second
   staleness condition, out of bounds for this skill (see design #744
   section 2).
 
-  **The three pin conditions.** Before any of that — before clone paths are
+  **The pin conditions.** Before any of that — before clone paths are
   even resolved, before a byte is written, before any quota is spent — the
-  pin goes through three conditions. They live in ONE function,
+  pin goes through every condition in the table below. They live in ONE function,
   `jobfolder.verify_pin_preconditions()`, and both decision points call it
   and nothing else: `generate-job`, which writes a job folder, and
   `submit`, which spends remote quota. One word differs between the two
@@ -614,7 +653,8 @@ executable — no test in this suite reaches the network or a real account).
 | 1 | `clean-worktree` | The working tree is clean over the declared clone paths — `git status --porcelain`, so an untracked file counts and an ignored one does not. Not a repository, or no commits, refuses too. | `generate-job`, `submit` | Every offending path, and `git add`/`git commit`/`git restore` as the remedy |
 | 2 | `pin-is-head` | The pin is HEAD, or nothing changed between the pin and HEAD under the declared clone paths. `unknown` refuses as firmly as `drift`. | `generate-job`, `submit` | The changed clone paths, the pin and HEAD, and git's own message |
 | 3 | `declared-paths-exist` | Every declared clone path exists at the pin — `git cat-file -e <pin>:<path>`, asked of the pin and never of the working tree. `sparse-checkout` accepts a path the tree does not contain and fetches nothing for it, silently. | `generate-job`, `submit` | Every absent path, and that the remedy is committing them and pinning the commit that carries them |
-| 4 | `pin-published` | The declared remote can serve the pin — `git fetch --dry-run --depth 1` from a scratch repository. | `generate-job`, `submit` | The commit, the remote URL, the missing push addressed to `--repo-ref`, and git's own message |
+| 4 | `declared-notebook-reachable` | Every notebook the run block declares (`run.notebook`, `run.smoke.notebook`) is covered by a declared clone path AND exists at the pin — `git cat-file -e <pin>:<notebook>`. Nothing imports a notebook, so the import cross-check has no representative for it and `sparse-checkout` reports nothing for a path its patterns do not cover. A job declaring no notebook passes through untouched. | `generate-job`, `submit` | Every notebook no clone path covers, every notebook absent at the pin, and the remedy for each |
+| 5 | `pin-published` | The declared remote can serve the pin — `git fetch --dry-run --depth 1` from a scratch repository. | `generate-job`, `submit` | The commit, the remote URL, the missing push addressed to `--repo-ref`, and git's own message |
 
   **Why condition (1) exists, and why it is `status` and not `diff`.**
   `resolve_clone_paths()` walks the WORKING TREE. Without this condition
@@ -752,9 +792,81 @@ executable — no test in this suite reaches the network or a real account).
     detect hardware (`detect_hardware` — `torch` not importable IS
     "hardware missing", with no silent CPU fallback; it also captures
     `archList` and `capability`, described below); write
-    `bootstrap.json`; then run the accelerator gate (`check_accelerator`).
-    Any refusal along that path raises `SystemExit` on the spot, before
-    cell 1 ever gets a chance to run.
+    `bootstrap.json`; then run the notebook-executor gate
+    (`check_notebook_executor`) and the accelerator gate
+    (`check_accelerator`). Any refusal along that path raises `SystemExit`
+    on the spot, before cell 1 ever gets a chance to run.
+  - **The notebook shape, on the worker.** When `run-config.json`
+    declares a notebook, cell 0 adds two things and cell 1 adds one.
+    `verify_notebooks_under_clone()` is the notebook's counterpart to the
+    "pip-installed copy" refusal: a notebook cannot be imported, so the
+    equivalent proof is that the file is where the pinned sparse checkout
+    should have put it — `git sparse-checkout` reports NOTHING for a path
+    its patterns do not cover, so that absence is silent by construction.
+    `check_notebook_executor()` then PROBES rather than assumes: this
+    cell installs only what the target declared in `environment.install`,
+    nothing in this skill can know what a worker image ships, so
+    `nbformat`, `nbclient` and `jupyter_client` are imported and the
+    notebook's own declared kernel is resolved against an installed
+    kernelspec — and a refusal names that same declaration as the remedy.
+    The kernelspec half is not hypothetical: a notebook with no
+    resolvable kernel made the service's own runner refuse before a
+    single cell executed, discovered only after a real push with the
+    quota already gone. Both gates run AFTER `bootstrap.json` is
+    written, for the reason the accelerator gate already does — a refusal
+    whose evidence was never written is unreadable no matter how early it
+    fires.
+  - `runner_invoke.py` executes the notebook out of the clone and writes
+    it back EXECUTED to `<working dir>/executed-<name>.ipynb`. That
+    destination is the whole of "the outputs come back": a fetch
+    materializes the files the worker left in its working directory,
+    which is already how `bootstrap.json` returns, so nothing in the
+    ledger, the adapter seam or `fetch` changes at all. It is written on
+    the failure path too — a notebook that died halfway is the only
+    record of WHERE it died, and losing it means paying the quota again
+    to find out. The kernel is started with the clone's own `src` first
+    on `PYTHONPATH` (`kernel_python_path()`): cell 0's
+    `sys.path.insert()` belongs to the RUNNER process, and the kernel is
+    a separate process that inherits none of it, so without this a
+    notebook importing the target's own package dies with
+    `ModuleNotFoundError` on a worker whose clone is sitting right there.
+  - **The handoff, and the third asset that reads it.** The kernel is
+    started with `kernel_environment()`'s three variables, and that
+    function is the ONE place any of them is decided: `PYTHONPATH` as
+    above, plus `FORGE_CLONE_ROOT` (the clone directory) and
+    `FORGE_CLONE_COMMIT` (the pinned commit). The names are forge-owned
+    and deliberately generic — this is the contract between a runner and
+    the notebook it starts, never a name borrowed from one repository.
+    `assets/notebook_repo_root.py` is the reading side: the FIRST code
+    cell of every notebook a job may run, owned here and copied byte for
+    byte into `proposal-implementation`'s kit, where a forge test binds
+    the two copies. It answers one question — where is the repository this
+    notebook runs against — and every later cell reads what it binds.
+    Measured, and the reason both halves exist: these notebooks locate
+    their repository two directories above the working directory, which is
+    right on a person's own machine and wrong here, because the kernel's
+    working directory is the RUNNER's own and the clone sits one level
+    inside it. Two directories up then names a directory that EXISTS on
+    any worker — the insert succeeds, the wrong tree goes on the path, and
+    the run dies later with a missing module naming a package, never the
+    wrong root.
+    - **Both variables, or neither.** Absent means LOCAL and the cell
+      behaves exactly as it always has, checking nothing. One present
+      without the other REFUSES: that is an environment somebody built and
+      got half right, which is the one case a fallback cannot tell apart
+      from a laptop. Cell 1 refuses the same shape from the other side — a
+      notebook run with no pin to hand over never starts a kernel at all.
+    - **The commit is checked, not trusted.** A root handed over is still
+      a directory nobody proved, so the cell reads the checkout's own
+      `HEAD` (out of `.git` directly — no subprocess, so no git binary has
+      to be on a worker's PATH and no checker of these notebooks has cause
+      to skip the cell every later cell depends on) and refuses a
+      mismatch. This is the path that spends metered quota and a job that
+      runs the wrong commit RUNS: it returns numbers shaped exactly like
+      the right ones. The runner clones and the notebook receives,
+      deliberately — a notebook that cloned would be a SECOND place
+      deciding which commit runs, outside the one function that checks the
+      pin before anything irreversible happens.
 
   **Accelerator contract: declare an architecture list, compare against
   what is installed, refuse only after the evidence is on disk.** A real

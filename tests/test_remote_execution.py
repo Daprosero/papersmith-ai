@@ -155,6 +155,18 @@ RUNNER_INVOKE = importlib.util.module_from_spec(RUNNER_INVOKE_SPEC)
 sys.modules[RUNNER_INVOKE_SPEC.name] = RUNNER_INVOKE
 RUNNER_INVOKE_SPEC.loader.exec_module(RUNNER_INVOKE)
 
+# The third asset: the cell on the READING side of the handoff cell 1
+# makes. Deliberately NOT exec'd here at module scope the way the two
+# above are — its last line is a binding, which is the whole job of a
+# cell whose only product is `ROOT`, and executing it at import time would
+# bind that name against whatever directory the suite happens to be run
+# from. `NotebookRepoRootCellTests` loads it under a working directory and
+# an environment it chose, which is also the only way to drive the binding
+# itself rather than only the functions beneath it.
+NOTEBOOK_REPO_ROOT_SCRIPT = (
+    REPOSITORY_ROOT / ".claude/skills/remote-execution/assets/notebook_repo_root.py"
+)
+
 SHARD_IO_SCRIPT = REPOSITORY_ROOT / ".claude/skills/remote-execution/scripts/shard_io.py"
 SHARD_IO_SPEC = importlib.util.spec_from_file_location(
     "remote_execution_shard_io", SHARD_IO_SCRIPT
@@ -12145,7 +12157,7 @@ class PinIsHeadTests(unittest.TestCase):
         self.assertEqual(
             conditions,
             ["clean-worktree", "pin-is-head", "declared-paths-exist",
-             "pin-published"],
+             "declared-notebook-reachable", "pin-published"],
         )
         self.assertEqual(conditions[-1], "pin-published",
                          "the network condition must be last, whatever else "
@@ -15679,6 +15691,1348 @@ class RunnerInvokeTests(unittest.TestCase):
             self.assertNotIn(leaked, source, leaked)
 
 
+class NotebookRunShapeTests(unittest.TestCase):
+    """`run-config.json`'s `run` block is a UNION of exactly two shapes —
+    a `module`/`function` pair or a `notebook` — and every test here is
+    about the boundary between them.
+
+    The shape exists because a callable that documents itself as "exactly
+    what the pilot notebook's own cells run" is an assertion nothing can
+    check, and it has already drifted: the notebook gained a second pass
+    and the callable did not, so what a pilot validated stopped being what
+    a worker would run while the docstring still claimed otherwise. A job
+    that can name the notebook itself cannot drift from it.
+
+    Every test here has a reachable red: `run_block_kind()`,
+    `validate_notebook_path()` and `declared_notebooks()` did not exist
+    before this change, and `validate_run_config()` required a `module`
+    AND a `function` unconditionally.
+    """
+
+    def test_run_block_kind_names_each_of_the_two_shapes(self) -> None:
+        self.assertEqual(
+            JOBFOLDER.run_block_kind({"notebook": "N/pilot.ipynb"}, where="run"),
+            "notebook",
+        )
+        self.assertEqual(
+            JOBFOLDER.run_block_kind({"module": "m", "function": "f"}, where="run"),
+            "callable",
+        )
+
+    def test_run_block_kind_refuses_a_block_declaring_neither_shape(self) -> None:
+        """The refusal that keeps a shapeless block from being guessed at.
+        Every guess available costs the same quota as the right answer.
+        """
+        for shapeless in ({}, {"kwargs": {"seed": 1}}, {"module": "m"}, {"function": "f"}):
+            with self.assertRaises(JOBFOLDER.JobFolderError) as raised:
+                JOBFOLDER.run_block_kind(shapeless, where="run")
+            self.assertIn("neither", str(raised.exception))
+
+    def test_run_block_kind_refuses_a_block_declaring_both_shapes(self) -> None:
+        """Two declarations of one run, with nothing in the code saying
+        which the worker obeys, is the exact divergence this shape exists
+        to close — so it is refused rather than resolved by precedence.
+        """
+        with self.assertRaises(JOBFOLDER.JobFolderError) as raised:
+            JOBFOLDER.run_block_kind(
+                {"notebook": "N/pilot.ipynb", "module": "m", "function": "f"},
+                where="run",
+            )
+        self.assertIn("BOTH", str(raised.exception))
+
+    def test_a_declared_notebook_must_be_relative_and_name_an_ipynb(self) -> None:
+        for refused in ("/abs/pilot.ipynb", "../pilot.ipynb", "N/pilot.py", "", None, 7):
+            with self.assertRaises(JOBFOLDER.JobFolderError):
+                JOBFOLDER.validate_notebook_path(refused, where="run")
+        self.assertEqual(
+            JOBFOLDER.validate_notebook_path("N/sub/pilot.ipynb", where="run"),
+            "N/sub/pilot.ipynb",
+        )
+
+    def _minimal_config(self, run_block: dict) -> dict:
+        return {
+            "schemaVersion": 1,
+            "product": "FEM-TOLLA",
+            "service": "svc",
+            "jobName": "job",
+            "commit": "a" * 40,
+            "repo": {"url": "https://example.invalid/r.git", "ref": "main"},
+            "clonePaths": ["src/FEM_TOLLA_Benchmark"],
+            "run": run_block,
+            "runnerTemplate": [],
+        }
+
+    def test_validate_run_config_accepts_a_notebook_run(self) -> None:
+        JOBFOLDER.validate_run_config(
+            self._minimal_config({"notebook": "Notebooks/pilot.ipynb"})
+        )
+
+    def test_validate_run_config_refuses_a_shapeless_run_block_on_every_read(self) -> None:
+        """Re-run on every READ, not only at generation: a job folder that
+        acquired a shapeless block any other way — hand-edited, written by
+        an older generator — is refused when `submit` reads it, which is
+        the decision point that spends quota.
+        """
+        with self.assertRaises(JOBFOLDER.JobFolderError):
+            JOBFOLDER.validate_run_config(self._minimal_config({"kwargs": {}}))
+
+    def test_validate_run_config_judges_the_smoke_block_too(self) -> None:
+        with self.assertRaises(JOBFOLDER.JobFolderError) as raised:
+            JOBFOLDER.validate_run_config(
+                self._minimal_config(
+                    {"notebook": "N/pilot.ipynb", "smoke": {"kwargs": {}}}
+                )
+            )
+        self.assertIn("smoke", str(raised.exception))
+
+    def test_build_run_config_writes_a_notebook_block_and_no_kwargs(self) -> None:
+        """A notebook is not a callable, so its block carries no `module`,
+        no `function` and no empty `kwargs` — a key that means nothing is a
+        key a later reader has to decide what to do with.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            asset = Path(tmp) / "asset.py"
+            asset.write_text("# asset\n", encoding="utf-8")
+            run_config = JOBFOLDER.build_run_config(
+                product="FEM-TOLLA", service="svc", job_name="job",
+                commit="a" * 40, repo_url="https://example.invalid/r.git",
+                repo_ref="main", clone_paths=["Notebooks"],
+                run_notebook="Notebooks/pilot.ipynb",
+                bootstrap_asset=asset, invoke_asset=asset,
+            )
+        self.assertEqual(run_config["run"], {"notebook": "Notebooks/pilot.ipynb"})
+
+    def test_build_run_config_refuses_a_notebook_beside_a_module(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            asset = Path(tmp) / "asset.py"
+            asset.write_text("# asset\n", encoding="utf-8")
+            with self.assertRaises(JOBFOLDER.JobFolderError):
+                JOBFOLDER.build_run_config(
+                    product="FEM-TOLLA", service="svc", job_name="job",
+                    commit="a" * 40, repo_url="https://example.invalid/r.git",
+                    repo_ref="main", clone_paths=["Notebooks"],
+                    run_module="m", run_function="f",
+                    run_notebook="Notebooks/pilot.ipynb",
+                    bootstrap_asset=asset, invoke_asset=asset,
+                )
+
+    def test_build_run_config_writes_a_notebook_smoke_block(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            asset = Path(tmp) / "asset.py"
+            asset.write_text("# asset\n", encoding="utf-8")
+            run_config = JOBFOLDER.build_run_config(
+                product="FEM-TOLLA", service="svc", job_name="job",
+                commit="a" * 40, repo_url="https://example.invalid/r.git",
+                repo_ref="main", clone_paths=["Notebooks"],
+                run_notebook="Notebooks/pilot.ipynb",
+                smoke_notebook="Notebooks/rehearsal.ipynb",
+                bootstrap_asset=asset, invoke_asset=asset,
+            )
+        self.assertEqual(
+            run_config["run"]["smoke"], {"notebook": "Notebooks/rehearsal.ipynb"}
+        )
+
+    def test_declared_notebooks_reads_the_run_and_the_smoke_block(self) -> None:
+        self.assertEqual(
+            JOBFOLDER.declared_notebooks(
+                {"run": {"notebook": "b.ipynb", "smoke": {"notebook": "a.ipynb"}}}
+            ),
+            ["a.ipynb", "b.ipynb"],
+        )
+        self.assertEqual(
+            JOBFOLDER.declared_notebooks({"run": {"module": "m", "function": "f"}}), []
+        )
+
+    def test_notebook_code_source_keeps_imports_and_drops_magics(self) -> None:
+        """A magic line cannot carry an import, and one anywhere in a real
+        pilot notebook would make `ast.parse()` raise and turn every such
+        notebook into an `unresolved` refusal.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / f"nb-{os.getpid()}.ipynb"
+            path.write_text(json.dumps({
+                "cells": [
+                    {"cell_type": "markdown", "source": ["# not python\n"]},
+                    {"cell_type": "code", "source": [
+                        "%matplotlib inline\n", "!pip list\n",
+                        "import FEM_TOLLA_Benchmark.harness\n",
+                    ]},
+                ],
+                "metadata": {}, "nbformat": 4, "nbformat_minor": 5,
+            }), encoding="utf-8")
+            source = JOBFOLDER.notebook_code_source(path)
+        self.assertIn("import FEM_TOLLA_Benchmark.harness", source)
+        self.assertNotIn("%matplotlib", source)
+        self.assertNotIn("!pip", source)
+        ast.parse(source)
+
+    def test_notebook_code_source_refuses_a_file_that_is_not_a_notebook(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / f"broken-{os.getpid()}.ipynb"
+            path.write_text("this is not json", encoding="utf-8")
+            with self.assertRaises(JOBFOLDER.JobFolderError):
+                JOBFOLDER.notebook_code_source(path)
+
+
+class NotebookClonePathWalkTests(unittest.TestCase):
+    """`resolve_clone_paths()` walks a declared NOTEBOOK's own imports.
+
+    Nothing imports a notebook, so the module queue can never reach one:
+    without this, a notebook importing a package no `--clone-path`
+    declares generated cleanly, pushed, and died in the kernel with
+    `ModuleNotFoundError` after the quota was spent — the exact failure
+    the module-side cross-check was built to close, left open on the one
+    entry the pilot actually validated.
+
+    Reachable red: `entry_notebooks` did not exist before this change, so
+    a notebook's imports reached this walk through nothing at all.
+    """
+
+    def _target(self, tmp: str) -> Path:
+        target = Path(tmp) / "repo"
+        (target / "src" / "PackageA").mkdir(parents=True)
+        (target / "src" / "PackageA" / "__init__.py").write_text("", encoding="utf-8")
+        (target / "src" / "PackageB").mkdir(parents=True)
+        (target / "src" / "PackageB" / "__init__.py").write_text("", encoding="utf-8")
+        (target / "Notebooks").mkdir(parents=True)
+        return target
+
+    def _write_notebook(self, path: Path, source_lines: list) -> None:
+        path.write_text(json.dumps({
+            "cells": [{"cell_type": "code", "source": source_lines}],
+            "metadata": {}, "nbformat": 4, "nbformat_minor": 5,
+        }), encoding="utf-8")
+
+    def test_a_notebooks_undeclared_import_reaches_computed_not_declared(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = self._target(tmp)
+            self._write_notebook(
+                target / "Notebooks" / "pilot.ipynb", ["import PackageB\n"]
+            )
+            resolution = JOBFOLDER.resolve_clone_paths(
+                target, [], ["src/PackageA", "Notebooks"],
+                ["Notebooks/pilot.ipynb"],
+            )
+        self.assertIn("src/PackageB", resolution["computed"])
+        self.assertEqual(resolution["computedNotDeclared"], ["src/PackageB"])
+
+    def test_a_notebooks_declared_import_leaves_nothing_undeclared(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = self._target(tmp)
+            self._write_notebook(
+                target / "Notebooks" / "pilot.ipynb", ["import PackageA\n"]
+            )
+            resolution = JOBFOLDER.resolve_clone_paths(
+                target, [], ["src/PackageA", "Notebooks"],
+                ["Notebooks/pilot.ipynb"],
+            )
+        self.assertEqual(resolution["computedNotDeclared"], [])
+
+    def test_a_notebook_that_is_absent_becomes_an_unresolved_entry(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = self._target(tmp)
+            resolution = JOBFOLDER.resolve_clone_paths(
+                target, [], ["src/PackageA", "Notebooks"],
+                ["Notebooks/never-written.ipynb"],
+            )
+        self.assertTrue(
+            any("never-written.ipynb" in entry for entry in resolution["unresolved"]),
+            resolution["unresolved"],
+        )
+
+    def test_a_notebook_whose_cells_do_not_parse_becomes_an_unresolved_entry(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = self._target(tmp)
+            self._write_notebook(
+                target / "Notebooks" / "pilot.ipynb", ["def broken(:\n"]
+            )
+            resolution = JOBFOLDER.resolve_clone_paths(
+                target, [], ["src/PackageA", "Notebooks"],
+                ["Notebooks/pilot.ipynb"],
+            )
+        self.assertTrue(
+            any("unparsable" in entry for entry in resolution["unresolved"]),
+            resolution["unresolved"],
+        )
+
+    def test_the_module_walk_is_unchanged_when_no_notebook_is_declared(self) -> None:
+        """The default is empty, and an empty default has to leave the
+        callable shape byte-for-byte where it was.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target = self._target(tmp)
+            (target / "src" / "PackageA" / "entry.py").write_text(
+                "import PackageB\n", encoding="utf-8"
+            )
+            resolution = JOBFOLDER.resolve_clone_paths(
+                target, ["PackageA.entry"], ["src/PackageA"]
+            )
+        self.assertEqual(resolution["computedNotDeclared"], ["src/PackageB"])
+
+
+class NotebookReachabilityConditionTests(unittest.TestCase):
+    """The `declared-notebook-reachable` pin condition, against a real git
+    repository.
+
+    Two facts, not one, and each on its own is a silent kernel death:
+    `git sparse-checkout set` delivers only what the declared clone paths
+    cover and reports NOTHING for anything else, and a declared clone path
+    can exist at the pin while the notebook inside it does not.
+
+    Reachable red: the condition did not exist, and `PIN_CONDITIONS` had
+    four entries.
+    """
+
+    def _git(self, cwd: Path, *args: str) -> subprocess.CompletedProcess:
+        env = dict(os.environ)
+        env["GIT_AUTHOR_NAME"] = env["GIT_COMMITTER_NAME"] = "notebook-reachability-tests"
+        env["GIT_AUTHOR_EMAIL"] = env["GIT_COMMITTER_EMAIL"] = (
+            "notebook-reachability-tests@example.invalid"
+        )
+        return subprocess.run(
+            ["git", *args], cwd=cwd, env=env, capture_output=True, text=True, check=True
+        )
+
+    def _repo(self, tmp: str, *, commit_notebook: bool = True) -> tuple:
+        target = Path(tmp) / "repo"
+        (target / "src" / "PackageA").mkdir(parents=True)
+        (target / "src" / "PackageA" / "__init__.py").write_text("", encoding="utf-8")
+        (target / "Notebooks").mkdir(parents=True)
+        if commit_notebook:
+            (target / "Notebooks" / "pilot.ipynb").write_text(
+                json.dumps({"cells": [], "metadata": {}, "nbformat": 4,
+                            "nbformat_minor": 5}),
+                encoding="utf-8",
+            )
+        self._git(target, "init", "-q")
+        self._git(target, "add", "-A")
+        self._git(target, "commit", "-q", "-m", "initial")
+        return target, self._git(target, "rev-parse", "HEAD").stdout.strip()
+
+    def test_a_notebook_no_clone_path_covers_refuses(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target, commit = self._repo(tmp)
+            with self.assertRaises(JOBFOLDER.JobFolderError) as raised:
+                JOBFOLDER._refuse_unreachable_notebook(
+                    target=target, commit=commit,
+                    clone_paths=["src/PackageA"],
+                    notebooks=["Notebooks/pilot.ipynb"],
+                    decision="generation",
+                )
+        message = str(raised.exception)
+        self.assertIn("not covered by any declared clone path", message)
+        self.assertIn("Notebooks/pilot.ipynb", message)
+
+    def test_a_notebook_absent_at_the_pin_refuses(self) -> None:
+        """Asked of the PIN and never of the working tree: a notebook the
+        operator can see and the pin cannot is exactly what a working-tree
+        check waves through.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target, commit = self._repo(tmp, commit_notebook=False)
+            (target / "Notebooks" / "pilot.ipynb").write_text(
+                json.dumps({"cells": [], "metadata": {}, "nbformat": 4,
+                            "nbformat_minor": 5}),
+                encoding="utf-8",
+            )
+            with self.assertRaises(JOBFOLDER.JobFolderError) as raised:
+                JOBFOLDER._refuse_unreachable_notebook(
+                    target=target, commit=commit,
+                    clone_paths=["src/PackageA", "Notebooks"],
+                    notebooks=["Notebooks/pilot.ipynb"],
+                    decision="submission",
+                )
+        message = str(raised.exception)
+        self.assertIn("do not exist at", message)
+        self.assertIn("submission refuses", message)
+
+    def test_a_covered_and_committed_notebook_passes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target, commit = self._repo(tmp)
+            JOBFOLDER._refuse_unreachable_notebook(
+                target=target, commit=commit,
+                clone_paths=["src/PackageA", "Notebooks"],
+                notebooks=["Notebooks/pilot.ipynb"],
+                decision="generation",
+            )
+
+    def test_a_job_declaring_no_notebook_passes_through_untouched(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target, commit = self._repo(tmp)
+            JOBFOLDER._refuse_unreachable_notebook(
+                target=target, commit=commit,
+                clone_paths=["src/PackageA"], notebooks=[],
+                decision="generation",
+            )
+
+    def test_verify_pin_preconditions_carries_the_notebooks_to_the_condition(self) -> None:
+        """The whole-precondition seam is what both decision points call,
+        so a notebook that reached the condition through only ONE of them
+        would be a gate that is optional in the workflow that spends the
+        quota.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target, commit = self._repo(tmp)
+            with unittest.mock.patch.object(
+                JOBFOLDER, "_verify_commit_reachable", return_value=None
+            ):
+                with self.assertRaises(JOBFOLDER.JobFolderError) as raised:
+                    JOBFOLDER.verify_pin_preconditions(
+                        target=target, commit=commit,
+                        clone_paths=["src/PackageA"],
+                        notebooks=["Notebooks/pilot.ipynb"],
+                        repo_url="https://example.invalid/r.git",
+                        repo_ref="main", decision="generation",
+                    )
+        self.assertIn("not covered by any declared clone path", str(raised.exception))
+
+
+class NotebookBootstrapGateTests(unittest.TestCase):
+    """Cell 0's notebook halves: the arrival proof
+    (`verify_notebooks_under_clone`) and the capability gate
+    (`check_notebook_executor`).
+
+    The capability gate is probed and never assumed. This cell installs
+    only what the target declared, nothing in this skill can know what a
+    worker image ships, and the precedent for guessing is expensive: a
+    notebook with no resolvable kernel made the service's own runner
+    refuse before a single cell executed, discovered only after a real
+    push with the quota already gone.
+
+    Reachable red: none of these functions existed, and
+    `declared_modules()` indexed `run_block["module"]` unconditionally.
+    """
+
+    def _notebook_bytes(self, kernel: str | None = "python3") -> str:
+        metadata = {} if kernel is None else {"kernelspec": {"name": kernel}}
+        return json.dumps({
+            "cells": [], "metadata": metadata, "nbformat": 4, "nbformat_minor": 5,
+        })
+
+    def test_declared_modules_is_empty_for_a_notebook_run(self) -> None:
+        self.assertEqual(
+            RUNNER_BOOTSTRAP.declared_modules({"run": {"notebook": "N/p.ipynb"}}), []
+        )
+
+    def test_declared_notebooks_reads_the_run_and_the_smoke_block(self) -> None:
+        self.assertEqual(
+            RUNNER_BOOTSTRAP.declared_notebooks(
+                {"run": {"notebook": "N/p.ipynb",
+                         "smoke": {"notebook": "N/r.ipynb"}}}
+            ),
+            ["N/p.ipynb", "N/r.ipynb"],
+        )
+
+    def test_bootstrap_validation_refuses_a_run_block_with_neither_shape(self) -> None:
+        with self.assertRaises(RUNNER_BOOTSTRAP.BootstrapError):
+            RUNNER_BOOTSTRAP._validate_run_config({
+                "schemaVersion": 1, "commit": "a" * 40,
+                "repo": {"url": "u", "ref": "main"}, "clonePaths": ["src"],
+                "run": {"kwargs": {}},
+            })
+
+    def test_bootstrap_validation_refuses_a_run_block_with_both_shapes(self) -> None:
+        with self.assertRaises(RUNNER_BOOTSTRAP.BootstrapError):
+            RUNNER_BOOTSTRAP._validate_run_config({
+                "schemaVersion": 1, "commit": "a" * 40,
+                "repo": {"url": "u", "ref": "main"}, "clonePaths": ["src"],
+                "run": {"module": "m", "notebook": "N/p.ipynb"},
+            })
+
+    def test_bootstrap_validation_accepts_a_notebook_only_run_block(self) -> None:
+        RUNNER_BOOTSTRAP._validate_run_config({
+            "schemaVersion": 1, "commit": "a" * 40,
+            "repo": {"url": "u", "ref": "main"}, "clonePaths": ["src"],
+            "run": {"notebook": "N/p.ipynb"},
+        })
+
+    def test_verify_notebooks_under_clone_refuses_what_the_checkout_never_delivered(self) -> None:
+        """`sparse-checkout` reports nothing for a path its patterns do not
+        cover, so this absence is silent by construction.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            clone = Path(tmp) / "clone"
+            clone.mkdir()
+            with self.assertRaises(RUNNER_BOOTSTRAP.BootstrapError) as raised:
+                RUNNER_BOOTSTRAP.verify_notebooks_under_clone(
+                    ["Notebooks/pilot.ipynb"], clone
+                )
+        # The ARRIVAL refusal specifically, not merely "some BootstrapError".
+        # Deleting the `is_file()` check leaves `read_text()` raising an OSError
+        # a few lines later, which this class also reports as "code missing" —
+        # so asserting on that shared prefix alone let the arrival guard be
+        # switched off with the suite still green (mutation G, measured).
+        message = str(raised.exception)
+        self.assertIn("code missing", message)
+        self.assertIn("sparse checkout delivered nothing for it", message)
+
+    def test_verify_notebooks_under_clone_reads_the_kernel_the_notebook_names(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            clone = Path(tmp) / "clone"
+            (clone / "Notebooks").mkdir(parents=True)
+            (clone / "Notebooks" / "pilot.ipynb").write_text(
+                self._notebook_bytes("kernel-under-test"), encoding="utf-8"
+            )
+            verified = RUNNER_BOOTSTRAP.verify_notebooks_under_clone(
+                ["Notebooks/pilot.ipynb"], clone
+            )
+        self.assertEqual(
+            verified["Notebooks/pilot.ipynb"]["kernel"], "kernel-under-test"
+        )
+
+    def test_a_notebook_naming_no_kernel_gets_the_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            clone = Path(tmp) / "clone"
+            (clone / "Notebooks").mkdir(parents=True)
+            (clone / "Notebooks" / "pilot.ipynb").write_text(
+                self._notebook_bytes(None), encoding="utf-8"
+            )
+            verified = RUNNER_BOOTSTRAP.verify_notebooks_under_clone(
+                ["Notebooks/pilot.ipynb"], clone
+            )
+        self.assertEqual(
+            verified["Notebooks/pilot.ipynb"]["kernel"],
+            RUNNER_BOOTSTRAP.DEFAULT_KERNEL_NAME,
+        )
+
+    def test_check_notebook_executor_refuses_when_the_executor_is_absent(self) -> None:
+        """Probed, never assumed — and the refusal names the remedy, which
+        is the target declaring it in `environment.install` like any other
+        dependency.
+        """
+        def refusing_import(name: str):
+            if name == "nbclient":
+                raise ImportError("no nbclient here")
+            return unittest.mock.MagicMock()
+
+        with self.assertRaises(RUNNER_BOOTSTRAP.BootstrapError) as raised:
+            RUNNER_BOOTSTRAP.check_notebook_executor(
+                {"N/p.ipynb": {"kernel": "python3"}},
+                import_module=refusing_import,
+            )
+        message = str(raised.exception)
+        self.assertIn("notebook executor missing", message)
+        self.assertIn("environment.install", message)
+
+    def test_check_notebook_executor_refuses_a_kernel_with_no_kernelspec(self) -> None:
+        """The failure with a real precedent: a notebook whose kernel
+        cannot be resolved makes the runner refuse before a single cell
+        executes, and that was discovered only after a real push.
+        """
+        manager = unittest.mock.MagicMock()
+        manager.get_kernel_spec.side_effect = KeyError("no such kernel")
+        kernelspec_module = unittest.mock.MagicMock()
+        kernelspec_module.KernelSpecManager.return_value = manager
+
+        def fake_import(name: str):
+            if name == "jupyter_client.kernelspec":
+                return kernelspec_module
+            return unittest.mock.MagicMock()
+
+        with self.assertRaises(RUNNER_BOOTSTRAP.BootstrapError) as raised:
+            RUNNER_BOOTSTRAP.check_notebook_executor(
+                {"N/p.ipynb": {"kernel": "kernel-nobody-installed"}},
+                import_module=fake_import,
+            )
+        message = str(raised.exception)
+        self.assertIn("kernel-nobody-installed", message)
+        self.assertIn("no kernelspec", message)
+
+    def test_check_notebook_executor_is_a_no_op_without_a_declared_notebook(self) -> None:
+        def exploding_import(name: str):
+            raise AssertionError(f"nothing may be imported for a callable run: {name}")
+
+        RUNNER_BOOTSTRAP.check_notebook_executor({}, import_module=exploding_import)
+
+
+class NotebookInvokeExecutionTests(unittest.TestCase):
+    """Cell 1's notebook half: read the pinned notebook out of the clone,
+    execute it, and write it back executed into the runner's own working
+    directory — which is what makes its outputs part of what a fetch
+    returns, with nothing added anywhere else in this skill.
+
+    Reachable red: `block_kind()`, `execute_notebook()` and
+    `kernel_python_path()` did not exist, and `invoke()` had no branch but
+    `resolve_callable()`.
+    """
+
+    #: The pin a `run-config.json` would carry, in the shape one really
+    #: wears — a full 40-hex commit, never a placeholder word, so a test
+    #: that claims the value reached the kernel is claiming something a
+    #: hardcoded constant could not accidentally satisfy.
+    PIN = "9f2c1e7a4b6d8035c1a9e4f70d2b8c6a5e310947"
+
+    def _clone_with_notebook(self, base: Path, *, cells=None) -> Path:
+        notebook_dir = base / RUNNER_INVOKE.CLONE_DIRNAME / "Notebooks"
+        notebook_dir.mkdir(parents=True)
+        path = notebook_dir / "pilot.ipynb"
+        path.write_text(json.dumps({
+            "cells": cells if cells is not None else [
+                {"cell_type": "code", "execution_count": None, "metadata": {},
+                 "outputs": [], "source": ["x = 1\n"]},
+            ],
+            "metadata": {"kernelspec": {"name": "kernel-under-test",
+                                        "display_name": "k",
+                                        "language": "python"},
+                         "language_info": {"name": "python"}},
+            "nbformat": 4, "nbformat_minor": 5,
+        }), encoding="utf-8")
+        return path
+
+    def test_block_kind_names_each_shape_and_refuses_the_rest(self) -> None:
+        self.assertEqual(RUNNER_INVOKE.block_kind({"notebook": "n.ipynb"}), "notebook")
+        self.assertEqual(
+            RUNNER_INVOKE.block_kind({"module": "m", "function": "f"}), "callable"
+        )
+        for refused in ({}, {"module": "m"},
+                        {"notebook": "n.ipynb", "module": "m", "function": "f"}):
+            with self.assertRaises(RUNNER_INVOKE.InvokeError):
+                RUNNER_INVOKE.block_kind(refused)
+
+    def test_execute_notebook_writes_the_executed_copy_into_the_working_directory(self) -> None:
+        """Not into the clone: the clone is the pinned input, and the
+        working directory is what a fetch returns.
+        """
+        recorded = {}
+
+        import nbformat.v4
+
+        def factory(notebook, *, kernel_name, cwd):
+            recorded["kernel"] = kernel_name
+            recorded["cwd"] = cwd
+            client = unittest.mock.MagicMock()
+            client.execute.side_effect = lambda: notebook["cells"][0]["outputs"].append(
+                nbformat.v4.new_output("stream", name="stdout", text="ran\n")
+            )
+            return client
+
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            self._clone_with_notebook(base)
+            result = RUNNER_INVOKE.execute_notebook(
+                {"notebook": "Notebooks/pilot.ipynb"}, base,
+                commit=self.PIN, client_factory=factory,
+            )
+            executed = base / "executed-pilot.ipynb"
+            self.assertTrue(executed.is_file(), sorted(p.name for p in base.iterdir()))
+            payload = json.loads(executed.read_text(encoding="utf-8"))
+
+        self.assertEqual(recorded["kernel"], "kernel-under-test")
+        self.assertEqual(recorded["cwd"], base)
+        self.assertEqual(result["notebook"], "Notebooks/pilot.ipynb")
+        self.assertEqual(str(executed), result["executed"])
+        self.assertEqual(
+            payload["cells"][0]["outputs"][0]["text"], ["ran\n"],
+            "the executed copy must carry the outputs, not the pinned blanks",
+        )
+
+    def test_execute_notebook_writes_the_executed_copy_even_when_execution_raises(self) -> None:
+        """A notebook that died halfway is the only record of WHERE it
+        died; losing it means paying the quota again to find out.
+        """
+        def factory(notebook, *, kernel_name, cwd):
+            client = unittest.mock.MagicMock()
+            client.execute.side_effect = RuntimeError("cell 4 exploded")
+            return client
+
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            self._clone_with_notebook(base)
+            with self.assertRaises(RuntimeError):
+                RUNNER_INVOKE.execute_notebook(
+                    {"notebook": "Notebooks/pilot.ipynb"}, base,
+                    commit=self.PIN, client_factory=factory,
+                )
+            self.assertTrue((base / "executed-pilot.ipynb").is_file())
+
+    def test_execute_notebook_refuses_what_the_checkout_never_delivered(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            (base / RUNNER_INVOKE.CLONE_DIRNAME).mkdir()
+            with self.assertRaises(RUNNER_INVOKE.InvokeError) as raised:
+                RUNNER_INVOKE.execute_notebook(
+                    {"notebook": "Notebooks/pilot.ipynb"}, base, commit=self.PIN,
+                    client_factory=lambda *a, **k: unittest.mock.MagicMock(),
+                )
+        self.assertIn("delivered nothing for it", str(raised.exception))
+
+    def test_execute_notebook_refuses_a_notebook_that_escapes_the_clone(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            (base / RUNNER_INVOKE.CLONE_DIRNAME).mkdir()
+            with self.assertRaises(RUNNER_INVOKE.InvokeError) as raised:
+                RUNNER_INVOKE.execute_notebook(
+                    {"notebook": "../escaped.ipynb"}, base, commit=self.PIN,
+                    client_factory=lambda *a, **k: unittest.mock.MagicMock(),
+                )
+        self.assertIn("outside the clone", str(raised.exception))
+
+    def test_kernel_python_path_puts_the_clone_src_first(self) -> None:
+        """Cell 0's `sys.path.insert` belongs to the RUNNER process; the
+        kernel is a separate process that inherits none of it.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            clone = Path(tmp) / "clone"
+            clone.mkdir()
+            computed = RUNNER_INVOKE.kernel_python_path(clone, "/already/here")
+        first, rest = computed.split(os.pathsep, 1)
+        self.assertEqual(first, str((clone / "src").resolve()))
+        self.assertEqual(rest, "/already/here")
+        self.assertEqual(
+            RUNNER_INVOKE.kernel_python_path(clone, None),
+            str((clone / "src").resolve()),
+            "an absent PYTHONPATH must not become an empty leading entry",
+        )
+
+    def test_execute_notebook_puts_the_clone_src_on_the_kernels_python_path(self) -> None:
+        """Measured at the moment the kernel would start, and restored
+        afterward: without it a notebook importing the target's own
+        package dies with `ModuleNotFoundError` on a worker whose clone is
+        sitting right there.
+        """
+        seen = {}
+
+        def factory(notebook, *, kernel_name, cwd):
+            client = unittest.mock.MagicMock()
+            client.execute.side_effect = lambda: seen.update(
+                path=os.environ.get("PYTHONPATH")
+            )
+            return client
+
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            self._clone_with_notebook(base)
+            before = os.environ.get("PYTHONPATH")
+            RUNNER_INVOKE.execute_notebook(
+                {"notebook": "Notebooks/pilot.ipynb"}, base,
+                commit=self.PIN, client_factory=factory,
+            )
+            after = os.environ.get("PYTHONPATH")
+            expected_src = str((base / RUNNER_INVOKE.CLONE_DIRNAME / "src").resolve())
+
+        self.assertIsNotNone(seen.get("path"))
+        self.assertEqual(seen["path"].split(os.pathsep)[0], expected_src)
+        self.assertEqual(after, before, "the runner's own environment is restored")
+
+    def test_invoke_dispatches_a_notebook_block_to_the_notebook_executor(self) -> None:
+        def factory(notebook, *, kernel_name, cwd):
+            return unittest.mock.MagicMock()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            self._clone_with_notebook(base)
+            result = RUNNER_INVOKE.invoke(
+                {"commit": self.PIN, "run": {"notebook": "Notebooks/pilot.ipynb"}},
+                base_dir=base, client_factory=factory,
+            )
+        self.assertEqual(result["notebook"], "Notebooks/pilot.ipynb")
+
+    def test_invoke_refuses_a_selected_block_with_no_shape(self) -> None:
+        with self.assertRaises(RUNNER_INVOKE.InvokeError):
+            RUNNER_INVOKE.invoke({"run": {"kwargs": {"seed": 1}}})
+
+    def test_the_two_runner_assets_agree_on_the_clone_directory_name(self) -> None:
+        """The two assets are two cells of one notebook with no import
+        between them, so each holds this constant on its own. A divergence
+        is a defect the suite catches, never a runtime surprise.
+        """
+        self.assertEqual(
+            RUNNER_INVOKE.CLONE_DIRNAME, RUNNER_BOOTSTRAP.CLONE_DIRNAME
+        )
+        self.assertEqual(RUNNER_INVOKE.SRC_DIRNAME, RUNNER_BOOTSTRAP.SRC_DIRNAME)
+        self.assertEqual(
+            RUNNER_INVOKE.DEFAULT_KERNEL_NAME, RUNNER_BOOTSTRAP.DEFAULT_KERNEL_NAME
+        )
+
+
+class PinnedCheckoutHandoffTests(unittest.TestCase):
+    """What cell 1 tells the kernel it starts, and why it is two facts.
+
+    The defect this closes was measured, not imagined. Under this
+    transport the kernel's working directory is the RUNNER's own and the
+    clone sits one level inside it, so a notebook that locates its
+    repository as "two directories above the working directory" — which is
+    how every one of these notebooks has always located it, correctly, on
+    a person's own machine — names a directory two levels ABOVE the
+    working directory. That directory exists on any worker. The insert
+    succeeds, the wrong tree goes on the path, and the run dies much later
+    with a missing module naming a package. The one fact worth having is
+    the one the failure never mentions.
+
+    So the runner stops leaving it to be worked out: it exports the clone
+    it made and the commit it pinned, through the SAME composition point
+    that already builds the kernel's `PYTHONPATH`. Both, never one — a
+    directory handed over is still a directory nobody proved, and the
+    commit beside it is what lets the reading cell check instead of trust.
+
+    Reachable red: `kernel_environment()` did not exist, `execute_notebook()`
+    took no `commit`, and `invoke()` handed one down to nothing.
+    """
+
+    PIN = "9f2c1e7a4b6d8035c1a9e4f70d2b8c6a5e310947"
+
+    def _clone_with_notebook(self, base: Path) -> Path:
+        notebook_dir = base / RUNNER_INVOKE.CLONE_DIRNAME / "Notebooks"
+        notebook_dir.mkdir(parents=True)
+        path = notebook_dir / "pilot.ipynb"
+        path.write_text(json.dumps({
+            "cells": [{"cell_type": "code", "execution_count": None,
+                       "metadata": {}, "outputs": [], "source": ["x = 1\n"]}],
+            "metadata": {"kernelspec": {"name": "kernel-under-test",
+                                        "display_name": "k",
+                                        "language": "python"},
+                         "language_info": {"name": "python"}},
+            "nbformat": 4, "nbformat_minor": 5,
+        }), encoding="utf-8")
+        return path
+
+    def _environment_at_kernel_start(self, base: Path, commit: str) -> dict:
+        """Everything the kernel would see, sampled at the one instant it
+        would start — not before, not after."""
+        seen: dict = {}
+
+        def factory(notebook, *, kernel_name, cwd):
+            client = unittest.mock.MagicMock()
+            client.execute.side_effect = lambda: seen.update(dict(os.environ))
+            return client
+
+        self._clone_with_notebook(base)
+        RUNNER_INVOKE.execute_notebook(
+            {"notebook": "Notebooks/pilot.ipynb"}, base,
+            commit=commit, client_factory=factory,
+        )
+        return seen
+
+    def test_kernel_environment_carries_the_clone_the_pin_and_the_path(self) -> None:
+        """The composition point, driven directly.
+
+        Each of the three is asserted against a value only that variable
+        can hold: the resolved clone directory, the exact pin, and a
+        `PYTHONPATH` whose first entry is the clone's own `src` with the
+        caller's existing entry still behind it.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            clone = Path(tmp) / RUNNER_INVOKE.CLONE_DIRNAME
+            clone.mkdir()
+            composed = RUNNER_INVOKE.kernel_environment(
+                clone, self.PIN, {"PYTHONPATH": "/already/here"})
+
+        self.assertEqual(composed[RUNNER_INVOKE.CLONE_ROOT_ENV], str(clone.resolve()))
+        self.assertEqual(composed[RUNNER_INVOKE.CLONE_COMMIT_ENV], self.PIN)
+        self.assertEqual(
+            composed["PYTHONPATH"].split(os.pathsep),
+            [str((clone / RUNNER_INVOKE.SRC_DIRNAME).resolve()), "/already/here"],
+            "the worker image's own PYTHONPATH belongs to the worker and must "
+            "survive behind the clone, never be discarded by this handoff",
+        )
+        self.assertEqual(
+            sorted(composed),
+            sorted(["PYTHONPATH", RUNNER_INVOKE.CLONE_ROOT_ENV,
+                    RUNNER_INVOKE.CLONE_COMMIT_ENV]),
+            "the kernel receives exactly what this one function composes; a "
+            "fourth variable set anywhere else is a second place deciding what "
+            "the notebook runs against",
+        )
+
+    def test_the_kernel_receives_the_clone_and_the_pin_together(self) -> None:
+        """Sampled inside `client.execute()`, so this is what the kernel
+        would have, not what a caller intended.
+
+        A weaker guard that exported only the clone directory survives no
+        part of this: the pin is asserted by its own exact value, and it is
+        the pin that lets the reading cell prove the checkout rather than
+        accept it.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            seen = self._environment_at_kernel_start(base, self.PIN)
+            expected_root = str((base / RUNNER_INVOKE.CLONE_DIRNAME).resolve())
+
+        self.assertEqual(seen.get(RUNNER_INVOKE.CLONE_ROOT_ENV), expected_root)
+        self.assertEqual(seen.get(RUNNER_INVOKE.CLONE_COMMIT_ENV), self.PIN)
+
+    def test_the_runners_own_environment_is_left_as_it_was_found(self) -> None:
+        """Both new variables are removed again, and one that was already
+        set is restored to its own value rather than to nothing — the
+        failure a `pop()`-everything restore would pass.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            with unittest.mock.patch.dict(
+                    os.environ,
+                    {RUNNER_INVOKE.CLONE_ROOT_ENV: "/somewhere/else"},
+                    clear=False):
+                self.assertNotIn(RUNNER_INVOKE.CLONE_COMMIT_ENV, os.environ)
+                self._environment_at_kernel_start(base, self.PIN)
+                self.assertEqual(
+                    os.environ.get(RUNNER_INVOKE.CLONE_ROOT_ENV), "/somewhere/else")
+                self.assertNotIn(RUNNER_INVOKE.CLONE_COMMIT_ENV, os.environ)
+
+    def test_a_notebook_run_with_no_pin_refuses_before_the_kernel_starts(self) -> None:
+        """The exporting half of "both or neither", and it refuses rather
+        than exports one.
+
+        Two independent assertions, because either alone could be
+        satisfied by the wrong thing: the client factory is never reached
+        AT ALL — a refusal after the kernel started would already have
+        spent the quota this whole path exists to protect — and the
+        message names both variables, which no other refusal in this file
+        does.
+        """
+        def exploding_factory(*args, **kwargs):
+            raise AssertionError("the kernel must not start without the pin")
+
+        for missing in (None, "", "   ", 40):
+            with tempfile.TemporaryDirectory() as tmp:
+                base = Path(tmp)
+                self._clone_with_notebook(base)
+                with self.assertRaises(RUNNER_INVOKE.InvokeError) as raised:
+                    RUNNER_INVOKE.execute_notebook(
+                        {"notebook": "Notebooks/pilot.ipynb"}, base,
+                        commit=missing, client_factory=exploding_factory,
+                    )
+                message = str(raised.exception)
+                self.assertIn(RUNNER_INVOKE.CLONE_ROOT_ENV, message)
+                self.assertIn(RUNNER_INVOKE.CLONE_COMMIT_ENV, message)
+                self.assertFalse(
+                    (base / "executed-pilot.ipynb").exists(),
+                    "nothing was executed, so nothing may be written back",
+                )
+
+    def test_invoke_hands_down_the_pin_its_own_config_declares(self) -> None:
+        """Read from `run-config.json` at the one place that has it, and
+        carried down — not re-read lower, and not a constant.
+
+        The pin here differs from every other value in this class, so a
+        `commit` threaded from anywhere but this config cannot satisfy it.
+        """
+        other_pin = "0123456789abcdef0123456789abcdef01234567"
+        self.assertNotEqual(other_pin, self.PIN)
+        seen: dict = {}
+
+        def factory(notebook, *, kernel_name, cwd):
+            client = unittest.mock.MagicMock()
+            client.execute.side_effect = lambda: seen.update(dict(os.environ))
+            return client
+
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            self._clone_with_notebook(base)
+            RUNNER_INVOKE.invoke(
+                {"commit": other_pin, "run": {"notebook": "Notebooks/pilot.ipynb"}},
+                base_dir=base, client_factory=factory,
+            )
+
+        self.assertEqual(seen.get(RUNNER_INVOKE.CLONE_COMMIT_ENV), other_pin)
+
+    def test_invoke_refuses_a_notebook_run_whose_config_declares_no_pin(self) -> None:
+        """A missing pin becomes this refusal and never a `KeyError`: the
+        refusal says what could not be handed over, and a `KeyError` says
+        only that a dictionary was missing a key.
+        """
+        def exploding_factory(*args, **kwargs):
+            raise AssertionError("the kernel must not start without the pin")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            self._clone_with_notebook(base)
+            with self.assertRaises(RUNNER_INVOKE.InvokeError) as raised:
+                RUNNER_INVOKE.invoke(
+                    {"run": {"notebook": "Notebooks/pilot.ipynb"}},
+                    base_dir=base, client_factory=exploding_factory,
+                )
+        self.assertIn(RUNNER_INVOKE.CLONE_COMMIT_ENV, str(raised.exception))
+
+    def test_a_callable_run_is_untouched_by_the_handoff(self) -> None:
+        """The other half of the union still needs no pin at all: cell 0
+        already put the clone on the RUNNER's own path, and a callable runs
+        in this very process. Widening the refusal to it would refuse jobs
+        that were never at risk.
+        """
+        module_name = f"handoff_callable_{os.getpid()}"
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, f"{module_name}.py").write_text(
+                "def run(**kwargs):\n"
+                "    return {'ran': 'callable', 'kwargs': kwargs}\n",
+                encoding="utf-8")
+            saved_path = list(sys.path)
+            sys.path.insert(0, tmp)
+            try:
+                self.assertEqual(
+                    RUNNER_INVOKE.invoke(
+                        {"run": {"module": module_name, "function": "run",
+                                 "kwargs": {"seed": 3}}}),
+                    {"ran": "callable", "kwargs": {"seed": 3}},
+                )
+            finally:
+                sys.path[:] = saved_path
+                sys.modules.pop(module_name, None)
+
+
+class NotebookRepoRootCellTests(unittest.TestCase):
+    """`assets/notebook_repo_root.py` — the READING side of the handoff,
+    driven the way a kernel drives it: the whole cell executed, in a
+    working directory and an environment this test chose, with the binding
+    at the bottom included rather than only the functions above it.
+
+    The cell owns exactly one question — where the repository is — and the
+    three shapes of answer it may give: the local layout when nothing was
+    handed over, the declared clone when the handoff is whole and PROVEN,
+    and a refusal otherwise. Every refusal here is a refusal rather than a
+    fallback for one measured reason: the fallback resolves a directory
+    that exists on any worker, so a wrong answer looks exactly like a right
+    one until a module goes missing several cells later.
+
+    Reachable red: this asset did not exist.
+    """
+
+    NOTEBOOK_DIRS = ("Method", "Notebooks")
+
+    def _cell(self, *, cwd: Path, environ: dict) -> dict:
+        """Execute the cell and hand back the names it bound.
+
+        `clear=True`: the point of this class is what the cell does with
+        the two variables, and an inherited one would decide the answer
+        without any test saying so.
+        """
+        source = NOTEBOOK_REPO_ROOT_SCRIPT.read_text(encoding="utf-8")
+        namespace: dict = {"__name__": "notebook_repo_root_cell",
+                           "__file__": str(NOTEBOOK_REPO_ROOT_SCRIPT)}
+        previous = os.getcwd()
+        with unittest.mock.patch.dict(os.environ, environ, clear=True):
+            os.chdir(cwd)
+            try:
+                exec(compile(source, str(NOTEBOOK_REPO_ROOT_SCRIPT), "exec"),
+                     namespace)
+            finally:
+                os.chdir(previous)
+        return namespace
+
+    def _notebook_dir(self, repository: Path) -> Path:
+        """`<repo>/<Name>/Notebooks`, where these notebooks actually sit."""
+        directory = repository.joinpath(*self.NOTEBOOK_DIRS)
+        directory.mkdir(parents=True, exist_ok=True)
+        return directory
+
+    def _git(self, cwd: Path, *args: str) -> str:
+        completed = subprocess.run(
+            ["git", *args], cwd=str(cwd), text=True, capture_output=True,
+            check=True, timeout=60)
+        return completed.stdout.strip()
+
+    def _real_checkout(self, root: Path, *, detached: bool) -> str:
+        """A real repository with a real commit, and its real HEAD sha.
+
+        Built by running git rather than by writing a `.git` directory by
+        hand: a hand-made fixture proves the reader agrees with whatever
+        this test imagined the format to be, which is exactly how a fixture
+        comes to encode the defect as correct.
+        """
+        root.mkdir(parents=True, exist_ok=True)
+        self._git(root, "init", "-q", "-b", "trunk")
+        self._git(root, "config", "user.email", "forge@example.invalid")
+        self._git(root, "config", "user.name", "forge")
+        (root / "README").write_text("pinned\n", encoding="utf-8")
+        self._git(root, "add", "README")
+        self._git(root, "commit", "-q", "--no-gpg-sign", "-m", "pinned")
+        commit = self._git(root, "rev-parse", "HEAD")
+        if detached:
+            self._git(root, "checkout", "-q", "--detach", commit)
+        return commit
+
+    def test_nothing_handed_over_means_local_and_never_a_guess(self) -> None:
+        """A person opening the notebook on their own machine gets exactly
+        what they have always got: the repository two directories above the
+        notebook. Nothing is read, nothing is checked, nothing refuses.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            repository = Path(tmp).resolve() / "repository"
+            here = self._notebook_dir(repository)
+            bound = self._cell(cwd=here, environ={"PATH": os.environ.get("PATH", "")})
+        self.assertEqual(bound["ROOT"], repository)
+
+    def test_the_declared_clone_wins_over_the_layout_the_worker_would_suggest(self) -> None:
+        """The measured defect, encoded as the thing that must NOT happen.
+
+        The working directory here is shaped the way a worker's is: the
+        clone one level inside it, so two directories up names a real,
+        existing directory that is not the repository. Both answers are
+        available and only one is right, which is what makes this stronger
+        than asserting the returned path on its own.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            working = Path(tmp).resolve() / "worker" / "working"
+            working.mkdir(parents=True)
+            clone = working / "clone"
+            commit = self._real_checkout(clone, detached=True)
+            wrong = working.parents[1]
+
+            bound = self._cell(cwd=working, environ={
+                "PATH": os.environ.get("PATH", ""),
+                RUNNER_INVOKE.CLONE_ROOT_ENV: str(clone),
+                RUNNER_INVOKE.CLONE_COMMIT_ENV: commit,
+            })
+
+            self.assertTrue(wrong.is_dir(),
+                            "the wrong answer has to EXIST, or this proves "
+                            "nothing about why the handoff is needed")
+            self.assertEqual(bound["ROOT"], clone)
+            self.assertNotEqual(bound["ROOT"], wrong)
+
+    def test_a_checkout_at_another_commit_is_refused_not_used(self) -> None:
+        """A job that runs the wrong commit RUNS. This is the only place
+        that can notice, and it refuses rather than proceeds.
+        """
+        other = "0123456789abcdef0123456789abcdef01234567"
+        with tempfile.TemporaryDirectory() as tmp:
+            working = Path(tmp).resolve() / "working"
+            working.mkdir(parents=True)
+            clone = working / "clone"
+            commit = self._real_checkout(clone, detached=True)
+            self.assertNotEqual(commit, other)
+            with self.assertRaises(RuntimeError) as raised:
+                self._cell(cwd=working, environ={
+                    "PATH": os.environ.get("PATH", ""),
+                    RUNNER_INVOKE.CLONE_ROOT_ENV: str(clone),
+                    RUNNER_INVOKE.CLONE_COMMIT_ENV: other,
+                })
+        message = str(raised.exception)
+        self.assertIn(commit, message, "the refusal must say what IS checked out")
+        self.assertIn(other, message, "and what was declared")
+
+    def test_half_a_handoff_refuses_in_both_directions(self) -> None:
+        """One variable without the other is an environment somebody built
+        and got half right — the one case a fallback cannot tell apart from
+        a laptop. Both orders, because a guard that only watched one of
+        them would pass this class with the other hole wide open.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            repository = Path(tmp).resolve() / "repository"
+            here = self._notebook_dir(repository)
+            halves = (
+                {RUNNER_INVOKE.CLONE_ROOT_ENV: str(repository)},
+                {RUNNER_INVOKE.CLONE_COMMIT_ENV: "0" * 40},
+            )
+            for half in halves:
+                environ = {"PATH": os.environ.get("PATH", "")}
+                environ.update(half)
+                with self.assertRaises(RuntimeError) as raised:
+                    self._cell(cwd=here, environ=environ)
+                message = str(raised.exception)
+                self.assertIn("half a handoff", message)
+                self.assertIn(RUNNER_INVOKE.CLONE_ROOT_ENV, message)
+                self.assertIn(RUNNER_INVOKE.CLONE_COMMIT_ENV, message)
+
+    def test_a_declared_root_that_is_no_checkout_at_all_is_refused(self) -> None:
+        """Missing, or present with nothing to read: either way there is
+        nothing to check the pin against, and an unproven root is what this
+        cell exists to stop being acceptable. The message must NOT be the
+        mismatch message — a refusal that says "wrong commit" about a
+        directory with no commit sends the reader to the wrong question.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            here = self._notebook_dir(Path(tmp).resolve() / "repository")
+            empty = Path(tmp).resolve() / "empty"
+            empty.mkdir()
+            for declared in (empty, Path(tmp).resolve() / "never-existed"):
+                with self.assertRaises(RuntimeError) as raised:
+                    self._cell(cwd=here, environ={
+                        "PATH": os.environ.get("PATH", ""),
+                        RUNNER_INVOKE.CLONE_ROOT_ENV: str(declared),
+                        RUNNER_INVOKE.CLONE_COMMIT_ENV: "0" * 40,
+                    })
+                message = str(raised.exception)
+                self.assertIn("not a readable checkout", message)
+                self.assertNotIn("is at commit", message)
+
+    def test_head_is_read_through_a_symbolic_ref_and_through_packed_refs(self) -> None:
+        """A pinned clone is detached and `HEAD` holds the raw commit, so
+        the symbolic path is not the one a worker takes. It is resolved
+        anyway, and against a REAL repository in both storage shapes, so
+        that pointing these variables at an ordinary checkout produces an
+        answer rather than a refusal about a file format.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve() / "checkout"
+            commit = self._real_checkout(root, detached=False)
+            namespace = self._cell(
+                cwd=self._notebook_dir(Path(tmp).resolve() / "elsewhere"),
+                environ={"PATH": os.environ.get("PATH", "")})
+            head_commit = namespace["head_commit"]
+
+            loose = root / ".git" / "refs" / "heads" / "trunk"
+            self.assertTrue(loose.is_file(), "the loose ref shape")
+            self.assertEqual(head_commit(root), commit)
+
+            self._git(root, "pack-refs", "--all")
+            self.assertFalse(loose.exists(), "git packed the ref away")
+            self.assertTrue((root / ".git" / "packed-refs").is_file())
+            self.assertEqual(head_commit(root), commit)
+
+    def test_the_cell_spawns_no_process_to_answer_its_one_question(self) -> None:
+        """Not a style preference. This is the FIRST cell and every later
+        cell reads what it binds, so any checker that skips cells which
+        spawn a process — and this forge ships one — would skip the cell
+        that defines the repository and leave every cell after it without
+        one. It also means no git binary has to be on a worker's PATH for
+        a notebook to know which commit it is running.
+        """
+        tree = ast.parse(NOTEBOOK_REPO_ROOT_SCRIPT.read_text(encoding="utf-8"))
+        spawns = [ast.unparse(node.func) for node in ast.walk(tree)
+                  if isinstance(node, ast.Call)
+                  and any(word in ast.unparse(node.func)
+                          for word in ("subprocess", "popen", "system", "exec"))]
+        self.assertEqual(spawns, [], "the cell that binds the repository must "
+                                     "be safe for every checker to run")
+
+    def test_the_doctrine_names_the_variables_the_code_actually_exports(self) -> None:
+        """Prose that outlived its mechanism is the failure this forge keeps
+        finding, and an environment variable name is exactly the kind of
+        fact a document can go on stating after the code stopped agreeing.
+
+        Derived from the constants rather than proof-read: the two names
+        `SKILL.md` prints are read back out of `runner_invoke.py`, so
+        renaming either one without editing the doctrine goes red here.
+        """
+        doctrine = SKILL_MD.read_text(encoding="utf-8")
+        for variable in (RUNNER_INVOKE.CLONE_ROOT_ENV,
+                         RUNNER_INVOKE.CLONE_COMMIT_ENV):
+            self.assertIn(f"`{variable}`", doctrine,
+                          "SKILL.md must name the handoff the code makes")
+        self.assertIn(NOTEBOOK_REPO_ROOT_SCRIPT.name, doctrine,
+                      "and the asset that reads it")
+
+    def test_both_sides_of_the_handoff_spell_the_two_variables_identically(self) -> None:
+        """Two cells of two different notebooks with no import between
+        them, so each holds the names on its own — the same arrangement
+        `CLONE_DIRNAME` already has across the two runner cells, and bound
+        the same way. A divergence here is a handoff that silently becomes
+        no handoff at all, which the reading side would then correctly
+        refuse for a reason nobody could find.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            namespace = self._cell(
+                cwd=self._notebook_dir(Path(tmp).resolve() / "repository"),
+                environ={"PATH": os.environ.get("PATH", "")})
+        self.assertEqual(namespace["CLONE_ROOT_ENV"], RUNNER_INVOKE.CLONE_ROOT_ENV)
+        self.assertEqual(namespace["CLONE_COMMIT_ENV"], RUNNER_INVOKE.CLONE_COMMIT_ENV)
+
+
+class NotebookGenerateJobTests(unittest.TestCase):
+    """`generate-job` end to end for the notebook shape, and the refusal
+    for a caller who declared no shape at all.
+
+    Reachable red: `run_notebook` was not a parameter, and `--run-module`
+    carried `required=True` so argparse refused before any shape was known.
+    """
+
+    FAKE_SERVICE = "notebook-job-fake-service"
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        ADAPTER.register_metadata(
+            cls.FAKE_SERVICE,
+            lambda run_config: ("fake-metadata.json", json.dumps({"ok": True})),
+        )
+
+    def setUp(self) -> None:
+        patcher = unittest.mock.patch.object(
+            JOBFOLDER, "verify_pin_preconditions", return_value=None
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _target(self, tmp: str) -> tuple:
+        target = Path(tmp) / "repo"
+        (target / "src" / "PackageA").mkdir(parents=True)
+        (target / "src" / "PackageA" / "__init__.py").write_text("", encoding="utf-8")
+        (target / "Notebooks").mkdir(parents=True)
+        (target / "Notebooks" / "pilot.ipynb").write_text(json.dumps({
+            "cells": [{"cell_type": "code", "source": ["import PackageA\n"]}],
+            "metadata": {}, "nbformat": 4, "nbformat_minor": 5,
+        }), encoding="utf-8")
+        asset = Path(tmp) / "asset.py"
+        asset.write_text("# asset\n", encoding="utf-8")
+        return target, asset
+
+    def _kwargs(self, target: Path, asset: Path, **overrides) -> dict:
+        kwargs = dict(
+            target=target, service=self.FAKE_SERVICE, job_name="pilot-job",
+            product="FEM-TOLLA", commit="a" * 40,
+            repo_url="https://example.invalid/r.git", repo_ref="main",
+            clone_paths=["src/PackageA", "Notebooks"],
+            bootstrap_asset=asset, invoke_asset=asset,
+        )
+        kwargs.update(overrides)
+        return kwargs
+
+    def test_generate_job_writes_a_notebook_run_block(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target, asset = self._target(tmp)
+            job_dir = JOBFOLDER.generate_job(
+                **self._kwargs(target, asset, run_notebook="Notebooks/pilot.ipynb")
+            )
+            run_config = json.loads(
+                (job_dir / "run-config.json").read_text(encoding="utf-8")
+            )
+        self.assertEqual(run_config["run"], {"notebook": "Notebooks/pilot.ipynb"})
+
+    def test_generate_job_refuses_when_neither_shape_is_declared(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target, asset = self._target(tmp)
+            with self.assertRaises(JOBFOLDER.JobFolderError) as raised:
+                JOBFOLDER.generate_job(**self._kwargs(target, asset))
+        self.assertIn("neither", str(raised.exception))
+
+    def test_generate_job_refuses_a_notebook_beside_a_callable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target, asset = self._target(tmp)
+            with self.assertRaises(JOBFOLDER.JobFolderError) as raised:
+                JOBFOLDER.generate_job(**self._kwargs(
+                    target, asset, run_notebook="Notebooks/pilot.ipynb",
+                    run_module="PackageA", run_function="go",
+                ))
+        self.assertIn("BOTH", str(raised.exception))
+
+    def test_generate_job_refuses_a_notebooks_undeclared_import(self) -> None:
+        """The cross-check reaches the pilot's own notebook, so an import
+        it makes that no clone path declares refuses at generation instead
+        of dying in the kernel with the quota already spent.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target, asset = self._target(tmp)
+            (target / "src" / "PackageB").mkdir(parents=True)
+            (target / "src" / "PackageB" / "__init__.py").write_text("", encoding="utf-8")
+            (target / "Notebooks" / "pilot.ipynb").write_text(json.dumps({
+                "cells": [{"cell_type": "code", "source": ["import PackageB\n"]}],
+                "metadata": {}, "nbformat": 4, "nbformat_minor": 5,
+            }), encoding="utf-8")
+            with self.assertRaises(JOBFOLDER.JobFolderError) as raised:
+                JOBFOLDER.generate_job(**self._kwargs(
+                    target, asset, run_notebook="Notebooks/pilot.ipynb"
+                ))
+        self.assertIn("src/PackageB", str(raised.exception))
+
+    def test_the_callable_shape_is_still_reachable(self) -> None:
+        """This change ADDS a way to send a notebook; a worker asked to
+        settle one question is still legitimately a function call.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target, asset = self._target(tmp)
+            (target / "src" / "PackageA" / "entry.py").write_text(
+                "def go():\n    return 1\n", encoding="utf-8"
+            )
+            job_dir = JOBFOLDER.generate_job(**self._kwargs(
+                target, asset, run_module="PackageA.entry", run_function="go",
+            ))
+            run_config = json.loads(
+                (job_dir / "run-config.json").read_text(encoding="utf-8")
+            )
+        self.assertEqual(run_config["run"]["module"], "PackageA.entry")
+        self.assertEqual(run_config["run"]["function"], "go")
+        self.assertNotIn("notebook", run_config["run"])
+
+
 class ShardIoTests(unittest.TestCase):
     """`shard_io.py` — the generic half of a target repository's shard reader.
 
@@ -16839,6 +18193,7 @@ class TargetVocabularyLeakTests(unittest.TestCase):
         KAGGLE_DRIVER_SCRIPT,
         RUNNER_BOOTSTRAP_SCRIPT,
         RUNNER_INVOKE_SCRIPT,
+        NOTEBOOK_REPO_ROOT_SCRIPT,
         SHARD_IO_SCRIPT,
     )
 
@@ -16850,6 +18205,14 @@ class TargetVocabularyLeakTests(unittest.TestCase):
     def test_no_module_in_the_skill_names_the_target(self) -> None:
         for script in self.MODULE_SCRIPTS:
             self._assert_clean(script)
+
+    def test_module_scripts_covers_the_notebook_repository_cell(self) -> None:
+        """The one asset this change adds, asserted to be under the scan
+        rather than assumed to be — a roster a new shipped file can fall
+        out of is a roster that stops meaning anything the first time it
+        does. Reachable red: the entry did not exist.
+        """
+        self.assertIn(NOTEBOOK_REPO_ROOT_SCRIPT, self.MODULE_SCRIPTS)
 
     def test_module_scripts_still_covers_packer_and_remote_cli(self) -> None:
         """This change edits `packer.py` and `remote_cli.py` and adds no

@@ -43,10 +43,24 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from forge_vocabulary import (  # noqa: E402  (path set above)
     FORGE_SERVICE_VOCABULARY, FORGE_TARGET_DOMAIN_WORDS,
     FORGE_TARGET_PROPER_NOUNS, FORGE_VOCABULARY_FLOOR, DEFINITION_MODULE,
-    leak_pattern, leaks_in, scannable_suite_text, suite_modules)
+    SKILLS_ROOT, is_scannable_text, leak_pattern, leaks_in,
+    repository_ignored, scannable_suite_text, shipped_documents, suite_modules)
 
 SKILL_ROOT = CLI.parent.parent
 KIT = SKILL_ROOT / "assets" / "kit"
+
+#: The cell `remote-execution` OWNS and this kit copies: the one answer to
+#: "where is the repository this notebook runs against". It lives there and
+#: not here because the reason it is not simply `parents[1]` is a fact about
+#: the remote transport — under a runner the kernel's working directory is
+#: the runner's own, the clone sits one level inside it, and two directories
+#: up names a directory that exists on any worker. This skill has no business
+#: knowing that, and two skills owning half a contract each is how everything
+#: that has ever drifted in this forge drifted. Reached by path, exactly the
+#: way `implementation_cli.py` already reaches that skill's `ledger.py`.
+OWNED_REPOSITORY_CELL = (
+    FORGE / ".claude/skills/remote-execution/assets/notebook_repo_root.py"
+)
 PYPROJECT_TEMPLATE = SKILL_ROOT / "assets" / "pyproject.template.toml"
 
 SCAFFOLD_TOKENS = ("{{NAME}}", "{{NAME_LOWER}}", "{{PKG}}", "{{SEED}}", "{{REVISION}}")
@@ -705,9 +719,16 @@ class ProbeStateTests(unittest.TestCase):
         self.assertIn(impl.BENCHMARK_MODULE, text,
                       "the notebook must drive the benchmark, not describe it")
         self.assertIn("subprocess", text, "it has to actually execute something")
-        self.assertIn("parents[1]", text,
-                      "the output path must be anchored to the repository, never a "
-                      "bare ../ that resolves outside it")
+        # Was `parents[1]`, the arithmetic itself. That arithmetic now lives in
+        # the one cell `remote-execution` owns, because on a remote worker it
+        # names a directory two levels above the clone that exists anyway --
+        # so what this asserts is the binding, not the sum. Stronger than the
+        # spelling it replaces: a comment could carry `parents[1]`, and only an
+        # executed statement can carry this.
+        self.assertIn("ROOT = resolve_repository_root()", text,
+                      "the output path must be anchored to the repository the "
+                      "owned cell resolves, never a bare ../ that resolves "
+                      "outside it and never a second answer of the notebook's own")
 
 
 class BackendStateTests(unittest.TestCase):
@@ -5450,7 +5471,12 @@ class RemoteExecutionLedgerSectionTests(unittest.TestCase):
         # The whole of verify, not just the new key: this is the case every
         # existing target is in today, so it is the one that must never crash it.
         self.assertEqual(result["command"], "verify")
-        self.assertEqual(result["remoteExecution"], {"status": "absent"})
+        # `resolve` is spelled on the absent return too, and never omitted
+        # from it: a payload whose shape varies with its state makes every
+        # consumer test for the key before reading it. `None` is what "there
+        # is nothing to do about this" looks like here.
+        self.assertEqual(result["remoteExecution"],
+                         {"status": "absent", "resolve": None})
 
     def test_absent_when_the_skill_is_present_but_nothing_was_ever_sent(self):
         """Absence of data reads the same as absence of the capability: an
@@ -5461,7 +5487,7 @@ class RemoteExecutionLedgerSectionTests(unittest.TestCase):
             target = Path(raw)
             self._minimal_source(target)
             state = impl.remote_execution_state(target, "Method", "Method")
-            self.assertEqual(state, {"status": "absent"})
+            self.assertEqual(state, {"status": "absent", "resolve": None})
 
     def test_drift_when_a_pending_submission_s_source_has_moved(self):
         with tempfile.TemporaryDirectory() as raw:
@@ -5657,7 +5683,14 @@ class RemoteExecutionJobsSectionTests(unittest.TestCase):
         for job in state["jobs"]:
             self.assertEqual(
                 set(job.keys()),
-                {"job", "product", "staleness", "accelerator", "localBudget"})
+                # `notebook` joined the row when `probe` learned to ask
+                # whether the notebook a job would run is one the pilot
+                # walked (`JobNotebookPilotJoinTests`). It is read out of the
+                # same open `run-config.json` the two fields beside it are,
+                # and it is `None` for both jobs here, which declare the
+                # callable shape -- the shape stays one whatever the answer.
+                {"job", "product", "staleness", "accelerator", "localBudget",
+                 "notebook"})
 
     def test_services_is_a_count_never_a_name(self):
         """Mirrors `test_the_section_names_no_service` above, over the
@@ -5950,6 +5983,97 @@ class ForgeVocabularyDefinitionTests(unittest.TestCase):
             f"{self.DEFINITION.name}, so the two can drift apart: {offenders}")
 
 
+#: Where a word on the floor is carried legitimately, and by whose argument.
+#:
+#: The floor is scanned on every file the forge ships. That reach is what this
+#: change bought, and the first thing it bought was a measurement: ten shipped
+#: files across three skills carry a floor word, and every one of them carries
+#: it for a reason that predates this guard. So they are ADMITTED here, one
+#: `path -> {word: reason}` entry at a time, and never by widening or narrowing
+#: the floor itself -- a word on the floor is a leak somebody already found, and
+#: what is in question is the surface, not the membership.
+#:
+#: **Why an admission and not a smaller scan.** Scoping the floor away from
+#: whole skills would leave a real leak into any of their other files unseen.
+#: This is per file AND per word: `ledger.py` may say the service's name in a
+#: comment about the seam and still fails on a target's product name, and a new
+#: file under `remote-execution/` that names the service is red until somebody
+#: writes the sentence saying why. `FORGE_LEXICON`'s own mechanism, one axis
+#: over.
+#:
+#: **Two tests hold it from both sides.** One fails on a hit nobody admitted;
+#: the other fails on an admission whose file no longer carries the word, so an
+#: entry cannot outlive the argument that bought it.
+FORGE_FLOOR_SURFACE_ADMISSIONS: dict[str, dict[str, str]] = {
+    "kaggle-accounts/SKILL.md": {
+        "kaggle": "this skill's entire subject is one hosted service's "
+                  "accounts, named in its own directory name and its doctrine's "
+                  "first sentence; a skill about a service that could not say "
+                  "which service is a skill nobody can use",
+    },
+    "kaggle-accounts/scripts/accounts_cli.py": {
+        "kaggle": "the only script of the skill above, reading and validating "
+                  "that one service's credentials; the word is the subject, "
+                  "not a loan from any research project",
+    },
+    "kaggle-accounts/store/.gitignore": {
+        "kaggle": "one comment saying what the ignored directory holds, in the "
+                  "file that keeps those credentials out of the history",
+    },
+    "proposal-deliberation/profile.ts": {
+        "creda": "the DECLARED domain profile, whose whole job is naming the "
+                 "domain the neutral engine beside it must never know. The "
+                 "forge's own vocabulary module already carves the same "
+                 "exemption for the Node fixtures derived from this file, on "
+                 "exactly this reasoning; the engine itself is scanned and "
+                 "stays clean",
+    },
+    "remote-execution/SKILL.md": {
+        "kaggle": "the doctrine that designates the single adapter allowed to "
+                  "name a service has to name the service it designates, or "
+                  "the designation says nothing",
+        "t4": "the same doctrine, naming the accelerator that adapter can "
+              "request, for the same reason",
+        "transfer": "git's own word for what a fetch moves over the network, "
+                    "in the paragraph about a probe whose budget a real "
+                    "transfer exceeded; ordinary English, named by no target",
+    },
+    "remote-execution/scripts/adapters/kaggle.py": {
+        "kaggle": "the one file in this forge its own doctrine designates as "
+                  "allowed to name a service, which is the seam that keeps "
+                  "every other module service-agnostic",
+        "t4": "the accelerator that adapter requests by name, in the one file "
+              "permitted to know the service offers it",
+        "ceiling": "ordinary English in a comment refusing to assert a bound "
+                   "as a universal per-account or per-service ceiling",
+        "transfer": "ordinary English for a bulk network transfer whose size "
+                    "the remote job decides, which is why its timeout is not "
+                    "the control channel's",
+    },
+    "remote-execution/scripts/adapters/kaggle_driver.py": {
+        "kaggle": "the one file permitted to import that service's own client "
+                  "library, named in the sentence explaining why the library "
+                  "is reached directly rather than through its CLI",
+        "t4": "the accelerator name handed to that client, in the same file "
+              "for the same reason",
+    },
+    "remote-execution/scripts/hooks/refuse_offpath_push.py": {
+        "kaggle": "one sentence pointing at the designated adapter by path, "
+                  "which is how a reader of this hook learns where the seam is",
+    },
+    "remote-execution/scripts/jobfolder.py": {
+        "transfer": "git's own word for what a fetch moves, used throughout "
+                    "the reasoning about a pin probe whose budget a real "
+                    "transfer exceeded; ordinary English, named by no target",
+    },
+    "remote-execution/scripts/ledger.py": {
+        "kaggle": "comments naming the shape of an identity-stable backend by "
+                  "the one example this forge ships an adapter for, in the "
+                  "module that must work for every backend",
+    },
+}
+
+
 class ReportFirstSectionProseTests(unittest.TestCase):
     """The `report-first` section's own examples must stay generic: this is a
     forge for papers, not for one benchmark.
@@ -5965,41 +6089,40 @@ class ReportFirstSectionProseTests(unittest.TestCase):
     SECTION_RE = re.compile(
         r'### `nextStep: "report-first"`.*?(?=\n### |\n## |\Z)', re.DOTALL)
 
-    #: Directories a checkout accumulates and nobody writes prose into.
-    CACHES = ("__pycache__", ".pytest_cache", ".ipynb_checkpoints")
-    #: Suffixes that are not text, so scanning them for words says nothing.
-    BINARY_SUFFIXES = (".pyc", ".pyo", ".png", ".jpg", ".jpeg", ".gif", ".pdf",
-                       ".pth", ".npz", ".npy", ".zip", ".ico")
+    #: What the guarded surface is measured against, and what a hit is reported
+    #: relative to. `SKILL_ROOT` is still this skill's own -- the `report-first`
+    #: section lives in one file -- but the SCAN reaches every skill, so a hit
+    #: has to be named by the path a reader can open.
+    SCAN_ROOT = SKILLS_ROOT
+
+    def scan_root(self, root=None):
+        return self.SCAN_ROOT if root is None else Path(root)
 
     def guarded_documents(self, root=None):
-        """Every surface of the forge a target's vocabulary could leak into.
+        """Every surface of the forge a target's vocabulary could leak into --
+        every shipped file of EVERY skill, derived rather than enumerated.
 
-        `SKILL.md` is what an agent reads, but it is not the only thing a
-        target copies: `references/usage.md` is the worked walkthrough, and
-        `assets/` is the kit a scaffold is literally made of. A leak in a
-        template ships into every repository materialized from it.
+        **What this used to be, and the class it left open.** It reached this
+        one skill's `SKILL.md`, `references/usage.md`, `assets/` and `scripts/`:
+        four names written down here, under one root. Measured the day it was
+        widened, that was twenty-two files of the hundred and twenty-nine the
+        forge ships, and six of its seven skills were scanned by this rule not
+        at all. A shipped asset added under a second skill was outside it, and
+        the repair at the time was to name that one file in that skill's own
+        suite by hand -- the instance closed, the class left open, and the next
+        shipped file falls out of the guard exactly as the last one did.
 
-        `scripts/` is here for a different reason. Nothing copies it, but it is
-        the forge's own code, it is read by anyone extending the skill, and it
-        is edited by every change that touches the checker or the materializer —
-        including this one. A guard whose surface stops at the documents leaves
-        the surface that changes most often unscanned.
+        A directory tuple and a suffix tuple are the same defect wearing two
+        shapes: each holds only what somebody has already met. So neither
+        survives. `shipped_documents` walks whatever is there, drops what the
+        repository itself declares it does not ship, and drops what does not
+        decode as text -- both answers derived, and both stated where the
+        derivation lives rather than restated here.
 
         `root` is overridable so the rule can be proven against a tree built for
         the purpose rather than only against a checkout that happens to be clean.
         """
-        base = self.SKILL_ROOT if root is None else Path(root)
-        documents = [base / "SKILL.md", base / "references" / "usage.md"]
-        for directory in ("assets", "scripts"):
-            for path in sorted((base / directory).rglob("*")):
-                if not path.is_file():
-                    continue
-                if any(part in self.CACHES for part in path.parts):
-                    continue
-                if path.suffix.lower() in self.BINARY_SUFFIXES:
-                    continue
-                documents.append(path)
-        return [path for path in documents if path.is_file()]
+        return shipped_documents(self.scan_root(root) if root is not None else None)
 
     def scannable_text(self, document: Path) -> str:
         """The document, minus the one place a service name is a fact.
@@ -6058,14 +6181,81 @@ class ReportFirstSectionProseTests(unittest.TestCase):
 
         Widened from `SKILL.md` alone to the usage reference and the kit,
         because those are the surfaces a target copies from verbatim and
-        neither had ever been scanned.
+        neither had ever been scanned. Widened again to every shipped file of
+        every skill -- see `guarded_documents` for the class that widening
+        closes, and `FORGE_FLOOR_SURFACE_ADMISSIONS` for what it found.
         """
         for document in self.guarded_documents():
-            with self.subTest(document=str(document.relative_to(self.SKILL_ROOT))):
-                hits = leaks_in(self.scannable_text(document))
+            place = str(document.relative_to(self.scan_root()))
+            with self.subTest(document=place):
+                admitted = set(FORGE_FLOOR_SURFACE_ADMISSIONS.get(place, {}))
+                hits = [word for word in leaks_in(self.scannable_text(document))
+                        if word not in admitted]
                 self.assertEqual(
                     hits, [],
                     f"{hits} is some target's vocabulary, not the forge's")
+
+    def test_every_admission_is_a_word_that_file_still_carries(self):
+        """The other direction, and the half that makes the admissions a
+        measurement instead of an allowlist.
+
+        An admission that no longer fires is a sentence nobody has to defend:
+        it stops describing the file it names, and the next reader takes it for
+        a live argument. Every entry has to be earned on every run, so the day
+        `adapters/kaggle.py` stops naming a hosted service the entry saying it
+        may goes red rather than quietly outliving its reason.
+        """
+        scanned = {str(document.relative_to(self.scan_root())): document
+                   for document in self.guarded_documents()}
+        stale = {}
+        for place, admissions in FORGE_FLOOR_SURFACE_ADMISSIONS.items():
+            document = scanned.get(place)
+            if document is None:
+                stale[place] = "no such shipped file"
+                continue
+            hits = set(leaks_in(self.scannable_text(document)))
+            unused = sorted(set(admissions) - hits)
+            if unused:
+                stale[place] = unused
+        self.assertEqual(
+            stale, {},
+            "an admission names a word its file no longer carries, so it is "
+            "an exemption nobody is defending any more")
+
+    def test_every_admission_costs_an_argument(self):
+        """`FORGE_LEXICON`'s own mechanism, one axis over: a word is admitted
+        on a surface by a sentence a reviewer can disagree with, never by a
+        path appearing in a tuple."""
+        thin = {f"{place}:{word}": reason
+                for place, admissions in FORGE_FLOOR_SURFACE_ADMISSIONS.items()
+                for word, reason in admissions.items()
+                if len(reason.split()) < 4}
+        self.assertEqual(
+            thin, {},
+            "an admission has to say why that file may carry that word")
+
+    def test_the_guard_scans_every_skill_this_forge_ships(self):
+        """The class the old surface left open, measured rather than argued.
+
+        The rule reached one skill: its own. Six of the seven this forge ships
+        were outside it entirely, which is how a shipped asset added under
+        `remote-execution/assets/` was never seen by this guard at all -- and
+        why the repair at the time could only be to name that one file in that
+        skill's own suite by hand.
+
+        Reachable red by construction: it was red until `guarded_documents`
+        stopped naming its own root. Read off the directory rather than
+        asserted against a list of skill names, so a skill added tomorrow is
+        covered without this test being edited.
+        """
+        skills = sorted(directory.name for directory in SKILLS_ROOT.iterdir()
+                        if directory.is_dir())
+        self.assertTrue(skills, "the forge ships no skills, which cannot be")
+        scanned = {str(path.relative_to(self.scan_root())).split("/")[0]
+                   for path in self.guarded_documents()}
+        self.assertEqual(
+            sorted(set(skills) - scanned), [],
+            "these skills ship files this guard never looks at")
 
     def test_the_guard_scans_the_scripts_this_forge_ships(self):
         """The surface that changes most often was the one never scanned.
@@ -6074,14 +6264,17 @@ class ReportFirstSectionProseTests(unittest.TestCase):
         wrong test: it is the forge's own code, read by anyone extending the
         skill and edited by every change that touches the checker or the
         materializer. It had exactly one leak when it was first scanned.
+
+        Asked of every skill's `scripts/` now, not only this one's, and the
+        roster of skills is read off the directory rather than written here.
         """
-        scanned = {str(path.relative_to(self.SKILL_ROOT))
+        scanned = {str(path.relative_to(self.scan_root()))
                    for path in self.guarded_documents()}
-        expected = {str(path.relative_to(self.SKILL_ROOT))
-                    for path in sorted((self.SKILL_ROOT / "scripts").rglob("*"))
-                    if path.is_file()
-                    and not any(part in self.CACHES for part in path.parts)
-                    and path.suffix.lower() not in self.BINARY_SUFFIXES}
+        expected = {str(path.relative_to(self.scan_root()))
+                    for skill in sorted(SKILLS_ROOT.iterdir())
+                    if skill.is_dir()
+                    for path in sorted((skill / "scripts").rglob("*"))
+                    if path.is_file() and is_scannable_text(path)}
         self.assertTrue(expected, "the forge ships no scripts, which cannot be")
         self.assertEqual(sorted(expected - scanned), [])
 
@@ -6091,6 +6284,133 @@ class ReportFirstSectionProseTests(unittest.TestCase):
     #: fixture that respelled a target's word could only be let through by line
     #: number — a list that goes stale on the next edit above it.
     PLANTED = FORGE_VOCABULARY_FLOOR[0]
+
+    def scratch_skills(self):
+        """A skills root with two skills in it, built for the purpose.
+
+        Two and not one, for the reason every planted-leak fixture in this file
+        gives: a rule that reported every file it looked at would be
+        indistinguishable from a rule that reported the file that leaks. Two
+        skills specifically, because the class this guard left open was that
+        the SECOND skill was never looked at at all.
+
+        A real repository, `git init`-ed, because the surface derivation asks
+        git which paths this repository declares it does not ship, and a tree
+        with no history would answer that question by not being asked it.
+        """
+        base = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, base, ignore_errors=True)
+        subprocess.run(["git", "init", "-q", str(base)], check=True,
+                       capture_output=True)
+        (base / ".gitignore").write_text("vendor/\n", encoding="utf-8")
+        for skill in ("skill-one", "skill-two"):
+            (base / skill / "scripts").mkdir(parents=True)
+            (base / skill / "SKILL.md").write_text(
+                "Generic doctrine.\n", encoding="utf-8")
+            (base / skill / "scripts" / "clean.py").write_text(
+                "VALUE = 1\n", encoding="utf-8")
+        return base
+
+    def hits_under(self, base):
+        """What the floor scan reports over `base`, keyed by path."""
+        caught = {}
+        for document in self.guarded_documents(base):
+            found = leaks_in(self.scannable_text(document))
+            if found:
+                caught[str(document.relative_to(base))] = found
+        return caught
+
+    def test_a_leak_into_a_second_skill_is_caught(self):
+        """The class this change closes, and the weaker guard it beats.
+
+        The rule reached one skill: the one whose suite it lives in. A shipped
+        asset added under a second skill was outside it entirely, and the
+        repair at the time was to name that one file in that skill's own suite
+        by hand -- the instance closed, the class untouched, and the next
+        shipped file falls out of the guard exactly as the last one did.
+
+        The weaker guard is the rule as it stood: scan `SKILL.md`,
+        `references/usage.md`, `assets/` and `scripts/` under ONE root. It is
+        green on this tree -- there is no leak under `skill-one` -- and it is
+        green for a reason that has nothing to do with the file that leaks.
+        """
+        base = self.scratch_skills()
+        (base / "skill-two" / "scripts" / "leaky.py").write_text(
+            f"# reached only by the {self.PLANTED}\nVALUE = 2\n",
+            encoding="utf-8")
+
+        self.assertEqual(
+            self.hits_under(base),
+            {"skill-two/scripts/leaky.py": [self.PLANTED]},
+            "a leak in the second skill was not seen, so the guard is still "
+            "scanning the skill it happens to live beside")
+
+    def test_a_leak_in_a_directory_no_list_names_is_caught(self):
+        """The other half of the same class: not only the second SKILL, but
+        the directory nobody enumerated.
+
+        The rule named four places -- `SKILL.md`, `references/usage.md`,
+        `assets/`, `scripts/`. This forge already ships shipped code under
+        `hooks/` and a shipped file under `store/`, and neither was on that
+        list. The weaker guard, named: any rule holding a tuple of directory
+        names is green here, because `paddock-yard` is not in its tuple and
+        never could be.
+        """
+        base = self.scratch_skills()
+        (base / "skill-two" / "paddock-yard").mkdir()
+        (base / "skill-two" / "paddock-yard" / "shipped.py").write_text(
+            f"# reached only by the {self.PLANTED}\nVALUE = 3\n",
+            encoding="utf-8")
+
+        self.assertEqual(
+            self.hits_under(base),
+            {"skill-two/paddock-yard/shipped.py": [self.PLANTED]})
+
+    def test_a_path_the_repository_declares_it_does_not_ship_is_not_scanned(self):
+        """The drop is derived from the repository's own declaration, never
+        from a tuple of cache names here.
+
+        The weaker guard is the tuple this rule used to carry:
+        `__pycache__`, `.pytest_cache`, `.ipynb_checkpoints`. It has no
+        `vendor/` in it and never will, so a vendored dependency's own
+        vocabulary would be scanned as though the forge had written it -- and
+        one skill of this forge really does carry a `.venv/`, fifty-five
+        megabytes of somebody else's words, that no such tuple ever named.
+        """
+        base = self.scratch_skills()
+        vendored = base / "skill-two" / "vendor"
+        vendored.mkdir()
+        (vendored / "third_party.py").write_text(
+            f"# the {self.PLANTED} is somebody else's word here\n",
+            encoding="utf-8")
+
+        self.assertEqual(self.hits_under(base), {})
+        self.assertNotIn(
+            vendored / "third_party.py", self.guarded_documents(base),
+            "a path this repository declares it does not ship was scanned")
+
+    def test_a_file_that_is_not_text_is_dropped_by_decoding_not_by_suffix(self):
+        """A suffix list holds only the extensions somebody has already met.
+
+        The weaker guard is the tuple this rule used to carry: `.pyc`, `.png`,
+        `.pdf` and nine more. It drops a file called `weights.pyc` and keeps a
+        file called `weights.py` that happens to hold bytes no decoder can
+        read -- so the first such file reaches every rule as replacement
+        characters, and a word regex run over that is a verdict nobody can
+        act on. Decoding decides instead, and the fixture is deliberately
+        named with a suffix the old tuple would have KEPT.
+        """
+        base = self.scratch_skills()
+        opaque = base / "skill-two" / "scripts" / "weights.py"
+        opaque.write_bytes(b"# \xff\xfe\x00 not decodable\n")
+        readable = base / "skill-two" / "scripts" / "clean.py"
+
+        documents = self.guarded_documents(base)
+        self.assertIn(readable, documents)
+        self.assertNotIn(
+            opaque, documents,
+            "a file no decoder can read was handed to a word regex, which is "
+            "a suffix tuple deciding what text is")
 
     def caught_in_a_forge_shaped_tree(self, comment):
         """Build the forge's shape, plant `comment` in one script of two, and
@@ -7122,8 +7442,12 @@ class NotebookSealAgreementTests(unittest.TestCase):
         """Whether a cell runs the report's work rather than describing it.
 
         Read as a call, not as a name: `probe.ipynb` imports `subprocess` in the
-        cell that binds `ROOT`, several cells before the one that uses it, and
-        skipping that cell would leave every later cell without a repository.
+        cell that binds `HERE` and the reduction, several cells before the one
+        that uses it, and skipping that cell would leave every later cell
+        without a configuration. The cell that binds `ROOT` is under the same
+        rule for a sharper reason -- it is the FIRST cell, every later cell
+        reads what it binds, and it names no process at all precisely so that
+        no checker of these notebooks ever has cause to skip it.
         """
         return any(isinstance(node, ast.Call)
                    and ast.unparse(node.func) in ("subprocess.run", "pytest.main")
@@ -7197,6 +7521,7 @@ class NotebookSealAgreementTests(unittest.TestCase):
         self.assertEqual(offenders, {},
                          "a kit notebook hashes a tree of its own instead of "
                          "importing the one implementation")
+
 
     def test_the_verification_notebook_imports_the_seal_it_stamps(self):
         """It can, and only because the seal now has a scaffold destination
@@ -7392,6 +7717,96 @@ class NotebookSealAgreementTests(unittest.TestCase):
                    if self.spawns_a_process(ast.parse(source))]
         self.assertEqual(len(harness), 1, "exactly one cell runs the harness")
         self.assertLess(index, harness[0])
+
+
+class OwnedRepositoryCellTests(unittest.TestCase):
+    """Every kit notebook opens with the cell `remote-execution` owns, and
+    none of them answers that question a second time.
+
+    The same argument as the seal one class up, about a different fact.
+    Locating the repository used to be one line inlined in each notebook,
+    and the line was right — on a person's own machine. Under the remote
+    transport the kernel's working directory is the RUNNER's own and the
+    clone sits one level inside it, so "two directories up" names a
+    directory two levels ABOVE the working directory that exists on any
+    worker: the insert succeeds, the wrong tree goes on the path, and the
+    run dies later with a missing module naming a package rather than a
+    root. A second copy of that arithmetic anywhere is a second answer, and
+    the one that is wrong is the one that still runs.
+
+    So there is one cell, it lives in the skill that owns the transport,
+    and this kit carries it byte for byte. A copy nobody compares is a
+    second spelling waiting to drift; these two tests are the comparison.
+
+    Reachable red: the owned cell did not exist and both notebooks inlined
+    their own `parents[1]`.
+    """
+
+    NOTEBOOKS = ("verification.ipynb", "probe.ipynb")
+
+    def loaded(self, notebook):
+        return json.loads((KIT / "nb" / notebook).read_text(encoding="utf-8"))
+
+    def test_every_kit_notebook_opens_with_the_owned_cell_byte_for_byte(self):
+        """Byte for byte, and FIRST. Not "contains it somewhere": every
+        later cell reads what it binds, so a copy sitting below one of its
+        own readers is a notebook that fails on the reader.
+        """
+        owned = OWNED_REPOSITORY_CELL.read_text(encoding="utf-8")
+        self.assertIn("resolve_repository_root", owned,
+                      "the owned cell must be the one that resolves the root, "
+                      "or this test is comparing two unrelated files happily")
+        for notebook in self.NOTEBOOKS:
+            first = self.loaded(notebook)["cells"][0]
+            self.assertEqual(first["cell_type"], "code", notebook)
+            self.assertEqual(
+                "".join(first["source"]), owned,
+                f"{notebook}'s first cell is not the cell "
+                f"{OWNED_REPOSITORY_CELL.name} owns; one of the two has been "
+                "edited on its own and the copies have drifted")
+
+    def test_no_kit_notebook_resolves_the_repository_a_second_time(self):
+        """The drift this is really guarding against: somebody re-adds the
+        old one-liner to a cell further down, both answers exist, and the
+        notebook keeps working on a laptop while the remote run silently
+        uses the wrong one.
+
+        Read as code, never as a substring: `ROOT` is written in comments
+        and inside strings across these notebooks, and a rule that counted
+        those would have to grow exemptions until it said nothing.
+        """
+        offenders = {}
+        for notebook in self.NOTEBOOKS:
+            for index, source in kit_notebook_cells(notebook):
+                if index == 0:
+                    continue
+                for node in ast.walk(ast.parse(source)):
+                    rebinds = (isinstance(node, ast.Assign)
+                               and any(getattr(t, "id", None) == "ROOT"
+                                       for t in node.targets))
+                    walks_up = (isinstance(node, ast.Subscript)
+                                and isinstance(node.value, ast.Attribute)
+                                and node.value.attr == "parents")
+                    if rebinds or walks_up:
+                        offenders.setdefault(notebook, []).append(index)
+                        break
+        self.assertEqual(offenders, {},
+                         "a kit notebook answers 'where is the repository' "
+                         "somewhere other than the one cell that owns it")
+
+    def test_the_doctrine_sends_a_maintainer_to_the_file_that_owns_the_cell(self):
+        """A copy nobody can find the owner of gets edited in place.
+
+        Derived from the path this suite compares against rather than
+        proof-read, so moving or renaming the owned asset goes red here as
+        well as in the comparison above — prose that outlived its mechanism
+        is the failure this forge keeps finding, and a filename is exactly
+        the kind of fact a document goes on stating after the code moved.
+        """
+        doctrine = SKILL_MD.read_text(encoding="utf-8")
+        self.assertIn(OWNED_REPOSITORY_CELL.name, doctrine)
+        self.assertIn("remote-execution", doctrine,
+                      "and say which skill owns it, since it is not this one")
 
 
 class SuiteFailureReachesTheVerdictTests(unittest.TestCase):
@@ -10776,19 +11191,43 @@ FORGE_LEXICON: dict[str, str] = {
                  "invented module in the usage reference's worked walkthrough",
     "attention": "ordinary English about what a report spends of its reader, "
                  "used in three places that describe writing rather than code",
+    "bags": "the plural of the same canonical illustration one entry above: "
+            "the kit explains a metric that predicts per instance against one "
+            "that predicts per bag, and the plural is how it counts them. A "
+            "word-boundary rule reads the two spellings as two words, so "
+            "admitting the singular alone admitted nothing",
     "bag": "the canonical illustration of two incomparable statistical units, "
            "one predicting per instance and the other per bag, which the kit "
            "needs in order to explain when a metric is not applicable",
+    "campaign": "the forge's own word for a full-spread submission: "
+                "`remote_cli submit --unit` runs one, `propose` publishes one, "
+                "and `gate` authorizes one. Named by this forge years before "
+                "any repository put it on a notebook",
+    "conditional": "ordinary English for a step or a block that applies only "
+                   "under a stated condition, used in two skills' doctrine "
+                   "about which report items are conditional on which stage",
+    "contamination": "the auditor's own word for a box that was not empty "
+                     "before a drive wrote into it, in the one function that "
+                     "proves the detector can see it",
     "benchmark": "the central noun of this whole skill: the kit ships "
                  "benchmark.py and every target declares a benchmark package",
     "confidence": "ordinary English about how sure a reading is, used in the "
                   "usage reference's prose and in no code path at all",
     "config": "a universal name for the module that holds settings, shipped by "
               "the kit itself and used by every scaffold this forge writes",
+    "diagnostic": "ordinary English for a fact reported to explain and never "
+                  "to gate, used at three refusal codes that say exactly that "
+                  "of themselves",
     "digest": "the forge's own kit module report_digest.py, which reduces a "
               "report to the numbers a verification can be run against",
     "domain": "an ENVIRONMENT_HINTS entry beside dataset, task and corpus: "
               "generic vocabulary for where data comes from, named by no target",
+    "generator": "the name every pseudo-random source in Python already "
+                 "wears -- `torch.Generator`, `numpy.random.Generator` -- and "
+                 "the kit's own seeded-sampling helper takes one by that name",
+    "global": "the Python statement, and ordinary English for state shared "
+              "across a process, used where two modules explain why they "
+              "refuse to keep any",
     "figures": "one of the two module names rule A allows a worked example to "
                "draw from, because the kit's own declaration already uses it",
     "harness": "probe returns a harnessStatus key and the doctrine says the "
@@ -10802,6 +11241,10 @@ FORGE_LEXICON: dict[str, str] = {
                "note in the kit's benchmark module",
     "local": "ordinary English for a remedy or a path that stays on this "
              "machine, used throughout the doctrine and the checker",
+    "noise": "ordinary English for what a measurement carries besides its "
+             "signal: the kit's own sentence about why one seed is not a "
+             "result, and the doctrine paragraph about a verdict that names a "
+             "winner on every row",
     "models": "generic machine-learning vocabulary and the name of this "
               "repository's own checkpoint directory, which no target owns",
     "objective": "the forge's declared report vocabulary for what a run is "
@@ -10817,6 +11260,17 @@ FORGE_LEXICON: dict[str, str] = {
     "record": "the forge's own evidence vocabulary: `@record` is one of the "
               "four witness kinds `impl_position` recognizes, and the report "
               "contract has declared `records` since before any target did",
+    "results": "the forge's own product category: `PRODUCT_DIRS` scaffolds a "
+               "`Results/` directory into every repository this skill builds, "
+               "and the probe payload has carried a `results` key since before "
+               "any target rendered one",
+    "search": "the forge's own declaration block and its rung: a target "
+              "declares `__benchmark__['search']`, `probe` answers "
+              "`search-first`, and the scale a search declares is what the "
+              "cost forecast is projected from",
+    "sweep": "the forge's own kit module `tests/sweep.py` and the admissibility "
+             "vocabulary around it, shipped into every repository this skill "
+             "scaffolds before any of them names a notebook",
     "report": "the central noun of the report contract this skill exists to "
               "check, appearing in doctrine on nearly every page",
     "steps": "the forge's own declaration surface and its command: a target "
@@ -10832,6 +11286,9 @@ FORGE_LEXICON: dict[str, str] = {
             "a sum the report contract already names generically",
     "training": "ordinary English and generic machine-learning vocabulary: the "
                 "harness owns training and measuring and nothing else",
+    "verification": "the forge's own kit notebook `nb/verification.ipynb`, "
+                   "copied into every repository this skill scaffolds, and the "
+                   "word the whole flow's last act is called by",
     "verdict": "the forge's own kit module verdict.py and the noun the whole "
                "flow ends on, named by the skill long before any target",
     "wiring": "the forge's own vocabulary for how a benchmark reaches prior "
@@ -10925,13 +11382,13 @@ class ForgeVocabularyDerivedGuardTests(unittest.TestCase):
     """
 
     SKILL_ROOT = ReportFirstSectionProseTests.SKILL_ROOT
-    CACHES = ReportFirstSectionProseTests.CACHES
-    BINARY_SUFFIXES = ReportFirstSectionProseTests.BINARY_SUFFIXES
+    SCAN_ROOT = ReportFirstSectionProseTests.SCAN_ROOT
 
     # One definition of the guarded surface, borrowed rather than restated: a
     # second spelling of "what the forge ships" is how the two go out of step.
     guarded_documents = ReportFirstSectionProseTests.guarded_documents
     scannable_text = ReportFirstSectionProseTests.scannable_text
+    scan_root = ReportFirstSectionProseTests.scan_root
 
     TARGETS = FORGE / "implementations"
 
@@ -10945,12 +11402,65 @@ class ForgeVocabularyDerivedGuardTests(unittest.TestCase):
     def split(self, name):
         return [part.lower() for part in self.WORD_SPLIT_RE.split(name) if part]
 
+    #: The forge's own product layout, read from the code that declares it
+    #: rather than respelled here. Which directory a repository keeps its
+    #: notebooks in is a fact this forge DECIDES and writes into every target
+    #: it scaffolds, so the guard can ask for it by name without knowing any
+    #: repository: rename the constant and this walk follows it.
+    NOTEBOOK_CATEGORY = impl.PRODUCT_NOTEBOOKS
+    PRODUCT_CATEGORIES = impl.PRODUCT_DIRS
+
+    def names_in(self, directory):
+        """Every basename `directory` holds, minus what the repository that
+        owns it declares it does not ship.
+
+        No suffix filter anywhere in here. `glob("*.py")` was the reason a
+        target's NOTEBOOK names were invisible to this rule: a module stem
+        counted and a notebook stem did not, so a real repository's notebook
+        name copied into the kit as an example passed every rule this file
+        has. What a file is called is what a file is called, whatever it ends
+        in.
+
+        Dot-prefixed names are skipped, the same rule the target walk already
+        applies to directories: `.gitkeep`, `.gitattributes` and their
+        neighbours are the tooling's placeholders, not names a repository
+        chose for its science, and deriving a denylist from them would object
+        to the forge for words the forge and git wrote there.
+        """
+        if not directory.is_dir():
+            return set()
+        entries = [entry for entry in sorted(directory.iterdir())
+                   if not entry.name.startswith(".")]
+        ignored = repository_ignored(entries, directory)
+        return {word for entry in entries if entry not in ignored
+                for word in self.split(entry.stem if entry.is_file()
+                                       else entry.name)}
+
     def target_words(self, root=None):
         """Every word the targets on disk own, and the targets they came from.
 
-        Names only: directory, package and module basenames. No file under
-        `implementations/` is opened, which is what keeps this read-only and
-        keeps the cost proportional.
+        Names only: directory, package, module and NOTEBOOK basenames. No file
+        under `implementations/` is opened, which is what keeps this read-only
+        and keeps the cost proportional.
+
+        **The measured hole the notebooks fill.** This walked `src/<package>`
+        and matched `*.py`, so a repository's modules were vocabulary and its
+        notebooks were not -- and a notebook name is exactly the kind of name a
+        worked example borrows, because an example of a report is an example of
+        something a notebook rendered. Measured when the walk was widened: the
+        target on disk owned nine notebook-derived words this rule had never
+        seen.
+
+        **Scoped to the product's notebook category, never to the whole tree.**
+        Measured, both ways, before this was written: walking every path a
+        repository carries derives eighty-seven words -- `and`, `runs`,
+        `readme`, `gitignore`, `tools` -- and reports a hundred and four of the
+        forge's own files as leaks, which is a guard nobody can keep. What a
+        repository OWNS is its source identity and the artefacts it renders,
+        and the forge already decides where the second of those lives
+        (`PRODUCT_NOTEBOOKS`), so the walk asks for that directory by a
+        constant it reads out of its own code rather than by a name written
+        here.
 
         Directories beginning with `_` are skipped because that is where this
         suite builds its own throwaway targets; deriving the denylist from them
@@ -10966,15 +11476,23 @@ class ForgeVocabularyDerivedGuardTests(unittest.TestCase):
                 continue
             targets.append(target.name)
             words.update(self.split(target.name))
-            source = target / "src"
-            if not source.is_dir():
-                continue
-            for package in sorted(source.iterdir()):
-                if not package.is_dir() or package.name in self.CACHES:
+            for package in sorted((target / "src").iterdir()
+                                  if (target / "src").is_dir() else []):
+                if not package.is_dir() or package.name.startswith("."):
                     continue
                 words.update(self.split(package.name))
-                for module in sorted(package.glob("*.py")):
-                    words.update(self.split(module.stem))
+                words.update(self.names_in(package))
+            # A product tree is any directory of the target holding one of the
+            # categories this forge scaffolds -- `detect_product_dir`'s own
+            # test, read the same way, so a repository whose product folder is
+            # named after itself needs no second declaration for this rule.
+            for product in sorted(target.iterdir()):
+                if not product.is_dir() or product.name.startswith((".", "_")):
+                    continue
+                if not any((product / category).is_dir()
+                           for category in self.PRODUCT_CATEGORIES):
+                    continue
+                words.update(self.names_in(product / self.NOTEBOOK_CATEGORY))
         return {word for word in words if len(word) >= self.MINIMUM_WORD}, targets
 
     def derived_denylist(self, root=None):
@@ -10990,7 +11508,15 @@ class ForgeVocabularyDerivedGuardTests(unittest.TestCase):
             self.skipTest(
                 "no repository under implementations/, so rule B has no "
                 "vocabulary to derive and this is silence rather than a pass")
-        return sorted(words - set(FORGE_LEXICON))
+        # The floor comes out here, and this is the one place the two rules
+        # are told apart. Rule C scans `FORGE_VOCABULARY_FLOOR` over the same
+        # surface and carries its own per-file admissions for the ten shipped
+        # files that legitimately hold one; leaving those words in this list
+        # too would report each of them twice, under two exemption mechanisms,
+        # and whichever rule ran first would decide which argument a reader
+        # met. Nothing is lost: a floor word is guarded, by the rule that owns
+        # it.
+        return sorted(words - set(FORGE_LEXICON) - set(FORGE_VOCABULARY_FLOOR))
 
     def leaks(self, denylist, root=None):
         found = {}
@@ -10999,8 +11525,7 @@ class ForgeVocabularyDerivedGuardTests(unittest.TestCase):
             hits = [word for word in denylist
                     if re.search(rf"\b{re.escape(word)}\b", text)]
             if hits:
-                base = self.SKILL_ROOT if root is None else Path(root)
-                found[str(document.relative_to(base))] = hits
+                found[str(document.relative_to(self.scan_root(root)))] = hits
         return found
 
     def test_rule_b_finds_no_target_vocabulary_in_the_forge(self):
@@ -11039,7 +11564,7 @@ class ForgeVocabularyDerivedGuardTests(unittest.TestCase):
 
     def example_names(self, root=None):
         """Every dotted name a worked report example spells, with its place."""
-        base = self.SKILL_ROOT if root is None else Path(root)
+        base = self.scan_root(root)
         found = []
         for document in self.guarded_documents(root):
             text = document.read_text(encoding="utf-8", errors="replace")
@@ -11087,11 +11612,22 @@ class ForgeVocabularyDerivedGuardTests(unittest.TestCase):
         """
         base = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, base, ignore_errors=True)
-        package = base / "Nimbus_Benchmark" / "src" / "nimbus_benchmark"
+        target = base / "Nimbus_Benchmark"
+        package = target / "src" / "nimbus_benchmark"
         package.mkdir(parents=True)
         (package / "__init__.py").write_text("", encoding="utf-8")
         (package / "config.py").write_text("VALUE = 1\n", encoding="utf-8")
         (package / "paddock.py").write_text("VALUE = 2\n", encoding="utf-8")
+        # A product tree with the two categories that make it one, so the
+        # notebook half of the walk has somewhere to look. `Nimbus/` is the
+        # product folder; `stirrup` is a second invented word, owned by a
+        # NOTEBOOK and by nothing else in this tree, so a hit on it is
+        # attributable to the notebook walk and to no other half of it.
+        notebooks = target / "Nimbus" / self.NOTEBOOK_CATEGORY
+        notebooks.mkdir(parents=True)
+        (target / "Nimbus" / "Results").mkdir()
+        (notebooks / "stirrup.ipynb").write_text("{}\n", encoding="utf-8")
+        (notebooks / ".gitkeep").write_text("", encoding="utf-8")
         return base
 
     def test_rule_b_names_the_file_and_the_word_a_planted_leak_is_in(self):
@@ -11116,7 +11652,7 @@ class ForgeVocabularyDerivedGuardTests(unittest.TestCase):
 
         denylist = self.derived_denylist(self.scratch_targets())
         self.assertEqual(
-            denylist, ["nimbus", "paddock"],
+            denylist, ["nimbus", "paddock", "stirrup"],
             "the denylist is every word the target owns minus the lexicon, so "
             "`benchmark`, `config` and `init` are subtracted and these are left")
 
@@ -11130,6 +11666,100 @@ class ForgeVocabularyDerivedGuardTests(unittest.TestCase):
             self.leaks(denylist, forge), {"scripts/leaky.py": ["paddock"]},
             "rule B has to name the file and the word, because a guard that "
             "reports only that something is wrong repairs nothing")
+
+    def test_a_notebook_name_is_vocabulary_the_way_a_module_name_is(self):
+        """The hole this walk was widened to close, owned at both ends.
+
+        The derivation read `src/<package>/*.py` and stopped, so a repository's
+        MODULE names were vocabulary and its NOTEBOOK names were not -- and a
+        notebook name is exactly the kind of name a worked example borrows,
+        because an example of a report is an example of something a notebook
+        rendered. Measured on the real target the day this was widened: nine
+        words the rule had never seen, all of them notebook-derived.
+
+        The weaker guard, named: the walk as it stood. `stirrup` is owned by a
+        notebook and by nothing else in this tree -- no directory, no package,
+        no module carries it -- so a rule matching `*.py` under `src/` derives
+        a denylist without it and reports this leak as clean.
+        """
+        targets = self.scratch_targets()
+        words, _ = self.target_words(targets)
+        self.assertIn(
+            "stirrup", words,
+            "a notebook's name is not vocabulary, so a rule matching module "
+            "suffixes is still standing in for one reading names")
+
+        forge = self.scratch_forge()
+        (forge / "scripts" / "leaky.py").write_text(
+            "# copied out of the stirrup notebook\nVALUE = 1\n",
+            encoding="utf-8")
+        (forge / "scripts" / "clean.py").write_text(
+            "VALUE = 2\n", encoding="utf-8")
+        self.assertEqual(
+            self.leaks(self.derived_denylist(targets), forge),
+            {"scripts/leaky.py": ["stirrup"]},
+            "the notebook half has to name the file and the word, exactly as "
+            "the module half already does")
+
+    def test_a_tooling_placeholder_is_not_a_repository_s_vocabulary(self):
+        """`.gitkeep` beside the notebooks is git's word, not the target's.
+
+        Dot-prefixed names are skipped, which is the rule the target walk
+        already applied to directories carried down to the files inside them.
+        Without it the denylist grows `gitkeep`, `gitignore` and
+        `gitattributes` -- and then objects to the forge for words git and the
+        forge itself wrote into the repository, which is a guard accusing its
+        own author.
+        """
+        words, _ = self.target_words(self.scratch_targets())
+        self.assertNotIn("gitkeep", words)
+        self.assertIn("stirrup", words,
+                      "the fixture stopped carrying a notebook at all, so "
+                      "this test is no longer about anything")
+
+    def test_the_walk_reads_the_product_s_notebooks_and_not_the_whole_tree(self):
+        """Scoped, and the measurement that decided the scope.
+
+        Walking every path a repository carries was tried and measured before
+        this was written: eighty-seven derived words -- `and`, `runs`,
+        `readme`, `gitignore`, `tools` -- and a hundred and four of the forge's
+        own shipped files reported as leaks. That is not a stricter guard, it
+        is an unusable one, and the words it adds are incidental filenames
+        rather than anything a repository can be said to OWN.
+
+        So the walk asks for the category this forge itself scaffolds, by the
+        constant that declares it. A file elsewhere in the target is not
+        vocabulary, and this is that boundary held rather than assumed.
+        """
+        targets = self.scratch_targets()
+        stray = targets / "Nimbus_Benchmark" / "haybarn.md"
+        stray.write_text("notes\n", encoding="utf-8")
+        deep = targets / "Nimbus_Benchmark" / "Nimbus" / "Results" / "furlong.json"
+        deep.write_text("{}\n", encoding="utf-8")
+
+        words, _ = self.target_words(targets)
+
+        self.assertIn("stirrup", words)
+        self.assertNotIn("haybarn", words)
+        self.assertNotIn("furlong", words)
+
+    def test_the_notebook_category_is_read_from_the_forge_not_written_here(self):
+        """Which directory a repository keeps its notebooks in is a fact this
+        forge DECIDES and scaffolds into every target it builds, so the walk
+        reads it off the code that declares it.
+
+        Spelled here instead, the guard would go silently quiet the day the
+        constant moved: it would look in a directory nothing writes to, find
+        nothing, and report a clean derivation -- the failure shape this file
+        objects to everywhere else.
+        """
+        self.assertEqual(self.NOTEBOOK_CATEGORY, impl.PRODUCT_NOTEBOOKS)
+        self.assertIn(self.NOTEBOOK_CATEGORY, self.PRODUCT_CATEGORIES)
+        source = inspect.getsource(type(self).target_words)
+        self.assertNotIn(
+            f'"{impl.PRODUCT_NOTEBOOKS}"', source,
+            "the notebook directory is spelled in the walk as well as "
+            "declared by the forge, so the two can drift apart")
 
     def test_rule_a_names_the_file_a_planted_example_leak_is_in(self):
         base = self.scratch_forge()
@@ -12038,6 +12668,808 @@ class ProbeReportedFactsRosterTests(unittest.TestCase):
         section = section[:section.index("\n## ", 1)]
         self.assertIn("`toDiscuss`", section)
 
+class JobNotebookPilotJoinTests(unittest.TestCase):
+    """The join nothing checked: is the notebook a job would run one the
+    pilot actually walked?
+
+    Both halves shipped before this class existed and nothing compared them.
+    A job's `run` block can name a notebook and the worker runs that exact
+    file out of the sparse clone at the pinned commit; `pilotCompleteness`
+    already knows which notebooks the declared flow opened. Between them sat
+    the only question that decides whether a campaign is worth its quota, and
+    no key answered it -- so a repository could show a complete pilot beside a
+    job pointing at a notebook that pilot never touched, and every key read
+    clean.
+
+    **Reported, never refused**, and the tests hold that as hard as they hold
+    the join itself: this sits in front of the expensive door, and a refusal
+    there an operator cannot clear corners them where every alternative costs
+    money.
+
+    The `pilot` operand is never hand-written. Every case below builds it by
+    calling `impl.pilot_completeness_state` for real, because a fixture that
+    spelled that shape by hand would go on passing the day the producer
+    renamed a key -- the join would be reading `None` and this class would be
+    green about a comparison that never happened.
+    """
+
+    #: The declared flow the fixtures below share: one step that renders one
+    #: notebook, declared through `produces` exactly as a target declares it.
+    STEPS = {"draw": {"module": "Method_Benchmark.draw", "function": "main",
+                      "advances": 1, "produces": ["Notebooks/pilot.ipynb"]}}
+
+    def walked_pilot(self, notebook="Method/Notebooks/pilot.ipynb"):
+        """A real `pilot_completeness_state` return whose flow walked
+        `notebook`, built through the producer rather than spelled here.
+
+        The evidence shape is the one `notebooks_state` stamps: a report path
+        relative to the TARGET, whose leading product segment `_pilot_notebooks`
+        drops. Handing this function the target-relative spelling and reading
+        the product-relative one back out is itself the proof that the two
+        vocabularies are what this class says they are.
+        """
+        pilot = impl.pilot_completeness_state(
+            self.STEPS, [],
+            {"notebooks": {"reports": [{"notebook": notebook,
+                                        "status": "executed",
+                                        "sourcesMatch": True}]},
+             "stepVerdicts": {}})
+        self.assertEqual(
+            [row["notebooks"] for row in pilot["steps"]],
+            [["Notebooks/pilot.ipynb"]],
+            "the producer no longer reports the notebook this class joins "
+            "against, so every case below would be comparing against nothing")
+        return pilot
+
+    def empty_pilot(self):
+        """A real return for a target that declared no flow at all."""
+        pilot = impl.pilot_completeness_state({}, [], {})
+        self.assertEqual(pilot["status"], "undeclared")
+        return pilot
+
+    @staticmethod
+    def job(name="job", product="Method", notebook=None):
+        """One row in the shape `remote_execution_jobs_state` builds."""
+        return {"job": name, "product": product, "notebook": notebook,
+                "staleness": {"status": "fresh"}, "accelerator": None,
+                "localBudget": None}
+
+    # --- the three states ---------------------------------------------------
+
+    def test_a_job_running_a_notebook_the_pilot_walked_reads_piloted(self):
+        """The state a weaker guard never reaches.
+
+        A class that only ever asserted the mismatch case would stay green
+        with the vocabulary join deleted outright -- compare the job's
+        repository-relative path against the pilot's product-relative set and
+        every job reads `unpiloted`, mismatches included. So the passing
+        direction is asserted first, and it is asserted with the exact
+        `pilotRelative` the join computed, not merely with the verdict.
+        """
+        state = impl.job_notebook_pilot_state(
+            [self.job(notebook="Method/Notebooks/pilot.ipynb")],
+            self.walked_pilot())
+
+        self.assertEqual(state["status"], "ok")
+        self.assertEqual(state["unpiloted"], [])
+        self.assertEqual(state["walked"], ["Notebooks/pilot.ipynb"])
+        self.assertEqual(state["jobs"], [{
+            "job": "job", "notebook": "Method/Notebooks/pilot.ipynb",
+            "pilotRelative": "Notebooks/pilot.ipynb", "status": "piloted"}])
+
+    def test_a_job_running_a_notebook_the_pilot_never_opened_reads_unpiloted(self):
+        """The measured defect, made a red: a complete-looking flow beside a
+        job pointing somewhere the flow never went."""
+        state = impl.job_notebook_pilot_state(
+            [self.job(notebook="Method/Notebooks/other.ipynb")],
+            self.walked_pilot())
+
+        self.assertEqual(state["status"], "unpiloted")
+        self.assertEqual(state["unpiloted"], ["job"])
+        self.assertEqual(state["jobs"], [{
+            "job": "job", "notebook": "Method/Notebooks/other.ipynb",
+            "pilotRelative": "Notebooks/other.ipynb", "status": "unpiloted"}])
+
+    def test_a_job_declaring_no_notebook_reads_not_applicable(self):
+        """A function-shaped job carries nothing to compare, and that is a
+        different fact from a comparison that came out wrong.
+
+        Folded together the two are indistinguishable off the payload, which
+        is the reading this state exists to stop: a legitimate callable job
+        would be accused of a mismatch it cannot have, in front of the one
+        door where a refusal costs the operator money to clear.
+        """
+        state = impl.job_notebook_pilot_state(
+            [self.job()], self.walked_pilot())
+
+        self.assertEqual(state["status"], "ok")
+        self.assertEqual(state["unpiloted"], [])
+        self.assertEqual(state["jobs"], [{
+            "job": "job", "notebook": None, "pilotRelative": None,
+            "status": "not-applicable"}])
+
+    def test_the_three_states_carry_one_shape(self):
+        """Every row carries all four keys whichever answer it got.
+
+        A payload whose shape varies with its verdict makes each consumer test
+        for a key before reading it, and the one that forgets reads `None` and
+        calls it "not applicable" -- which is precisely the conflation the
+        third state exists to prevent.
+        """
+        state = impl.job_notebook_pilot_state(
+            [self.job("piloted", notebook="Method/Notebooks/pilot.ipynb"),
+             self.job("mismatched", notebook="Method/Notebooks/other.ipynb"),
+             self.job("callable")],
+            self.walked_pilot())
+
+        self.assertEqual([row["status"] for row in state["jobs"]],
+                         ["piloted", "unpiloted", "not-applicable"])
+        shapes = {tuple(sorted(row)) for row in state["jobs"]}
+        self.assertEqual(
+            shapes,
+            {("job", "notebook", "pilotRelative", "status")},
+            "a row's key set changes with its answer, so a reader has to know "
+            "the verdict before they can read the row that carries it")
+
+    def test_every_reported_status_is_one_the_roster_names(self):
+        """The roster is the closed set, so a fourth answer invented at a
+        branch has somewhere to go red."""
+        state = impl.job_notebook_pilot_state(
+            [self.job("a", notebook="Method/Notebooks/pilot.ipynb"),
+             self.job("b", notebook="Method/Notebooks/other.ipynb"),
+             self.job("c")],
+            self.walked_pilot())
+
+        self.assertEqual(
+            sorted({row["status"] for row in state["jobs"]}),
+            sorted(impl.JOB_NOTEBOOK_PILOT_STATUSES))
+
+    # --- the vocabulary join ------------------------------------------------
+
+    def test_the_product_prefix_is_stripped_segment_wise_never_by_prefix(self):
+        """The mutation this join has to survive, and the weaker guard it
+        beats.
+
+        A job's `run.notebook` is repository-relative; the pilot's notebooks
+        are product-relative. Stripping the product with
+        `notebook.startswith(product)` passes every case where the two names
+        differ -- including the passing case above -- and then reports
+        `Method_Benchmark/Notebooks/pilot.ipynb` as a notebook the product
+        `Method` piloted, because after a prefix strip its tail is
+        byte-identical to the walked one. That is a FALSE `piloted` in front
+        of the expensive door: the operator is told the artefact was executed
+        and read here, and it was not.
+
+        A guard testing only `Method/Notebooks/pilot.ipynb` survives that
+        mutation intact. This one does not.
+        """
+        self.assertEqual(
+            impl._product_relative_notebook(
+                "Method_Benchmark/Notebooks/pilot.ipynb", "Method"),
+            None,
+            "a product named `Method` swallowed a path under "
+            "`Method_Benchmark/`, so a prefix comparison is standing in for "
+            "a segment-wise one")
+        self.assertEqual(
+            impl._product_relative_notebook(
+                "Method/Notebooks/pilot.ipynb", "Method"),
+            "Notebooks/pilot.ipynb")
+
+    def test_a_sibling_product_s_notebook_is_never_read_as_piloted(self):
+        """The same mutation, read at the verdict rather than at the helper --
+        because the helper is where it is fixed and the payload is where it is
+        believed."""
+        state = impl.job_notebook_pilot_state(
+            [self.job(notebook="Method_Benchmark/Notebooks/pilot.ipynb")],
+            self.walked_pilot())
+
+        self.assertEqual(state["jobs"][0]["status"], "unpiloted")
+        self.assertIsNone(state["jobs"][0]["pilotRelative"])
+        self.assertEqual(state["unpiloted"], ["job"])
+
+    def test_a_path_the_pilot_s_vocabulary_cannot_express_is_never_a_match(self):
+        """`pilotRelative: null` is not a pass. A notebook sitting outside the
+        product, or a job naming no product at all, is a file nothing here has
+        run -- and reading an untranslatable path as "close enough" would be a
+        silent `piloted` on exactly the case nobody checked.
+        """
+        outside = impl.job_notebook_pilot_state(
+            [self.job(notebook="Notebooks/pilot.ipynb")], self.walked_pilot())
+        self.assertEqual(outside["jobs"][0],
+                         {"job": "job", "notebook": "Notebooks/pilot.ipynb",
+                          "pilotRelative": None, "status": "unpiloted"})
+
+        unnamed = impl.job_notebook_pilot_state(
+            [self.job(product=None, notebook="Method/Notebooks/pilot.ipynb")],
+            self.walked_pilot())
+        self.assertEqual(unnamed["jobs"][0]["status"], "unpiloted")
+
+    def test_a_flow_that_declared_nothing_leaves_every_notebook_job_unpiloted(self):
+        """A target with no `__steps__` walked nothing, so a job that names a
+        notebook names one nothing here ran. Silence would be the other
+        reading, and it is the one that costs quota.
+        """
+        state = impl.job_notebook_pilot_state(
+            [self.job(notebook="Method/Notebooks/pilot.ipynb"), self.job("two")],
+            self.empty_pilot())
+
+        self.assertEqual(state["walked"], [])
+        self.assertEqual(state["unpiloted"], ["job"])
+        self.assertEqual([row["status"] for row in state["jobs"]],
+                         ["unpiloted", "not-applicable"])
+
+    def test_no_job_at_all_is_ok_and_still_carries_every_key(self):
+        state = impl.job_notebook_pilot_state([], self.walked_pilot())
+        self.assertEqual(
+            sorted(state),
+            ["jobs", "note", "status", "unpiloted", "walked"])
+        self.assertEqual(state["status"], "ok")
+        self.assertEqual(state["jobs"], [])
+
+    # --- what it reads out of the other skill, and what it does not ---------
+
+    def test_the_normal_run_s_notebook_is_read_and_the_rehearsal_s_is_not(self):
+        """`declared_notebooks()` in `remote-execution` unions `run.notebook`
+        with `run.smoke.notebook`, which is right for the question it answers
+        (which files must arrive in the checkout) and wrong for this one.
+
+        Reading through it would report a rehearsal's artefact as the thing a
+        campaign sends. The weaker guard -- asserting only that a notebook
+        comes back for a normal run block -- survives that substitution
+        completely.
+        """
+        config = {"run": {"notebook": "Method/Notebooks/pilot.ipynb",
+                          "smoke": {"notebook": "Method/Notebooks/smoke.ipynb"}}}
+        self.assertEqual(impl._run_block_notebook(config),
+                         "Method/Notebooks/pilot.ipynb")
+
+        rehearsal_only = {"run": {"module": "Method_Benchmark.wiring",
+                                  "function": "main",
+                                  "smoke": {"notebook": "Method/Notebooks/smoke.ipynb"}}}
+        self.assertIsNone(
+            impl._run_block_notebook(rehearsal_only),
+            "a job whose only notebook is its rehearsal's was reported as "
+            "running one, so a smoke artefact is standing in for the "
+            "campaign's")
+
+    def test_a_malformed_run_block_reports_nothing_and_refuses_nothing(self):
+        """This is a reporting path. `jobfolder.validate_run_config()` already
+        refuses a malformed block at the one place it guards an act, and
+        raising again here would turn a read-only report into a second gate on
+        somebody else's rule.
+        """
+        for config in ({}, {"run": None}, {"run": []}, {"run": {}},
+                       {"run": {"notebook": ""}}, {"run": {"notebook": 7}},
+                       {"run": {"notebook": "   "}}):
+            with self.subTest(config=config):
+                self.assertIsNone(impl._run_block_notebook(config))
+
+    def test_the_remote_execution_run_block_roster_still_names_the_notebook_shape(self):
+        """The join is only meaningful while the other skill still admits a
+        notebook-shaped run at all. Read off that skill's own roster rather
+        than asserted here, so the day it stops this class says why instead of
+        going quietly green on a state nothing can produce.
+        """
+        jobfolder = FORGE / ".claude/skills/remote-execution/scripts/jobfolder.py"
+        source = jobfolder.read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        kinds = None
+        for node in tree.body:
+            if isinstance(node, ast.Assign) and any(
+                    isinstance(t, ast.Name) and t.id == "RUN_BLOCK_KINDS"
+                    for t in node.targets):
+                kinds = [element.value for element in node.value.elts]
+        self.assertEqual(
+            sorted(kinds or []), ["callable", "notebook"],
+            "the run block no longer offers exactly the two shapes this join "
+            "reads, so `not-applicable` and `unpiloted` no longer partition "
+            "what a job can declare")
+
+    # --- the payload, driven through the real command -----------------------
+
+    # One definition of "a target the ladder answers `benchmark` for",
+    # borrowed rather than restated -- the idiom this file already uses for
+    # `guarded_documents`. A second copy of that fixture would drift from the
+    # one whose reachability is already proven, and a target answering some
+    # other rung would never reach the branch this class is about.
+    DECLARATION = ProbeReportedFactsRosterTests.DECLARATION
+    WIRING = ProbeReportedFactsRosterTests.WIRING
+    TABLES = ProbeReportedFactsRosterTests.TABLES
+    build_target = ProbeReportedFactsRosterTests.build_target
+    probe = ProbeReportedFactsRosterTests.probe
+
+    def write_notebook_job(self, box, commit, notebook):
+        job_dir = box / "tools" / "service" / "notebook-job"
+        job_dir.mkdir(parents=True)
+        (job_dir / "run-config.json").write_text(json.dumps({
+            "schemaVersion": 1,
+            "product": "Method",
+            "service": "service",
+            "jobName": "notebook-job",
+            "commit": commit,
+            "repo": {"url": "https://example.invalid/toy.git", "ref": "main"},
+            "clonePaths": ["src", "Method/Notebooks"],
+            "run": {"notebook": notebook},
+            "runnerTemplate": {},
+        }), encoding="utf-8")
+
+    def test_probe_publishes_the_join_over_a_real_job_folder(self):
+        """The key is wired, driven end to end.
+
+        Every case above is a pure-function call, and all of them stay green
+        if `cmd_probe` never puts the answer in its payload at all -- the
+        weaker guard, named. This runs the real command over a real job folder
+        and reads the verdict back out of the JSON an operator sees.
+
+        The fixture is borrowed from `ProbeReportedFactsRosterTests`, which
+        already reaches the run offer with every earlier rung satisfied: a
+        target that answered some other rung would never exercise the branch
+        this class is about.
+        """
+        box, head = self.build_target("nbjoin")
+        self.write_notebook_job(box, head, "Method/Notebooks/never_run.ipynb")
+
+        payload = self.probe(box)["remoteExecution"]
+
+        self.assertEqual(
+            [job["notebook"] for job in payload["jobs"]],
+            ["Method/Notebooks/never_run.ipynb"],
+            "the job row no longer carries the notebook its run block "
+            "declares, so the join has nothing to read")
+        self.assertEqual(payload["notebookPilot"]["status"], "unpiloted")
+        self.assertEqual(payload["notebookPilot"]["unpiloted"], ["notebook-job"])
+        self.assertEqual(payload["notebookPilot"]["jobs"], [{
+            "job": "notebook-job",
+            "notebook": "Method/Notebooks/never_run.ipynb",
+            "pilotRelative": "Notebooks/never_run.ipynb",
+            "status": "unpiloted"}])
+
+    def test_the_join_refuses_nothing_and_moves_no_rung(self):
+        """The posture, made behavioural.
+
+        A sentence saying the ladder does not branch on this is a sentence
+        anybody can contradict with four lines and nothing going red. This is
+        the test such a change has to break: a job pointing at a notebook the
+        pilot never opened, and the ladder still answering exactly what it
+        answered before the job folder existed.
+        """
+        box, head = self.build_target("nbgate")
+        before = self.probe(box)
+        self.write_notebook_job(box, head, "Method/Notebooks/never_run.ipynb")
+        after = self.probe(box)
+
+        self.assertEqual(before["nextStep"], "benchmark")
+        self.assertEqual(after["nextStep"], "benchmark",
+                         "an unpiloted notebook moved the ladder, so a report "
+                         "became a gate in front of the expensive door")
+        self.assertEqual(after["remoteExecution"]["notebookPilot"]["status"],
+                         "unpiloted",
+                         "the fixture stopped producing an unpiloted job, so "
+                         "this test is no longer about anything")
+
+    def test_a_job_folder_whose_config_cannot_be_read_carries_the_key_anyway(self):
+        """The unreadable row is a row, and its shape is the same one.
+
+        `probe`'s output is read by a human, and a row missing the key reads
+        as "nothing wrong" when the truth is that this job's configuration
+        could not be parsed at all -- the identical argument the `unreadable`
+        staleness verdict beside it already makes.
+        """
+        box, _ = self.build_target("nbunread")
+        job_dir = box / "tools" / "service" / "broken"
+        job_dir.mkdir(parents=True)
+        (job_dir / "run-config.json").write_text("{ not json", encoding="utf-8")
+
+        payload = self.probe(box)["remoteExecution"]
+
+        self.assertEqual([job["staleness"]["status"] for job in payload["jobs"]],
+                         ["unreadable"])
+        self.assertEqual([job["notebook"] for job in payload["jobs"]], [None])
+        self.assertEqual(payload["notebookPilot"]["jobs"], [{
+            "job": "broken", "notebook": None, "pilotRelative": None,
+            "status": "not-applicable"}])
+
+    # --- doctrine -----------------------------------------------------------
+
+    def test_the_payload_says_what_it_is(self):
+        """`WALK_NOTE`'s own doctrine: a report met only when something is
+        wrong is a report nobody has learnt to read by the time it matters."""
+        state = impl.job_notebook_pilot_state([], self.empty_pilot())
+        self.assertEqual(state["note"], impl.JOB_NOTEBOOK_PILOT_NOTE)
+        for status in impl.JOB_NOTEBOOK_PILOT_STATUSES:
+            self.assertIn(status, impl.JOB_NOTEBOOK_PILOT_NOTE,
+                          f"the note names no answer called {status!r}")
+
+    def test_the_decision_gates_send_a_reader_to_an_unpiloted_job(self):
+        """A fact reported beside an offer to run is only read if something
+        tells the reader to read it."""
+        rows = markdown_table_rows(
+            SKILL_MD.read_text(encoding="utf-8"),
+            ProbeReportedFactsRosterTests.GATES_TABLE_HEADER)
+        self.assertEqual(len(rows), 1, "the Decision Gates table moved")
+        situations = "\n".join(row[0] for row in rows[0])
+        self.assertIn("notebookPilot", situations,
+                      "no gate row tells a reader to read a job whose "
+                      "notebook the pilot never opened before offering a "
+                      "campaign")
+
+    def test_the_usage_reference_tells_a_reader_what_to_do_about_it(self):
+        usage = USAGE_MD.read_text(encoding="utf-8")
+        section = usage[usage.index("## Reading `probe`"):]
+        section = section[:section.index("\n## ", 1)]
+        self.assertIn("`notebookPilot`", section)
+        for status in impl.JOB_NOTEBOOK_PILOT_STATUSES:
+            self.assertIn(status, section,
+                          f"the reference never names the {status!r} answer")
+
+class ReportedStateExitTests(unittest.TestCase):
+    """A reported state that names work names the way out of it, in the
+    payload, not only in a doctrine table somebody has to go and find.
+
+    The refusal side of this engine has been held to that for a while: every
+    `WORK_STATE` code passes one `except Refused` chokepoint and comes back
+    carrying either the command that clears it or the question that decides
+    it. The REPORTED side had exactly one such publication --
+    `position_finding_resolution`, whose whole payload rides inside the
+    command it publishes -- and everything else named its exit in prose.
+
+    Five of those states are closed here, across the two commands that report
+    them: the remote-execution ledger's `drift` and `unreliable`, reported by
+    both `verify` and `probe` from one function, and `structure`'s three gap
+    keys, reported by `verify`.
+
+    **All five publish a question rather than a command, and the reason is
+    measured rather than preferred.** The acts exist -- `remote_cli reconcile`
+    and `materialize --stage` -- and in each case an argument they require is
+    a value this engine must not supply: a worker id and a backend name are a
+    service account's username and a service's name, which this section is
+    forbidden to print; an approved plan and a seed are a human's approval and
+    a scientific parameter. A command published with those blank would not
+    run, and prose at least does not claim to. So what is published is the
+    question, and the `discuss` command that opens it -- which does run, and
+    every test below proves it by running it rather than by reading a key.
+    """
+
+    DECLARATION = ProbeReportedFactsRosterTests.DECLARATION
+    WIRING = ProbeReportedFactsRosterTests.WIRING
+    TABLES = ProbeReportedFactsRosterTests.TABLES
+    build_target = ProbeReportedFactsRosterTests.build_target
+    probe = ProbeReportedFactsRosterTests.probe
+    _write_ledger = RemoteExecutionLedgerSectionTests._write_ledger
+    _minimal_source = RemoteExecutionLedgerSectionTests._minimal_source
+
+    def verify(self, box):
+        proc = subprocess.run(
+            [sys.executable, str(CLI), "verify", "--target", str(box),
+             "--name", "Method", "--revision", "r01.md"],
+            capture_output=True, text=True, cwd=FORGE)
+        return json.loads(proc.stdout or "{}")
+
+    def run_published(self, entry):
+        """Execute the published act and hand back what it printed.
+
+        The whole point of this class. A test that asserts a `resolve` key is
+        present passes an exit with a hole in it -- a command missing a
+        required flag, a question whose text never reached the process, a
+        quoting bug that turns one argument into three. Every one of those
+        survives a key check and none survives this.
+        """
+        proc = subprocess.run(shlex.split(entry["command"]),
+                              capture_output=True, text=True,
+                              cwd=tempfile.gettempdir())
+        self.assertEqual(proc.returncode, 0,
+                         f"the published act does not run: "
+                         f"{entry['command']}\n{proc.stdout}{proc.stderr}")
+        return json.loads(proc.stdout or "{}")
+
+    def drifted_ledger_box(self, suffix):
+        """A target whose ledger reports `drift`: one pending submission whose
+        source has moved out from under it.
+
+        Built on the same fixture the roster class already reaches the run
+        offer with, rather than on a bare directory, because the published act
+        is executed here: `discuss` writes into a repository and refuses
+        `NOT_A_GIT_REPO` without one, so a fixture that skipped `git init`
+        would report a published exit as broken for a reason that has nothing
+        to do with what it publishes.
+        """
+        box, _ = self.build_target(f"exit{suffix}")
+        self._minimal_source(box)
+        self._write_ledger(box, "Method", [json.dumps({
+            "kind": "submitted", "ts": "2026-08-17T00:00:00Z",
+            "entrypoint": "Method/Notebooks/verification.ipynb",
+            "sourceDigest": "0" * 64, "submissionId": "s1",
+            "worker": "svc-account-name-42",
+            "requestedCapacity": 1, "grantedCapacity": 1,
+        })])
+        return box
+
+    # --- the ledger's two work states ---------------------------------------
+
+    def test_a_drifted_ledger_publishes_an_exit_that_runs(self):
+        """The state, its published act, and the act executed.
+
+        `drift` has told a reader to run `remote_cli reconcile` in the
+        Decision Gates table since the state existed, and published nothing at
+        all beside the fact itself. The weaker guard this beats, named: a test
+        asserting `state["resolve"] is not None`. It passes on a question
+        whose `discuss` command drops `--about` and refuses on its own advice,
+        which is the exact shape a published exit fails at silently.
+        """
+        box = self.drifted_ledger_box("drift")
+        state = impl.remote_execution_state(box, "Method", "Method")
+
+        self.assertEqual(state["status"], "drift")
+        self.assertEqual(state["resolve"]["kind"], "question")
+        self.assertEqual(state["resolve"]["question"],
+                         impl.REMOTE_EXECUTION_DRIFT_QUESTION)
+        self.assertEqual(self.run_published(state["resolve"])["asked"],
+                         state["resolve"]["question"])
+
+    def test_an_unreadable_ledger_publishes_an_exit_that_runs(self):
+        """`unreliable` is a different fact from `drift` and asks for the same
+        act for a different reason, so it publishes its own sentence rather
+        than sharing one: a reader who cannot tell which state they are in
+        cannot report which one they answered.
+        """
+        box = self.drifted_ledger_box("unreliable")
+        self._write_ledger(box, "Method", ["{ this is not json"])
+        state = impl.remote_execution_state(box, "Method", "Method")
+
+        self.assertEqual(state["status"], "unreliable")
+        self.assertEqual(state["resolve"]["question"],
+                         impl.REMOTE_EXECUTION_UNRELIABLE_QUESTION)
+        self.assertNotEqual(impl.REMOTE_EXECUTION_UNRELIABLE_QUESTION,
+                            impl.REMOTE_EXECUTION_DRIFT_QUESTION)
+        self.assertEqual(self.run_published(state["resolve"])["asked"],
+                         state["resolve"]["question"])
+
+    def test_the_published_exit_names_no_worker_and_no_service(self):
+        """The reason this exit is a question and not a command, held as a
+        red rather than left in a comment.
+
+        The obvious repair for a state naming its exit in prose is to publish
+        the command -- and `reconcile` requires `--worker` and `--backend`,
+        so the obvious repair prints a service account's username and a
+        service's name into the one section whose stated rule is that it
+        never does. `workers` is a count for exactly that reason. This is the
+        test that change has to break.
+        """
+        box = self.drifted_ledger_box("noleak")
+        state = impl.remote_execution_state(box, "Method", "Method")
+
+        dumped = json.dumps(state)
+        self.assertNotIn("svc-account-name-42", dumped,
+                         "the published exit prints the worker id the "
+                         "section beside it reports only as a count")
+        self.assertEqual(
+            leaks_in(dumped, FORGE_SERVICE_VOCABULARY), [],
+            "the published exit names a service, which is the one thing this "
+            "section says it never does")
+
+    def test_a_ledger_with_nothing_to_settle_publishes_nothing(self):
+        """`None`, and the key present anyway.
+
+        `position_finding_resolution`'s own rule: an act published over a
+        report with no finding in it is work nobody has to do, and a reader
+        who meets one learns to skip the key. The key itself never varies --
+        a payload whose SHAPE changes with its state makes every consumer test
+        for the key before reading it.
+        """
+        box = self.drifted_ledger_box("clean")
+        live = impl.source_digest(box, "Method")
+        self._write_ledger(box, "Method", [json.dumps({
+            "kind": "submitted", "ts": "2026-08-17T00:00:00Z",
+            "entrypoint": "Method/Notebooks/verification.ipynb",
+            "sourceDigest": live, "submissionId": "s1", "worker": "w1",
+            "requestedCapacity": 1, "grantedCapacity": 1,
+        }), json.dumps({
+            "kind": "returned", "ts": "2026-08-17T00:10:00Z",
+            "submissionId": "s1", "artifactPath": "out/s1",
+            "observedConcurrency": 1,
+        })])
+        state = impl.remote_execution_state(box, "Method", "Method")
+
+        self.assertEqual(state["status"], "ok")
+        self.assertIsNone(state["resolve"])
+
+        with tempfile.TemporaryDirectory() as raw:
+            absent = impl.remote_execution_state(Path(raw), "Method", "Method")
+        self.assertEqual(absent, {"status": "absent", "resolve": None},
+                         "the absent return carries a different shape from "
+                         "every other one, so a reader has to know the state "
+                         "before they can read the key")
+
+    def test_every_ledger_status_is_classified_as_work_or_as_no_work(self):
+        """The roster is closed against the code that assigns the statuses,
+        not against a list restated here.
+
+        `GATING_REFUSALS`' own shape, one surface out: a third work state
+        added to the fold has somewhere to be classified, and this goes red
+        until somebody does it -- rather than the state reaching a reader with
+        no exit and nothing saying so.
+        """
+        tree = ast.parse(textwrap.dedent(
+            inspect.getsource(impl.remote_execution_state)))
+        assigned = {node.value.value
+                    for node in ast.walk(tree)
+                    if isinstance(node, ast.Assign)
+                    and isinstance(node.value, ast.Constant)
+                    and isinstance(node.value.value, str)
+                    and any(isinstance(t, ast.Name) and t.id == "status"
+                            for t in node.targets)}
+        self.assertNotEqual(assigned, set(), "nothing was scanned")
+        self.assertEqual(
+            sorted(set(impl.REMOTE_EXECUTION_WORK_STATES) - assigned), [],
+            "the roster classifies a status this function never assigns")
+        self.assertEqual(
+            sorted(assigned - set(impl.REMOTE_EXECUTION_WORK_STATES)),
+            ["ok", "pending"],
+            "a status this function can assign is neither a classified work "
+            "state nor one of the two that name no work")
+
+    def test_both_commands_that_report_the_ledger_carry_its_exit(self):
+        """One function, two callers, and the exit reaches both -- which is
+        why it lives in the function rather than in either command.
+
+        Half of the states this change closes are the same two states reported
+        twice. A publication added at one call site would leave the other
+        naming its exit in prose, and nothing would say which.
+        """
+        box = self.drifted_ledger_box("bothcmds")
+        for command, payload in (("verify", self.verify(box)),
+                                 ("probe", self.probe(box))):
+            with self.subTest(command=command):
+                resolve = payload["remoteExecution"]["resolve"]
+                self.assertEqual(payload["remoteExecution"]["status"], "drift")
+                self.assertEqual(resolve["question"],
+                                 impl.REMOTE_EXECUTION_DRIFT_QUESTION)
+                self.assertEqual(self.run_published(resolve)["asked"],
+                                 resolve["question"])
+
+    # --- structure's three gap keys -----------------------------------------
+
+    def test_each_structure_gap_publishes_an_exit_that_runs(self):
+        """Three states, three acts, and each executed.
+
+        A repository missing kit destinations was told, in prose, that
+        `materialize --stage` writes them. Which stage answers which key was a
+        mapping a reader had to hold in their head, and the argument it cannot
+        be handed ready-to-run was nowhere at all.
+        """
+        box, _ = self.build_target("exitgaps")
+        structure = self.verify(box)["structure"]
+
+        published = {}
+        for entry in structure["resolve"]:
+            stage = [stage for _, stage, _ in impl.STRUCTURE_GAP_STAGES
+                     if f"--stage {stage}" in entry["question"]]
+            self.assertEqual(len(stage), 1, entry["question"])
+            published[stage[0]] = entry
+
+        owed = [stage for key, stage, _ in impl.STRUCTURE_GAP_STAGES
+                if structure[key]]
+        self.assertNotEqual(owed, [],
+                            "the fixture owes no kit destination at all, so "
+                            "this test is no longer about anything")
+        self.assertEqual(sorted(published), sorted(owed),
+                         "a gap key names files and publishes no act, or an "
+                         "act is published for a gap that names nothing")
+        for stage, entry in published.items():
+            with self.subTest(stage=stage):
+                self.assertEqual(self.run_published(entry)["asked"],
+                                 entry["question"])
+
+    def test_a_published_stage_names_the_exact_destinations_its_key_reports(self):
+        """The act and the fact are computed once and read twice.
+
+        A published exit that named a different set from the key it answers
+        would be runnable and still wrong -- and that is the failure a reader
+        cannot catch, because both halves look authoritative.
+        """
+        box, _ = self.build_target("exitnames")
+        structure = self.verify(box)["structure"]
+        by_stage = {stage: key for key, stage, _ in impl.STRUCTURE_GAP_STAGES}
+
+        for entry in structure["resolve"]:
+            stage = next(stage for stage in by_stage
+                         if f"--stage {stage}" in entry["question"])
+            with self.subTest(stage=stage):
+                self.assertIn(str(structure[by_stage[stage]]),
+                              entry["question"])
+
+    def test_a_fully_materialized_repository_publishes_no_stage(self):
+        """`[]`, and the key present anyway -- the list shape says "nothing
+        owed" in exactly the shape a full one says what is."""
+        self.assertEqual(
+            impl.structure_gap_resolutions(
+                Path("/nowhere"), "Method",
+                {"scaffoldGaps": [], "objectGaps": [], "harnessGaps": []}),
+            [])
+
+    def test_every_gap_key_the_roster_names_is_one_verify_reports(self):
+        """Held against the command's own payload, so a renamed key is a red
+        here rather than a published act nothing ever reaches."""
+        box, _ = self.build_target("exitroster")
+        structure = self.verify(box)["structure"]
+        self.assertEqual(
+            sorted(key for key, _, _ in impl.STRUCTURE_GAP_STAGES
+                   if key not in structure), [])
+
+    def test_every_stage_the_roster_names_is_one_materialize_accepts(self):
+        """The other direction: a stage this file publishes and `materialize`
+        does not accept is an exit that refuses on its own advice.
+
+        Read off `cmd_materialize`'s own dispatch rather than from a list
+        restated here, and executed rather than parsed -- the published act
+        names `--stage <stage>`, and the value has to be one the command
+        answers.
+        """
+        box, _ = self.build_target("exitstages")
+        for _, stage, _ in impl.STRUCTURE_GAP_STAGES:
+            with self.subTest(stage=stage):
+                proc = subprocess.run(
+                    [sys.executable, str(CLI), "materialize",
+                     "--target", str(box), "--name", "Method",
+                     "--stage", stage],
+                    capture_output=True, text=True, cwd=FORGE)
+                self.assertNotEqual(proc.returncode, 0,
+                                    "materialize wrote without a plan")
+                self.assertIn(
+                    "PLAN_REQUIRED", proc.stdout + proc.stderr,
+                    f"--stage {stage} is refused for a reason other than the "
+                    "missing approval, so this stage is not one materialize "
+                    "answers at all")
+
+    # --- the shape both halves share ----------------------------------------
+
+    def test_the_decision_gates_send_a_reader_to_both_published_exits(self):
+        """A published exit is only read if something tells a reader it is
+        there. The Decision Gates table is where this skill says what to do
+        about a state, so that is where both belong -- and the row has to name
+        the KEY, because `resolve` is what a reader looks for in the JSON.
+        """
+        rows = markdown_table_rows(
+            SKILL_MD.read_text(encoding="utf-8"),
+            ProbeReportedFactsRosterTests.GATES_TABLE_HEADER)
+        self.assertEqual(len(rows), 1, "the Decision Gates table moved")
+        table = "\n".join(f"{row[0]} {row[1]}" for row in rows[0])
+        self.assertIn("`remoteExecution.resolve`", table,
+                      "no gate row tells a reader the ledger's two work "
+                      "states publish their own exit")
+        self.assertIn("`structure.resolve`", table,
+                      "no gate row tells a reader a kit gap publishes the "
+                      "stage that fills it")
+
+    def test_the_usage_reference_tells_a_reader_what_the_exits_are(self):
+        usage = USAGE_MD.read_text(encoding="utf-8")
+        section = usage[usage.index("## Reading `probe`"):]
+        section = section[:section.index("\n## ", 1)]
+        for key in ("`remoteExecution.resolve`", "`structure.resolve`"):
+            self.assertIn(key, section)
+
+    def test_every_published_exit_carries_the_one_publication_shape(self):
+        """`{kind, question, command}`, the identical shape the refusal
+        chokepoint publishes. A reader who has learnt one has learnt them all,
+        and a second shape here would be a second thing to learn for no
+        reason."""
+        box = self.drifted_ledger_box("shape")
+        ledger = impl.remote_execution_state(box, "Method", "Method")["resolve"]
+        gaps = impl.structure_gap_resolutions(
+            Path("/nowhere"), "Method",
+            {"scaffoldGaps": ["src/x.py"], "objectGaps": [],
+             "harnessGaps": ["tests/y.py"]})
+
+        self.assertEqual(len(gaps), 2)
+        for entry in [ledger, *gaps]:
+            with self.subTest(entry=entry["question"][:40]):
+                self.assertEqual(sorted(entry),
+                                 ["command", "kind", "question"])
+                self.assertEqual(entry["kind"], "question")
+                self.assertEqual(
+                    published_flags(entry["command"])[:1], ["discuss"],
+                    "a published exit is not a `discuss` invocation, so the "
+                    "one shape this engine publishes has two spellings")
 
 def dict_literal_keys(source: Path, name: str) -> list[str]:
     """The string keys of a module-level dict assigned to `name`.

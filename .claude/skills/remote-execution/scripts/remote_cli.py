@@ -843,6 +843,13 @@ def _gate_job_folder_pin(resolved_entrypoint: Path) -> None:
         target=_target_for_job_dir(job_folder.path),
         commit=run_config["commit"],
         clone_paths=run_config["clonePaths"],
+        # Derived from the job folder's OWN config through the SAME
+        # `declared_notebooks()` generation used, never re-spelled here.
+        # A second spelling is how the two decision points would come to
+        # disagree about which notebooks a job promised to run — the exact
+        # drift `verify_pin_preconditions()` exists to make impossible for
+        # every other condition.
+        notebooks=JOBFOLDER.declared_notebooks(run_config),
         repo_url=repo["url"],
         repo_ref=repo["ref"],
         decision="submission",
@@ -2529,14 +2536,35 @@ def _build_parser() -> argparse.ArgumentParser:
         "--clone-path", dest="clone_paths", action="append", default=[],
         help="repeatable: one declared clone path, relative to the clone's own root",
     )
-    generate_job.add_argument("--run-module", required=True)
-    generate_job.add_argument("--run-function", required=True)
+    # `--run-module`/`--run-function` lost `required=True` when the notebook
+    # shape landed, and the refusal for declaring neither moved INTO
+    # `jobfolder.run_block_kind()` rather than being deleted. That is
+    # deliberate: argparse's own "required" error fires before any shape is
+    # known and could not have said "or a notebook", while the refusal that
+    # replaced it is the same one that judges a hand-edited run-config at
+    # submit. Nothing became optional; the check moved to where both shapes
+    # are visible.
+    generate_job.add_argument("--run-module", default=None)
+    generate_job.add_argument("--run-function", default=None)
     generate_job.add_argument(
         "--run-kwargs", default="{}", help="a JSON object, passed to run.function as kwargs"
+    )
+    generate_job.add_argument(
+        "--run-notebook", dest="run_notebook", default=None,
+        help="the clone-relative path of the notebook this job runs (an "
+        "alternative to --run-module/--run-function, never a companion to "
+        "them): the worker executes this notebook and returns it executed. "
+        "Must be covered by a --clone-path and exist at the pin",
     )
     generate_job.add_argument("--smoke-module", default=None)
     generate_job.add_argument("--smoke-function", default=None)
     generate_job.add_argument("--smoke-kwargs", default=None, help="a JSON object")
+    generate_job.add_argument(
+        "--smoke-notebook", dest="smoke_notebook", default=None,
+        help="the clone-relative path of the notebook a rehearsal runs (an "
+        "alternative to --smoke-module/--smoke-function, never a companion "
+        "to them)",
+    )
     generate_job.add_argument(
         "--smoke-required-evidence", dest="smoke_required_evidence",
         action="append", default=[],
@@ -2882,9 +2910,11 @@ def main(argv: list[str] | None = None) -> int:
                 run_module=args.run_module,
                 run_function=args.run_function,
                 run_kwargs=json.loads(args.run_kwargs),
+                run_notebook=args.run_notebook,
                 smoke_module=args.smoke_module,
                 smoke_function=args.smoke_function,
                 smoke_kwargs=json.loads(args.smoke_kwargs) if args.smoke_kwargs else None,
+                smoke_notebook=args.smoke_notebook,
                 smoke_required_evidence=args.smoke_required_evidence or None,
                 regenerate=args.regenerate,
                 accept_unresolved=args.accept_unresolved,
