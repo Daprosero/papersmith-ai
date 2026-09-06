@@ -3447,6 +3447,13 @@ def cmd_probe(args) -> dict:
          # here is: a second read could disagree with the branch that
          # published it.
          "reportFindings": report_findings,
+         # Which of those steps the pilot never opened a notebook for --
+         # `pilotCompleteness`' own list, threaded through for the reason
+         # every other fact here is. Without it the decision pass names the
+         # notebooks that exist and says nothing about the steps that
+         # rendered none, which is exactly how four steps of ten fell out of
+         # a pilot with nobody told.
+         "withoutNotebook": pilot["withoutNotebook"],
          "undecided": pilot_undecided})
     # `toDiscuss` carries the question-shaped publications only -- a command
     # this flow can name completely is not a question anybody answers, and
@@ -8366,12 +8373,56 @@ PILOT_UNMEASURABLE_CONSEQUENCE = (
     f"[{PRODUCES_KEY!r}]`, the same roots `step` already measures a run's "
     "write scope against, and nothing else has to change.")
 
+#: Which steps the pilot walked without opening a notebook, said on every run
+#: rather than only on the run where it turns out to matter -- `WALK_NOTE`'s
+#: and `priorWork`'s own doctrine, that a report met only when something is
+#: wrong is a report nobody has learnt to read by the time it matters.
+#:
+#: **The measured defect.** Of ten declared steps on a real repository, six
+#: executed a notebook and four computed by calling the target's own library
+#: directly. The notebooks those four own -- including the one that would be
+#: handed to a remote worker to run -- were never executed by the flow, so the
+#: pilot validated one path while the artefact that actually gets sent was the
+#: other. Nothing reported it: off every key this state published, a step that
+#: renders no notebook and a step whose notebook nobody opened read
+#: identically, and four steps and their notebooks fell out of the pilot with
+#: nobody told.
+#:
+#: **Reported, never gating**, and that is not a preference either. A target
+#: may legitimately keep its computation in a library and render elsewhere; a
+#: refusal here would corner an operator whose layout is exactly what they
+#: meant, and it would grade an act already taken -- the same two arguments
+#: `PILOT_UNMEASURABLE_CONSEQUENCE` makes one key over and
+#: `undeclared_produces_state` makes for the declaration beside it. What must
+#: never happen again is that nobody is told.
+#:
+#: **A different absence from `unmeasurable`.** That one names a step nobody
+#: could look at, because it declared no output roots at all. This one names a
+#: step there was nothing to open: it may declare roots, and none of them
+#: falls under the product's notebook category. The two ask a reader for
+#: different things -- one for a declaration, one for nothing at all beyond
+#: knowing which half of the flow the pilot exercised.
+PILOT_WITHOUT_NOTEBOOK_NOTE = (
+    "the pilot is the declared flow walked with the declared notebooks, at "
+    "whatever reduced scale the target declares, so that the artefacts that "
+    "will later be sent have been executed and read before anybody commits "
+    "machine time to them. These steps ran without opening one: the flow "
+    "reached each of them and no notebook it renders was executed, so "
+    "whatever the step computed is in nothing a reader opens, and any "
+    "notebook it owns went untouched by the very run that was supposed to "
+    "validate it. That is not a finding and nothing here refuses it -- a "
+    "target may legitimately compute in its own library and render "
+    "elsewhere. It is named because the alternative reading is silence. Every "
+    "step carries its own `notebookCount` beside this list, zero included, so "
+    "what the check watches is met on every run rather than only on the run "
+    "where it turns out to matter.")
+
 
 def pilot_completeness_state(steps: dict, sequence: list[dict],
                              evidence: dict) -> dict:
     """Whether the flow this target declared has actually run at pilot --
-    `{"status", "steps", "incomplete", "unmeasurable", "note"}`, and never a
-    refusal.
+    `{"status", "steps", "incomplete", "unmeasurable", "withoutNotebook",
+    "note", "withoutNotebookNote"}`, and never a refusal.
 
     The measured defect this exists for: a target declaring six ordered steps
     had run the second of them and nothing else; six of its seven notebooks
@@ -8432,6 +8483,19 @@ def pilot_completeness_state(steps: dict, sequence: list[dict],
     (the direction that actually costs something) let "nobody could look" pass
     for "nothing was wrong".
 
+    **Whether the pilot opened a notebook at all is said per step, zero
+    included.** Every row carries `notebookCount`, and `withoutNotebook` names
+    the steps whose set came back empty, beside `PILOT_WITHOUT_NOTEBOOK_NOTE`.
+    It moves no verdict: `complete` and `status` are exactly what they were,
+    because a step that computes in the target's own library has not failed
+    the pilot and refusing one would corner an operator whose design is
+    deliberate. It is reported because until it was, the fact was invisible --
+    measured, at four declared steps in ten whose notebooks the flow never
+    executed, one of them the artefact a remote worker would have been sent to
+    run. The check is met on every run and not only on the run where it turns
+    out to matter, which is the whole difference between a report a reader has
+    learnt and a report they meet for the first time as a surprise.
+
     **Both halves are graded through `impl_position.derive`, never by a
     second arithmetic beside it** -- the discipline `_skipped_rung_detail`
     already keeps ("whatever satisfied means for a witness, it means the same
@@ -8473,8 +8537,13 @@ def pilot_completeness_state(steps: dict, sequence: list[dict],
     keeps, so two callers asking this question cannot answer it differently.
     """
     if not _flow_steps(steps):
+        # Every key the walked answer carries, spelled here too: a payload
+        # whose SHAPE varies with state makes each consumer test for a key
+        # before reading it, and the one that forgets reads `None`.
         return {"status": "undeclared", "steps": [], "incomplete": [],
-                "unmeasurable": [], "note": PILOT_UNMEASURABLE_CONSEQUENCE}
+                "unmeasurable": [], "withoutNotebook": [],
+                "note": PILOT_UNMEASURABLE_CONSEQUENCE,
+                "withoutNotebookNote": PILOT_WITHOUT_NOTEBOOK_NOTE}
     by_ordinal = {item["ordinal"]: item for item in sequence
                   if isinstance(item.get("ordinal"), int)}
     rows = []
@@ -8499,6 +8568,12 @@ def pilot_completeness_state(steps: dict, sequence: list[dict],
         rows.append({
             "step": step_name, "advances": advances, "ran": ran,
             "notebooks": notebooks, "notebooksCurrent": current,
+            # How many the pilot opens for this step, on every row and
+            # whether or not it is zero. See `PILOT_WITHOUT_NOTEBOOK_NOTE`:
+            # a step that renders none is not wrong, it is invisible, and a
+            # number reported only where it is zero is a number nobody has
+            # learnt to read by the time it decides something.
+            "notebookCount": len(notebooks),
             # The distinct fact, per step: whether the notebook half could be
             # asked at all. `notebooks == []` under a declared root means the
             # step renders none and is measured; under no root at all it means
@@ -8516,7 +8591,16 @@ def pilot_completeness_state(steps: dict, sequence: list[dict],
             "unmeasurable": [row["step"] for row in rows
                              if not row["producesDeclared"]
                              and not row["notebooks"]],
-            "note": PILOT_UNMEASURABLE_CONSEQUENCE}
+            # Which steps the pilot walked without opening a notebook,
+            # whatever they declared -- a superset of `unmeasurable`, and a
+            # different question from it: that one is a step nobody could
+            # look at, this one a step there was nothing to open. Reported
+            # beside both lists and inside neither, because it asks a reader
+            # for no act at all. See `PILOT_WITHOUT_NOTEBOOK_NOTE`.
+            "withoutNotebook": [row["step"] for row in rows
+                                if not row["notebooks"]],
+            "note": PILOT_UNMEASURABLE_CONSEQUENCE,
+            "withoutNotebookNote": PILOT_WITHOUT_NOTEBOOK_NOTE}
 
 
 #: What the walk report is, said in the payload rather than left to a reader
@@ -9920,6 +10004,19 @@ def _pilot_decisions_publication(target: Path, name: str, facts: dict) -> dict:
     threaded through by `cmd_probe` rather than recomputed, the same discipline
     `declarationStatus` states.
 
+    **And which steps the pilot opened no notebook for.** This is the
+    consumer that reads the widened answer narrowly if it is left alone.
+    Naming where the outputs are and staying silent about the steps that
+    rendered none tells an operator they are looking at the whole flow when
+    they are looking at part of it -- measured, at six paths named out of ten
+    declared steps -- and this is the last rung before the decisions that put
+    a step on a remote worker, whose own artefact may be one of the notebooks
+    nothing ever executed. Nothing is refused by saying so; the sentence
+    names them and the pass carries on. `withoutNotebook` is
+    `pilotCompleteness`' own list, threaded through by `cmd_probe` rather
+    than recomputed, the same discipline `notebooks` and `reportFindings`
+    already state.
+
     **Each half appears only when it has something to say.** The rung
     fires on an unacknowledged report as well as on undecided steps, so a pass
     whose steps are all decided would otherwise say "each step owes its own
@@ -9932,13 +10029,19 @@ def _pilot_decisions_publication(target: Path, name: str, facts: dict) -> dict:
     carries = (f"those outputs carry live findings ({', '.join(findings)}), "
                "which nobody can validate this work without seeing; "
                if findings else "")
+    unopened = list(facts.get("withoutNotebook") or [])
+    opened = ("the pilot opened no notebook for "
+              + ", ".join(repr(step) for step in unopened)
+              + ", so what those steps computed is in none of what this pass "
+                "asks you to read; " if unopened else "")
     owed = ("the flow now returns to its first step: each step owes its own "
             "decision about how the full run carries it, and those questions "
             "are published beside this one; " if facts.get("undecided") else "")
     return _next_step_question_entry(
         target, name,
         f"{name} (target {target}) has finished every step of its declared "
-        f"flow at pilot and{where}" + carries + owed + NEXT_STEP_REPAIR_CHOICE)
+        f"flow at pilot and{where}" + carries + opened + owed
+        + NEXT_STEP_REPAIR_CHOICE)
 
 
 #: Every value `cmd_probe`'s ladder can assign to `next_step`, and what each

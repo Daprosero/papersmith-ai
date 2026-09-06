@@ -27525,6 +27525,86 @@ class PilotCompletenessTests(unittest.TestCase):
             self.evidence(step_verdicts={"one": True, "three": True}))
         self.assertEqual(state["incomplete"], ["two"])
 
+    # --- what the pilot opened, and what it did not ------------------------
+
+    def test_a_step_the_pilot_opens_no_notebook_for_is_named_beside_the_rest(self):
+        """THE defect this key exists for, in the mixed shape it was measured
+        in. Of ten declared steps on a real repository six executed a
+        notebook and four computed by calling the target's own library
+        directly; the notebooks those four own -- one of them the artefact a
+        remote worker would have been sent to run -- were never executed by
+        the flow, and no key this state published said so.
+
+        The weaker guard this beats, named: a check that reports only when
+        EVERY step lacks a notebook. This fixture is mixed on purpose -- one
+        step owes a notebook and two do not, the same proportions as the real
+        case -- so the weaker reading names nobody here and passes clean.
+        """
+        steps = {"one": {"module": "m", "function": "f", "advances": 1},
+                 "two": {"module": "m", "function": "g", "advances": 2},
+                 "aside": {"module": "m", "function": "h"}}
+        state = impl.pilot_completeness_state(
+            steps,
+            [self.item(1, "notebook", "Notebooks/one.ipynb"),
+             self.item(2, "record", None)],
+            self.evidence(
+                step_verdicts={"one": True, "two": True, "aside": True},
+                reports=[self.report("Method/Notebooks/one.ipynb")]))
+        self.assertEqual(state["withoutNotebook"], ["two", "aside"])
+        self.assertEqual([row["notebookCount"] for row in state["steps"]],
+                         [1, 0, 0])
+
+    def test_the_count_is_reported_on_a_flow_that_opens_every_notebook(self):
+        """Reported in every state, never only in the state that is wrong --
+        `WALK_NOTE`'s and `priorWork`'s own doctrine. A reader who meets
+        `notebookCount` for the first time on the run where it decides
+        something has not learnt what the check watches; they have met a
+        surprise."""
+        steps = {"one": {"module": "m", "function": "f", "advances": 1}}
+        state = impl.pilot_completeness_state(
+            steps, [self.item(1, "notebook", "Notebooks/one.ipynb")],
+            self.evidence(step_verdicts={"one": True},
+                          reports=[self.report("Method/Notebooks/one.ipynb")]))
+        self.assertEqual(state["withoutNotebook"], [])
+        self.assertEqual(state["steps"][0]["notebookCount"], 1)
+
+    def test_a_step_the_pilot_opened_no_notebook_for_still_completes(self):
+        """Report, never refuse. A target may legitimately keep its
+        computation in a library and render nothing of its own, and a rung
+        that refused one would corner an operator whose design is deliberate.
+        The step is named and its verdict is untouched."""
+        steps = {"one": {"module": "m", "function": "f", "advances": 1}}
+        state = impl.pilot_completeness_state(
+            steps, [self.item(1, "record", None)],
+            self.evidence(step_verdicts={"one": True}))
+        self.assertEqual(state["status"], "complete")
+        self.assertEqual(state["incomplete"], [])
+        self.assertEqual(state["withoutNotebook"], ["one"])
+        self.assertIs(state["steps"][0]["complete"], True)
+
+    def test_the_undeclared_answer_carries_the_same_two_keys(self):
+        """The early return is where a key gets forgotten: it is written once,
+        far from the loop, and every test of the new fact naturally exercises
+        the other branch. A payload whose shape varies with state makes every
+        consumer test for a key before reading it, and the one that forgets
+        reads `None`."""
+        state = impl.pilot_completeness_state({}, [], self.evidence())
+        self.assertEqual(state["status"], "undeclared")
+        self.assertEqual(state["withoutNotebook"], [])
+        self.assertEqual(state["withoutNotebookNote"],
+                         impl.PILOT_WITHOUT_NOTEBOOK_NOTE)
+
+    def test_the_note_says_what_a_pilot_is_and_names_no_target(self):
+        """`undeclaredLadder`'s own bar, which this key is held to as well: a
+        reader handed the field's name learns the field's name back. The note
+        has to carry the reason -- what a pilot is for, and why a step the
+        pilot opened no notebook for is reported rather than refused."""
+        note = impl.PILOT_WITHOUT_NOTEBOOK_NOTE
+        for named in ("declared flow", "declared notebooks", "notebookCount",
+                      "refuses"):
+            self.assertIn(named, note)
+        self.assertEqual(leaks_in(note), [])
+
     def test_a_non_integer_ordinal_is_not_an_ordering(self):
         """`cmd_step` already refuses `STEP_MALFORMED` for one; this reader
         never raises, so it treats the entry as declaring no position in the
@@ -28175,6 +28255,35 @@ class PilotGatesTheDeclaredScaleTests(unittest.TestCase):
         self.assertIn("Notebooks/one.ipynb", question)
         self.assertIn("Notebooks/two.ipynb", question)
 
+    def test_the_decision_pass_says_which_steps_opened_no_notebook(self):
+        """End to end, through the real command: the fact has to survive
+        `cmd_probe`'s own threading rather than merely exist in the state, and
+        the sentence the operator reads is where it has to arrive. The
+        measured defect it stands against: six of ten declared steps executed
+        a notebook while four computed by calling the library directly, and
+        the notebooks those four own -- one of them the artefact a remote
+        worker would have been sent to run -- were never executed at all.
+
+        The weaker guard this beats, named: a check that reports only when
+        EVERY step lacks a notebook. This fixture is mixed exactly as the real
+        one was -- `'first'`'s sequence item names a notebook, `'second'`
+        witnesses a record, `'aside'` carries no ordinal at all -- so the
+        weaker reading names nobody here and the pass reads finished."""
+        box = self.build("unopened", ran=("first", "second", "aside"),
+                         notebook_executed=True)
+        probe = self.probe(box)
+        self.assertEqual(probe["nextStep"], "pilot-decisions")
+        self.assertEqual(probe["pilotCompleteness"]["withoutNotebook"],
+                         ["second", "aside"])
+        self.assertEqual(
+            [row["notebookCount"]
+             for row in probe["pilotCompleteness"]["steps"]], [1, 0, 0])
+        question = probe["resolve"]["question"]
+        self.assertIn("'second'", question)
+        self.assertIn("'aside'", question)
+        # Named, never refused: the same repository still reaches the pass.
+        self.assertEqual(probe["pilotCompleteness"]["status"], "complete")
+
     def test_the_decision_pass_still_withholds_the_declared_scale(self):
         box = self.build("undecided", ran=("first", "second", "aside"),
                          notebook_executed=True)
@@ -28481,7 +28590,10 @@ class PilotPublicationProseTests(unittest.TestCase):
         """The clause naming the outputs is optional -- a flow whose steps
         witness no notebook has none to name -- and an optional clause spliced
         in is exactly where two fragments run together."""
-        for facts in ({}, {"notebooks": ["Notebooks/a.ipynb"]}):
+        for facts in ({}, {"notebooks": ["Notebooks/a.ipynb"]},
+                      {"withoutNotebook": ["two"]},
+                      {"notebooks": ["Notebooks/a.ipynb"],
+                       "withoutNotebook": ["two", "aside"]}):
             with self.subTest(facts=facts):
                 question = self.decisions(**facts)
                 # `[;,]` only: a path operand legitimately carries `.` and
@@ -28490,6 +28602,19 @@ class PilotPublicationProseTests(unittest.TestCase):
                 self.assertNotRegex(question, r"[;,]\S",
                                     "punctuation runs into the next word")
                 self.assertNotIn("  ", question)
+
+    def test_the_decision_pass_names_the_steps_it_opened_no_notebook_for(self):
+        """The consumer one indirection behind the widened answer. This
+        sentence names where the outputs are, so a flow whose pilot opened a
+        notebook for six steps of ten would name six paths and say nothing at
+        all about the other four -- and this is the last rung before the
+        decisions that put a step on a remote worker, whose own artefact may
+        be one of the notebooks nothing ever executed."""
+        question = self.decisions(notebooks=["Notebooks/a.ipynb"],
+                                  withoutNotebook=["two", "aside"])
+        self.assertIn("'two'", question)
+        self.assertIn("'aside'", question)
+        self.assertIn("Notebooks/a.ipynb", question)
 
     def test_one_step_short_is_said_in_the_singular(self):
         question = self.first(incomplete=["one"])

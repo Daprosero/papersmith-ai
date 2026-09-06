@@ -1542,6 +1542,20 @@ entries above; and, when the step carries an ordinal, the operand of the sequenc
 item at it whenever that item's witness is a notebook. The union, never one or
 the other: dropping the second would lose a check today's targets already have.
 
+**Whether the pilot opened a notebook at all is said per step, zero included.**
+A pilot is the declared flow walked with the declared notebooks, at whatever
+reduced scale the target declares, so that the artefacts that will later be sent
+have been executed and read first — and a step the flow ran without opening one has
+not had that done for it. Every row carries `notebookCount`, and
+`withoutNotebook` names the steps whose set came back empty, beside its own
+`withoutNotebookNote`. It gates nothing and refuses nothing: a target may
+legitimately keep its computation in a library and render nothing of its own, so
+the step's verdict and the ladder's answer are exactly what they were. It is
+reported because it was invisible — measured, at four declared steps in ten whose
+notebooks the flow never executed, one of them the file a remote worker would have
+been sent — and the count is on every row rather than only on the zeroes, so a
+reader learns what the check watches before the run where it decides something.
+
 **`unmeasurable` sits beside `incomplete`, and it is not a softer version of
 it.** It names the steps that declare no `produces` roots, so nobody could look
 at what they rendered. Such a step has not failed the pilot — its own run still

@@ -1399,6 +1399,21 @@ two lists ask a reader for opposite things: `incomplete` asks for a run,
 legitimate step for a declaration it never had to make, or — the direction that
 actually costs something — let *nobody could look* pass for *nothing was wrong*.
 
+**Whether the pilot opened a notebook at all is said per step, zero included, and
+it is a report rather than a rung.** Every row carries `notebookCount`, and
+`pilotCompleteness.withoutNotebook` names the steps whose set came back empty,
+beside its own `withoutNotebookNote`. Nothing is refused on it: a target may
+legitimately keep its computation in a library and render nothing of its own, so
+such a step's verdict is exactly what it was and the flow reaches the same rung it
+always did. It is reported because until it was, the fact was invisible — a step
+that renders no notebook and a step whose notebook nobody opened read identically
+off every other key — and that invisibility is how four declared steps in ten, and
+the notebooks they own, fell out of a pilot with nobody told. The count is on every
+row and not only on the zeroes, the same reason `priorWork` reports what did *not*
+change: a report met for the first time on the run where it matters is a report
+nobody has learnt to read. It is a different absence from `unmeasurable` — that one
+is a step nobody could look at, this one a step there was nothing to open.
+
 **An item whose witness is not a notebook adds nothing to its step**, and that
 restraint is what keeps this rung reachable. A record must meet its own declared
 scale and a campaign run short leaves no shard at all, so both are evidence only
@@ -1475,6 +1490,16 @@ now, or record why the decisions are taken over it as it stands. Nothing new
 records that answer either — `discuss` buckets it by exact text like every other
 question in this pass, and a finding appearing or clearing re-opens it, because
 that is a change of state and not a moving count.
+
+**And which steps the pilot opened no notebook for is named in the same
+sentence.** Naming where the outputs are and staying silent about the steps that
+rendered none tells an operator they are looking at the whole flow when they are
+looking at part of it — six paths named out of ten declared steps, on the
+repository this was measured on — and this is the last rung before the decisions
+that put a step on a remote worker, whose own artefact may be one of the notebooks
+nothing ever executed. The sentence names them and the pass carries on; nothing is
+refused, and a target that deliberately computes in a library reads its own design
+back rather than a finding.
 
 **Which steps need a worker is not answered here.** `remoteExecution.necessity`
 classifies job folders — must-remote, local-sufficient, or optional with the
@@ -2167,6 +2192,17 @@ A campaign that takes a day to run has to be wrong cheaply first. The pilot is n
 rehearsal of the campaign — it *is* the campaign, at a scale small enough to be wrong
 in ten minutes.
 
+**What a pilot is, said plainly, because everything below assumes it.** The pilot is
+the declared flow walked with the declared notebooks, at whatever reduced scale the
+target declares, so that the artefacts that will later be sent have been executed and
+read first. Both halves are the definition. A run at a small scale that never opened
+the notebooks is not a pilot of the thing that gets sent: it validates one path while
+the artefact somebody will hand to a worker — or hand to a reader — is the other, and
+nobody finds out until the expensive run comes back wrong. Measured, on a real
+repository: of ten declared steps six executed a notebook and four computed by calling
+the library directly, and the notebooks those four own, one of them the very file a
+remote worker would have been given, were never executed by the flow at all.
+
 - **Two knobs separate the pilot from the full run, and nothing else does.** Every
   number that defines the experiment lives in one configuration; the pilot is that
   configuration with the repetition count and the length lowered. If the pilot is a
@@ -2364,7 +2400,7 @@ is a fact nobody reads:
 | `nextStep` | The one thing to do next | This is the answer, not a fact feeding it |
 | `notebook` | Where the pilot notebook is, or `null` | Reported whatever it says |
 | `position` | The execution sequence's derived state, read from `<Name>/AGREED.md`'s own position section. `probe` takes no `--shards`, so every `@shard` witness reports `unmeasured` here, never a false "did not arrive" | **Never** — a derived fact, reported so a human can decide about it |
-| `pilotCompleteness` | Whether the flow the target declared has actually finished at pilot, step by step: `status` (`undeclared` when no `__steps__` entry carries an `advances` ordinal at all), one row per **declared** step — ordinal-carrying ones first and in that order, the rest after in name order — naming its `advances` (`null` where it declares none), whether it `ran` and returned, the `notebooks` it owes and whether all of them are executed against these sources (`notebooksCurrent`), and `producesDeclared`; plus `incomplete` — the steps still short — and `unmeasurable` beside it, the steps whose output nobody could look at because they declare no `produces` roots | Yes — an unfinished flow is `pilot-first`, and a finished one whose steps have not each been decided is `pilot-decisions` |
+| `pilotCompleteness` | Whether the flow the target declared has actually finished at pilot, step by step: `status` (`undeclared` when no `__steps__` entry carries an `advances` ordinal at all), one row per **declared** step — ordinal-carrying ones first and in that order, the rest after in name order — naming its `advances` (`null` where it declares none), whether it `ran` and returned, the `notebooks` it owes and whether all of them are executed against these sources (`notebooksCurrent`), how many the pilot opens for it (`notebookCount`, on every row and zero included), and `producesDeclared`; plus `incomplete` — the steps still short — `unmeasurable` beside it, the steps whose output nobody could look at because they declare no `produces` roots, and `withoutNotebook`, the steps the pilot walked without opening a notebook at all, each list with its own note | Yes — an unfinished flow is `pilot-first`, and a finished one whose steps have not each been decided is `pilot-decisions` |
 | `walk` | Where this repository stands in its own declared flow, step by step: `status` (`undeclared`/`notStarted`/`walking`/`walked`), the declared `levels` and `topRung`, one row per declared step (`walk` — `notWalked`, `unfinished` (a `started` ledger event with no terminal partner, a run that was killed) or `walked` — plus `lastOutcome`, `lastAt`, the `rung` its position item grades at, `atTopRung`, and the output roots it `renders`), and one row per result-rendering artefact in the product tree, each inheriting the state of the step that renders it (`renderedBy`, `walk`, `rung`, `witnessed`). An artefact no declared step renders reads `outsideTheWalk` — a description of that artefact, not an accusation about it. Every input is already held: the ledger's step events, the position sequence and its rungs, and each step's own `produces` roots; **no target declaration is introduced** | **Never** — a walk report answers *where am I*, not *what is broken*. Nothing in it is a finding: a step nobody has walked is a state, a flow that has not started is where every repository begins, and reporting either as a defect would greet an operator with noise on their first clean run |
 | `remoteExecution` | The ledger's fold, plus the job folders that exist on disk right now | Yes — a submission already out is `poll-first` |
 | `report` | Whether the document a human reads agrees with the run | Yes — a document in drift is `report-first` |
