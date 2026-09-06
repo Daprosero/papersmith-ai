@@ -962,10 +962,25 @@ def resolve_clone_paths(
     target: Path,
     entry_modules: Sequence[str],
     declared_clone_paths: Sequence[str],
+    entry_notebooks: Sequence[str] = (),
 ) -> dict:
-    """Cross-check declared `clonePaths` against what the declared entry
-    modules actually import, transitively, before generation ever writes a
-    job folder.
+    """Cross-check declared `clonePaths` against what the declared entries
+    actually import, transitively, before generation ever writes a job
+    folder.
+
+    An entry is a declared module (`run.module`, `run.smoke.module`) or a
+    declared NOTEBOOK (`run.notebook`, `run.smoke.notebook`) — `entry_
+    notebooks`, added when a job became able to run the notebook the pilot
+    ran. The two are entries in exactly the same sense and are walked by
+    exactly the same machinery (`absorb()` below), for a reason worth
+    stating: nothing IMPORTS a notebook, so the module queue can never
+    reach one, and a notebook whose own imports went unwalked would carry
+    the undeclared-import failure this whole cross-check exists to close
+    straight back into the kernel. What a notebook does NOT get is a
+    `computed` clone path of its own — it is not a module and maps to no
+    package directory; that it is delivered at all is the
+    `declared-notebook-reachable` pin condition's question, asked of the
+    pin.
 
     Reuses `implementation_cli.py`'s `prior_work_state()` idiom exactly for
     the walk itself (`ast.parse` + `ast.walk` over `ast.Import`/
@@ -1089,32 +1104,20 @@ def resolve_clone_paths(
             queued.add(name)
             queue.append((name, False))
 
-    while queue:
-        dotted, is_entry = queue.pop(0)
-        kind, clone_path, file = _classify_import(dotted, source, is_entry=is_entry)
-        if kind == "external":
-            continue
-        if kind == "unresolved":
-            unresolved.append(
-                f"import {dotted!r} resolves to nothing on disk under {source}"
-            )
-            continue
-        computed.add(clone_path)
-        if file in visited:
-            continue
-        visited.add(file)
+    def absorb(file: Path, tree: ast.Module) -> None:
+        """Everything this walk learns from ONE already-parsed file:
+        its own constant table, its read/write call sites, and every
+        import it makes enqueued for the walk to follow.
 
-        try:
-            text = file.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError) as exc:
-            unresolved.append(f"{file}: unreadable ({exc})")
-            continue
-        try:
-            tree = ast.parse(text)
-        except SyntaxError as exc:
-            unresolved.append(f"{file}: unparsable ({exc})")
-            continue
-
+        Extracted from the module loop below so a NOTEBOOK entry goes
+        through the identical machinery rather than a second,
+        notebook-shaped copy of it. A notebook reaches this function
+        with a tree parsed from its own code cells
+        (`notebook_code_source()`); a module reaches it with a tree
+        parsed from its file. Nothing below this line can tell them
+        apart, which is exactly the property that keeps a notebook's
+        undeclared import from being a weaker refusal than a module's.
+        """
         # Undeclared-read detection (Unit 1 same-file, Unit 2 cross-module):
         # the SAME parsed `tree`, no new file traversal. `file` is already
         # resolved (derived from `source = resolved_target / "src"`).
@@ -1175,6 +1178,88 @@ def resolve_clone_paths(
             elif _is_sys_path_mutation(node):
                 unresolved.append(f"{file}: sys.path mutation is uncertain")
 
+    # A declared NOTEBOOK is an entry too, and the only one this walk can
+    # reach by path rather than by dotted name: nothing imports a notebook,
+    # so `_classify_import()` has no way to find it and the module queue
+    # never would. Seeded here, before the queue runs, so every import its
+    # code cells make is enqueued exactly as an entry module's are and
+    # lands in `computed` — which is what makes an undeclared import inside
+    # the pilot's own notebook a refusal at generation instead of a
+    # `ModuleNotFoundError` inside the kernel with the quota already spent.
+    #
+    # Every failure here becomes an `unresolved` entry rather than an
+    # exception: a notebook that is missing, unreadable, not JSON, or whose
+    # code cells will not parse is an UNCERTAIN walk, and this module
+    # already has one vocabulary for that. Its own existence at the pin is
+    # a different question, asked by the `declared-notebook-reachable` pin
+    # condition against the commit rather than against the working tree.
+    for raw_notebook in entry_notebooks:
+        try:
+            relative = validate_notebook_path(
+                raw_notebook, where="clone-path resolution"
+            )
+        except JobFolderError as exc:
+            unresolved.append(str(exc))
+            continue
+        notebook_file = (resolved_target / relative).resolve()
+        try:
+            notebook_file.relative_to(resolved_target)
+        except ValueError:
+            unresolved.append(
+                f"notebook {relative!r} resolves to {notebook_file}, outside "
+                f"target {resolved_target} (symlink escape)"
+            )
+            continue
+        if not notebook_file.is_file():
+            unresolved.append(
+                f"notebook {relative!r} does not exist under {resolved_target}"
+            )
+            continue
+        try:
+            notebook_text = notebook_code_source(notebook_file)
+        except JobFolderError as exc:
+            unresolved.append(str(exc))
+            continue
+        try:
+            notebook_tree = ast.parse(notebook_text)
+        except SyntaxError as exc:
+            unresolved.append(
+                f"{notebook_file}: code cells are unparsable as Python ({exc})"
+            )
+            continue
+        if notebook_file in visited:
+            continue
+        visited.add(notebook_file)
+        absorb(notebook_file, notebook_tree)
+
+    while queue:
+        dotted, is_entry = queue.pop(0)
+        kind, clone_path, file = _classify_import(dotted, source, is_entry=is_entry)
+        if kind == "external":
+            continue
+        if kind == "unresolved":
+            unresolved.append(
+                f"import {dotted!r} resolves to nothing on disk under {source}"
+            )
+            continue
+        computed.add(clone_path)
+        if file in visited:
+            continue
+        visited.add(file)
+
+        try:
+            text = file.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            unresolved.append(f"{file}: unreadable ({exc})")
+            continue
+        try:
+            tree = ast.parse(text)
+        except SyntaxError as exc:
+            unresolved.append(f"{file}: unparsable ({exc})")
+            continue
+
+        absorb(file, tree)
+
     uncovered_reads = [
         r for r in computed_reads if not _covered_by_declared(r, declared)
     ]
@@ -1218,6 +1303,167 @@ def validate_commit_shape(commit: object, *, source: str = "the pinned commit") 
     return commit
 
 
+NOTEBOOK_SUFFIX = ".ipynb"
+
+# The two shapes a `run` (or `run.smoke`) block may take, and the only
+# two. Named here rather than respelled at each of the four places that
+# branch on them (`validate_run_config()`, `build_run_config()`,
+# `generate_job()`, and `assets/runner_invoke.py`'s own mirror).
+RUN_BLOCK_KINDS = ("callable", "notebook")
+
+
+def validate_notebook_path(raw: object, *, where: str) -> str:
+    """Structural validation for a declared notebook path — the same
+    posture `validate_clone_paths()` holds for a clone path, and for the
+    same reasons: the value reaches `git cat-file`, a `sparse-checkout`
+    pathspec and a filesystem join, so an absolute or `..`-bearing path is
+    refused before any of them sees it.
+
+    The `.ipynb` suffix is checked here and nowhere else. It is not
+    decoration: `runner_invoke.py` hands this path to a notebook reader,
+    and anything else reaching that reader dies inside the kernel with a
+    decode error after the quota is already spent — the exact class of
+    failure every other guard in this module exists to move earlier.
+    """
+    if not isinstance(raw, str) or not raw.strip():
+        raise JobFolderError(
+            f"{where} declares notebook {raw!r}: a notebook path must be a "
+            "non-empty string"
+        )
+    candidate = Path(raw)
+    if candidate.is_absolute():
+        raise JobFolderError(f"{where} refuses absolute notebook path {raw!r}")
+    if ".." in candidate.parts:
+        raise JobFolderError(f"{where} refuses notebook path {raw!r}: contains '..'")
+    if candidate.suffix != NOTEBOOK_SUFFIX:
+        raise JobFolderError(
+            f"{where} refuses notebook path {raw!r}: a notebook run must name "
+            f"a {NOTEBOOK_SUFFIX} file"
+        )
+    return candidate.as_posix()
+
+
+def run_block_kind(block: object, *, where: str) -> str:
+    """Which of the two shapes a `run`/`run.smoke` block declares —
+    `"callable"` (a `module`/`function` pair) or `"notebook"` (a
+    `notebook` path) — refusing anything that is neither and anything
+    that is both.
+
+    **A union, deliberately never a widening.** A block carrying a
+    notebook BESIDE a module/function pair would be two declarations of
+    the same run with nothing in the code saying which one the worker
+    obeys — which is precisely the divergence this whole shape exists to
+    close: a callable documenting itself as "exactly what the notebook's
+    own cells run" is an assertion no guard can check, and it has already
+    drifted once. Exactly one of the two, or a refusal.
+
+    **A refusal, deliberately never a fallback.** Both directions are
+    refused HERE rather than resolved by a default, because the caller
+    downstream of this function spends metered quota. A block declaring
+    neither shape would otherwise have to be guessed at, and every guess
+    available costs the same money as the right answer.
+
+    `where` names the block being judged (`"run"`, `"run.smoke"`) so a
+    refusal about a smoke block is never read as one about the normal
+    run.
+    """
+    if not isinstance(block, Mapping):
+        raise JobFolderError(f"{where} must be a JSON object")
+    notebook = block.get("notebook")
+    module = block.get("module")
+    function = block.get("function")
+    if notebook is not None and (module is not None or function is not None):
+        raise JobFolderError(
+            f"{where} declares BOTH a notebook ({notebook!r}) and a "
+            f"module/function pair ({module!r}/{function!r}); a block "
+            "declares exactly one of the two, never both — two declarations "
+            "of one run is the divergence this shape exists to prevent"
+        )
+    if notebook is not None:
+        validate_notebook_path(notebook, where=where)
+        return "notebook"
+    if module and function:
+        return "callable"
+    raise JobFolderError(
+        f"{where} declares neither a 'module'/'function' pair nor a "
+        f"'notebook'; got {dict(block)!r}. A run with no declared shape is "
+        "refused rather than defaulted, because the next step spends quota"
+    )
+
+
+def declared_notebooks(run_config: Mapping[str, object]) -> list[str]:
+    """Every notebook path a run configuration declares — the normal `run`
+    block's, and `run.smoke`'s when that block declares one — sorted and
+    deduplicated.
+
+    One derivation, three readers: `generate_job()` (which cross-checks
+    them before writing), `remote_cli.py`'s submit gate (which re-derives
+    them from the job folder's OWN config rather than from a caller's
+    arguments), and the pin condition both of those reach. A second
+    spelling anywhere would let the decision points disagree about which
+    notebooks a job promised to run, which is the drift
+    `verify_pin_preconditions()` already exists to make impossible for
+    every other condition.
+    """
+    run_block = run_config.get("run")
+    if not isinstance(run_block, Mapping):
+        return []
+    found = []
+    notebook = run_block.get("notebook")
+    if isinstance(notebook, str) and notebook:
+        found.append(notebook)
+    smoke = run_block.get("smoke")
+    if isinstance(smoke, Mapping):
+        smoke_notebook = smoke.get("notebook")
+        if isinstance(smoke_notebook, str) and smoke_notebook:
+            found.append(smoke_notebook)
+    return sorted(set(found))
+
+
+def notebook_code_source(path: Path) -> str:
+    """Every code cell of a notebook, concatenated into one parseable
+    Python source text — what lets `resolve_clone_paths()` walk a
+    notebook's imports with the SAME `ast` machinery it already walks a
+    module's with, rather than a second, notebook-shaped analysis.
+
+    Markdown and raw cells are dropped; they carry no imports. Within a
+    code cell, a line whose first non-space character is `%` or `!` is
+    dropped too: those are the kernel's own magic and shell escapes, not
+    Python, and one of them anywhere in a real pilot notebook would make
+    `ast.parse()` raise and turn every such notebook into an `unresolved`
+    refusal. Dropping them costs nothing this walk needs — a magic line
+    cannot carry an `import` statement — and it is a NAMED transformation
+    rather than a silent tolerance: `%run other.ipynb` still reaches
+    nobody, and that is stated here rather than discovered later.
+
+    Raises `JobFolderError` when the file is not readable as a notebook;
+    the caller turns that into an `unresolved` entry rather than a crash.
+    """
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise JobFolderError(f"{path}: not readable as a notebook ({exc})") from exc
+    if not isinstance(payload, Mapping):
+        raise JobFolderError(f"{path}: notebook does not decode to a JSON object")
+    chunks: list[str] = []
+    for cell in payload.get("cells") or []:
+        if not isinstance(cell, Mapping) or cell.get("cell_type") != "code":
+            continue
+        source = cell.get("source")
+        if isinstance(source, list):
+            text = "".join(str(line) for line in source)
+        elif isinstance(source, str):
+            text = source
+        else:
+            continue
+        kept = [
+            line for line in text.splitlines()
+            if not line.lstrip().startswith(("%", "!"))
+        ]
+        chunks.append("\n".join(kept))
+    return "\n".join(chunks) + "\n"
+
+
 def validate_run_config(run_config: Mapping[str, object]) -> None:
     """The schema check re-run on every read, not only at generation —
     `generate_job()` calls it on the very config it is about to write, so a
@@ -1252,9 +1498,16 @@ def validate_run_config(run_config: Mapping[str, object]) -> None:
     validate_commit_shape(run_config["commit"], source="run-config.json")
     validate_clone_paths(run_config["clonePaths"])
     run_block = run_config["run"]
-    if not isinstance(run_block, Mapping) or "module" not in run_block or "function" not in run_block:
-        raise JobFolderError(
-            "run-config.json's 'run' block must declare a 'module' and a 'function'"
+    # The union check, and the whole of it — see `run_block_kind()`. It is
+    # re-run on every READ for the same reason the commit-shape check is: a
+    # job folder that acquired a shapeless or double-shaped `run` block any
+    # other way (hand-edited, written by an older generator, copied between
+    # machines) is refused when it is read, not only when it is written, and
+    # a job folder is read at submit — the decision point that spends quota.
+    run_block_kind(run_block, where="run-config.json's 'run' block")
+    if isinstance(run_block, Mapping) and run_block.get("smoke") is not None:
+        run_block_kind(
+            run_block["smoke"], where="run-config.json's 'run.smoke' block"
         )
 
 
@@ -1276,12 +1529,14 @@ def build_run_config(
     repo_url: str,
     repo_ref: str,
     clone_paths: Sequence[str],
-    run_module: str,
-    run_function: str,
-    run_kwargs: Mapping[str, object] | None,
-    smoke_module: str | None,
-    smoke_function: str | None,
-    smoke_kwargs: Mapping[str, object] | None,
+    run_module: str | None = None,
+    run_function: str | None = None,
+    run_kwargs: Mapping[str, object] | None = None,
+    run_notebook: str | None = None,
+    smoke_module: str | None = None,
+    smoke_function: str | None = None,
+    smoke_kwargs: Mapping[str, object] | None = None,
+    smoke_notebook: str | None = None,
     bootstrap_asset: Path,
     invoke_asset: Path,
     unresolved_imports: Sequence[str] | None = None,
@@ -1295,6 +1550,16 @@ def build_run_config(
     local_budget_seconds: int | None = None,
 ) -> dict:
     """Assemble `run-config.json`'s exact shape from target-supplied values.
+
+    `run_notebook`/`smoke_notebook` are the second of the two shapes a run
+    block may take (see `run_block_kind()`): the block records
+    `{"notebook": <clone-relative path>}` and NOTHING else — no `module`,
+    no `function`, no `kwargs`. A notebook is not a callable, and giving
+    it an empty `kwargs` would be a key that means nothing to every reader
+    downstream. Given together with `run_module`/`run_function` the call
+    is refused here, before `validate_run_config()` is even reached, so
+    the refusal names the ARGUMENT the caller passed rather than the
+    config it would have produced.
 
     `runnerTemplate` records each asset's path and sha256 as inert
     provenance — deliberately not a drift check (see `SKILL.md`): a second
@@ -1378,7 +1643,7 @@ def build_run_config(
     module only carries the target's own declared list.
     """
     validated_clone_paths = validate_clone_paths(clone_paths)
-    has_smoke_block = bool(smoke_module and smoke_function)
+    has_smoke_block = bool((smoke_module and smoke_function) or smoke_notebook)
     if smoke_required_evidence and not has_smoke_block:
         raise JobFolderError(
             "smoke_required_evidence was given but no smoke module/function "
@@ -1400,17 +1665,45 @@ def build_run_config(
             "an index URL with nothing to install is not a value "
             "run-config.json can express"
         )
-    run_block: dict = {
-        "module": run_module,
-        "function": run_function,
-        "kwargs": dict(run_kwargs or {}),
-    }
-    if has_smoke_block:
-        smoke_block: dict = {
-            "module": smoke_module,
-            "function": smoke_function,
-            "kwargs": dict(smoke_kwargs or {}),
+    # Exactly one shape per block, and the block carries ONLY that shape's
+    # own keys — a notebook block never gets an empty `kwargs`, because a
+    # notebook is not called with arguments and a key that means nothing
+    # is a key a later reader has to decide what to do with.
+    # `run_block_kind()` inside `validate_run_config()` below refuses the
+    # both-declared and neither-declared cases; these branches only decide
+    # which keys get written.
+    if run_notebook and (run_module or run_function):
+        raise JobFolderError(
+            f"run_notebook ({run_notebook!r}) was given together with "
+            f"run_module/run_function ({run_module!r}/{run_function!r}); a "
+            "run declares exactly one of the two shapes, never both"
+        )
+    if smoke_notebook and (smoke_module or smoke_function):
+        raise JobFolderError(
+            f"smoke_notebook ({smoke_notebook!r}) was given together with "
+            f"smoke_module/smoke_function ({smoke_module!r}/"
+            f"{smoke_function!r}); a smoke run declares exactly one of the "
+            "two shapes, never both"
+        )
+    if run_notebook:
+        run_block: dict = {"notebook": validate_notebook_path(run_notebook, where="run")}
+    else:
+        run_block = {
+            "module": run_module,
+            "function": run_function,
+            "kwargs": dict(run_kwargs or {}),
         }
+    if has_smoke_block:
+        if smoke_notebook:
+            smoke_block: dict = {
+                "notebook": validate_notebook_path(smoke_notebook, where="run.smoke")
+            }
+        else:
+            smoke_block = {
+                "module": smoke_module,
+                "function": smoke_function,
+                "kwargs": dict(smoke_kwargs or {}),
+            }
         if smoke_required_evidence:
             smoke_block["requiredEvidence"] = list(smoke_required_evidence)
         run_block["smoke"] = smoke_block
@@ -1514,12 +1807,14 @@ def generate_job(
     repo_url: str,
     repo_ref: str,
     clone_paths: Sequence[str],
-    run_module: str,
-    run_function: str,
+    run_module: str | None = None,
+    run_function: str | None = None,
     run_kwargs: Mapping[str, object] | None = None,
+    run_notebook: str | None = None,
     smoke_module: str | None = None,
     smoke_function: str | None = None,
     smoke_kwargs: Mapping[str, object] | None = None,
+    smoke_notebook: str | None = None,
     smoke_required_evidence: Sequence[str] | None = None,
     regenerate: bool = False,
     bootstrap_asset: str | Path | None = None,
@@ -1535,6 +1830,15 @@ def generate_job(
 ) -> Path:
     """Generate one job folder, atomically, refusing to overwrite an
     existing one unless `regenerate=True`.
+
+    A run is declared as EITHER a `run_module`/`run_function` pair or a
+    `run_notebook` — exactly one, judged by `run_block_kind()` before the
+    pin is even resolved. The notebook shape exists so that what a worker
+    runs can be the notebook the pilot ran, rather than a second
+    implementation of it asserting in a docstring that the two agree.
+    Both shapes stay reachable on purpose: a worker asked to settle one
+    question is legitimately a function call, and some entries cannot be
+    named by a `module`/`function` contract at all.
 
     `commit` may be omitted, and then defaults to the target's HEAD
     through `_resolve_pin()` — one implementation shared with the CLI, so
@@ -1599,21 +1903,44 @@ def generate_job(
     resolved_target = resolve_target(target)
     destination = resolve_destination(resolved_target, service, job_name)
 
+    # The two shapes are decided HERE, before the pin is resolved and long
+    # before anything is written, so a caller who declared neither shape —
+    # or both — is refused by the same `run_block_kind()` that will judge
+    # the written config, rather than by whichever downstream call happens
+    # to trip over the gap first. `run_block_kind()` is given the block
+    # this call is ABOUT to build, not one read back off disk.
+    run_block_kind(
+        {k: v for k, v in
+         (("module", run_module), ("function", run_function),
+          ("notebook", run_notebook)) if v is not None},
+        where="generation's run block",
+    )
+    if smoke_module or smoke_function or smoke_notebook:
+        run_block_kind(
+            {k: v for k, v in
+             (("module", smoke_module), ("function", smoke_function),
+              ("notebook", smoke_notebook)) if v is not None},
+            where="generation's smoke block",
+        )
+
+    entry_modules = [name for name in (run_module, smoke_module) if name]
+    entry_notebooks = [nb for nb in (run_notebook, smoke_notebook) if nb]
+
     commit = _resolve_pin(resolved_target, commit, repo_url=repo_url,
                           repo_ref=repo_ref, clone_paths=clone_paths)
     verify_pin_preconditions(
         target=resolved_target,
         commit=commit,
         clone_paths=clone_paths,
+        notebooks=entry_notebooks,
         repo_url=repo_url,
         repo_ref=repo_ref,
         decision="generation",
     )
 
-    entry_modules = [run_module]
-    if smoke_module and smoke_function:
-        entry_modules.append(smoke_module)
-    clone_resolution = resolve_clone_paths(resolved_target, entry_modules, clone_paths)
+    clone_resolution = resolve_clone_paths(
+        resolved_target, entry_modules, clone_paths, entry_notebooks
+    )
     if clone_resolution["computedNotDeclared"]:
         raise JobFolderError(
             "generation refuses: these imports resolve to clone paths not "
@@ -1676,9 +2003,11 @@ def generate_job(
         run_module=run_module,
         run_function=run_function,
         run_kwargs=run_kwargs,
+        run_notebook=run_notebook,
         smoke_module=smoke_module,
         smoke_function=smoke_function,
         smoke_kwargs=smoke_kwargs,
+        smoke_notebook=smoke_notebook,
         bootstrap_asset=resolved_bootstrap,
         invoke_asset=resolved_invoke,
         unresolved_imports=clone_resolution["unresolved"] if accept_unresolved else None,
@@ -2083,7 +2412,7 @@ def _verify_commit_reachable(
 # statements so that `SKILL.md`'s doctrine table can be held to it by the
 # suite — prose cannot be held to code, a table can.
 PIN_CONDITIONS = ("clean-worktree", "pin-is-head", "declared-paths-exist",
-                  "pin-published")
+                  "declared-notebook-reachable", "pin-published")
 
 
 def _refuse_dirty_worktree(
@@ -2261,6 +2590,63 @@ def _refuse_absent_clone_paths(
         )
 
 
+def _refuse_unreachable_notebook(
+    *, target: Path, commit: str, clone_paths: Sequence[str],
+    notebooks: Sequence[str] = (), decision: str, **_unused: object,
+) -> None:
+    """Condition (4) — every declared notebook must actually ARRIVE in the
+    runner's checkout, which is two facts and not one.
+
+    1. **Covered by a declared clone path.** `git sparse-checkout set`
+       delivers what the declared paths cover and nothing else. A notebook
+       sitting outside every declared path is simply absent from the
+       checkout, and `run.notebook` naming it does not make it arrive —
+       `clonePaths` is the only thing that does. This half cannot be
+       inferred from the import cross-check either: that check asks
+       whether every computed path is declared, and a notebook is never
+       computed at all (nothing imports it), so a notebook has no
+       representative in `computedNotDeclared` for any declaration to be
+       missing from.
+    2. **Present at the pin.** The same question
+       `_refuse_absent_clone_paths` asks of a clone path, asked of the
+       file rather than of the directory that carries it: a declared
+       clone path can exist at the pin while the notebook inside it does
+       not, and `sparse-checkout` reports nothing for either case.
+
+    Both asked of the PIN and never of the working tree, for the reason
+    condition (3) already gives: the pin is what the runner fetches, and a
+    notebook the operator can see and the pin cannot is precisely the case
+    a working-tree check waves through.
+
+    Local, and therefore ahead of the network condition. A job with no
+    declared notebook — every job the callable shape produces — passes
+    through untouched.
+    """
+    uncovered = [nb for nb in notebooks if not _covered_by_declared(nb, clone_paths)]
+    if uncovered:
+        raise JobFolderError(
+            f"{decision} refuses: these declared notebooks are not covered by "
+            f"any declared clone path, so the runner's sparse checkout would "
+            f"never receive them and the run would fail inside the kernel "
+            f"after quota is already spent: {uncovered}. Declare a "
+            f"--clone-path that contains them."
+        )
+    missing = []
+    for notebook in notebooks:
+        try:
+            _run_git(["cat-file", "-e", f"{commit}:{notebook}"], cwd=target)
+        except JobFolderError:
+            missing.append(notebook)
+    if missing:
+        raise JobFolderError(
+            f"{decision} refuses: these declared notebooks do not exist at "
+            f"{commit!r}, so the runner would clone a checkout without them "
+            f"and the run would fail inside the kernel after quota is "
+            f"already spent: {missing}. Commit them and pin the commit that "
+            "carries them, or stop declaring them."
+        )
+
+
 def _refuse_unpublished_pin(
     *,
     commit: str,
@@ -2285,6 +2671,7 @@ _PIN_CONDITION_CHECKS = {
     "clean-worktree": _refuse_dirty_worktree,
     "pin-is-head": _refuse_stale_pin,
     "declared-paths-exist": _refuse_absent_clone_paths,
+    "declared-notebook-reachable": _refuse_unreachable_notebook,
     "pin-published": _refuse_unpublished_pin,
 }
 
@@ -2417,9 +2804,19 @@ def verify_pin_preconditions(
     repo_url: str,
     repo_ref: str,
     decision: str,
+    notebooks: Sequence[str] = (),
 ) -> None:
     """The one home for every condition a pin must satisfy before anything
     irreversible happens, and the ONLY thing either decision point calls.
+
+    `notebooks` defaults to empty, and that default is the whole of the
+    callable shape's behavior: a job that declares no notebook meets
+    exactly the conditions it met before this parameter existed. It is
+    NOT a silent skip for a job that does declare one — both decision
+    points derive it from the same `declared_notebooks()`, one off the
+    caller's arguments and one off the job folder's own written config,
+    so neither can reach `_refuse_unreachable_notebook` with an empty
+    list for a job that has a notebook to check.
 
     A decision point is any command that writes a job folder or spends
     remote quota: `generate-job` and `submit`. Both call exactly this
@@ -2449,11 +2846,15 @@ def verify_pin_preconditions(
     validate_commit_shape(commit, source=f"{decision}")
     resolved_target = resolve_target(target)
     validated_clone_paths = validate_clone_paths(clone_paths, resolved_target)
+    validated_notebooks = tuple(
+        validate_notebook_path(notebook, where=decision) for notebook in notebooks
+    )
     for condition in PIN_CONDITIONS:
         _PIN_CONDITION_CHECKS[condition](
             target=resolved_target,
             commit=commit,
             clone_paths=validated_clone_paths,
+            notebooks=validated_notebooks,
             repo_url=repo_url,
             repo_ref=repo_ref,
             decision=decision,

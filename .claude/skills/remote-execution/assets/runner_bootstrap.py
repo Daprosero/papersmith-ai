@@ -26,20 +26,30 @@ never baked in at generation time. Ten responsibilities, in order:
 5. import each declared module and assert its `__file__` resolves under
    the clone's own `src` — the "pip-installed copy" refusal: a module
    importable from somewhere ELSE already on `sys.path` would silently
-   run against code this job never pinned a commit for
+   run against code this job never pinned a commit for. A declared
+   NOTEBOOK gets the same proof in the only form a notebook can take
+   (`verify_notebooks_under_clone`): the file is where the pinned sparse
+   checkout should have put it, and it names a kernel
 6. detect hardware — `torch` not importable IS "hardware missing"; no
    silent CPU fallback, or this refusal could never actually fire
-7. write `bootstrap.json`: commit, config, detected environment
+7. write `bootstrap.json`: commit, config, detected environment, resolved
+   imports and resolved notebooks
 8. any of config / code / hardware missing raises `SystemExit` on the
    spot, so cell 1 never runs against a half-prepared runtime
-9. the accelerator gate: the arriving capability must appear in the
+9. the notebook-executor gate, when a notebook is declared: `nbformat`,
+   `nbclient` and `jupyter_client` must be importable and the notebook's
+   own kernel must resolve to an installed kernelspec. Probed, never
+   assumed — this cell installs only what the target declared, and the
+   remedy a refusal names is that same declaration. Runs AFTER
+   responsibility 7 for the same reason the accelerator gate does
+10. the accelerator gate: the arriving capability must appear in the
    installed arch list, and any declared `accelerator.architectures`
    must be covered by that same installed list. This runs AFTER
    responsibility 7, never before — a refusal whose evidence was never
    written is unreadable no matter how early it fires, so `bootstrap.json`
    already carries the arriving device, the torch build and the arch
    list the verdict was computed from by the time this refuses
-10. no service name anywhere, ever
+11. no service name anywhere, ever
 
 Importable and independently testable: every responsibility above is a
 plain function, and `bootstrap()` composes them. Nothing runs at import
@@ -137,9 +147,27 @@ def _validate_run_config(run_config: object) -> None:
             f"{RUN_CONFIG_SCHEMA_VERSION}"
         )
     run_block = run_config.get("run")
-    if not isinstance(run_block, dict) or "module" not in run_block:
+    if not isinstance(run_block, dict):
         raise BootstrapError(
-            "config missing: run-config.json's 'run' block must declare a 'module'"
+            "config missing: run-config.json's 'run' block must be an object"
+        )
+    # Exactly one of the two shapes, and this cell refuses rather than
+    # guesses at a block that declares neither or both. The refusal has to
+    # exist HERE and not only in the generator: this cell reads whatever
+    # `run-config.json` the kernel was actually handed, and a config that
+    # acquired a shapeless `run` block any other way (hand-edited, staged
+    # by an older generator) reaches this file and nothing else.
+    has_callable = bool(run_block.get("module"))
+    has_notebook = bool(run_block.get("notebook"))
+    if has_callable and has_notebook:
+        raise BootstrapError(
+            "config missing: run-config.json's 'run' block declares BOTH a "
+            "'module' and a 'notebook'; a run has exactly one shape"
+        )
+    if not (has_callable or has_notebook):
+        raise BootstrapError(
+            "config missing: run-config.json's 'run' block must declare "
+            "either a 'module' or a 'notebook'"
         )
 
 
@@ -325,11 +353,29 @@ def declared_modules(run_config: Mapping[str, Any]) -> list[str]:
     could be the module cell 1 actually calls.
     """
     run_block = run_config["run"]
-    modules = [run_block["module"]]
+    modules = []
+    if run_block.get("module"):
+        modules.append(run_block["module"])
     smoke = run_block.get("smoke")
     if isinstance(smoke, dict) and smoke.get("module"):
         modules.append(smoke["module"])
     return modules
+
+
+def declared_notebooks(run_config: Mapping[str, Any]) -> list[str]:
+    """Every notebook `run-config.json` names as an entry point: the normal
+    `run.notebook`, plus `run.smoke.notebook` when present — the notebook
+    shape's exact counterpart to `declared_modules()` above, and read the
+    same way, since either one could be what cell 1 actually runs.
+    """
+    run_block = run_config["run"]
+    notebooks = []
+    if run_block.get("notebook"):
+        notebooks.append(run_block["notebook"])
+    smoke = run_block.get("smoke")
+    if isinstance(smoke, dict) and smoke.get("notebook"):
+        notebooks.append(smoke["notebook"])
+    return notebooks
 
 
 def verify_imports_under_clone(
@@ -369,6 +415,139 @@ def verify_imports_under_clone(
             )
         verified[name] = str(resolved_file)
     return verified
+
+
+DEFAULT_KERNEL_NAME = "python3"
+
+# The three modules a notebook run needs on the worker, and the whole of
+# what `check_notebook_executor()` probes for. `nbformat` reads and writes
+# the notebook, `nbclient` executes it, and `jupyter_client` is what
+# resolves a kernel NAME to an installed kernel — the third one is not
+# redundant with the other two: a runtime can have both readers and no
+# kernelspec at all, which is exactly the shape of the failure that has
+# already cost this skill a real push.
+NOTEBOOK_EXECUTOR_MODULES = ("nbformat", "nbclient", "jupyter_client")
+
+
+def verify_notebooks_under_clone(
+    notebooks: Sequence[str], clone_dir: str | Path
+) -> dict[str, dict]:
+    """Prove every declared notebook actually ARRIVED in the clone, and
+    read the kernel each one asks for — the notebook shape's exact
+    counterpart to `verify_imports_under_clone()`, and it exists for the
+    same reason that one does.
+
+    A module gets its `__file__` checked because an importable copy from
+    somewhere else on `sys.path` would silently run unpinned code. A
+    notebook cannot be imported at all, so the equivalent proof is that
+    the file is where the pinned checkout should have put it. `git
+    sparse-checkout` reports NOTHING for a path its declared patterns do
+    not cover, so the failure this refuses against is silent by
+    construction: the clone succeeds, the kernel starts, and the run dies
+    at the moment it goes looking for the notebook — with the quota
+    already spent.
+
+    The kernel name is read from each notebook's own
+    `metadata.kernelspec.name`, defaulting to `DEFAULT_KERNEL_NAME` when
+    the notebook declares none. It is read HERE rather than in
+    `check_notebook_executor()` so the capability gate is handed a fact
+    off the pinned notebook instead of re-opening the file to guess one.
+    """
+    resolved_clone = Path(clone_dir).resolve()
+    verified: dict[str, dict] = {}
+    for name in notebooks:
+        candidate = (resolved_clone / name).resolve()
+        try:
+            candidate.relative_to(resolved_clone)
+        except ValueError:
+            raise BootstrapError(
+                f"code missing: declared notebook {name!r} resolves to "
+                f"{candidate}, outside the clone at {resolved_clone}"
+            ) from None
+        if not candidate.is_file():
+            raise BootstrapError(
+                f"code missing: declared notebook {name!r} is not at "
+                f"{candidate}; the sparse checkout delivered nothing for it, "
+                "which it does silently for any path the declared clone "
+                "paths do not cover"
+            )
+        try:
+            payload = json.loads(candidate.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise BootstrapError(
+                f"code missing: declared notebook {name!r} at {candidate} is "
+                f"not readable as a notebook: {exc}"
+            ) from exc
+        metadata = payload.get("metadata") if isinstance(payload, dict) else None
+        kernelspec = metadata.get("kernelspec") if isinstance(metadata, dict) else None
+        kernel = None
+        if isinstance(kernelspec, dict):
+            kernel = kernelspec.get("name")
+        verified[name] = {
+            "path": str(candidate),
+            "kernel": str(kernel) if kernel else DEFAULT_KERNEL_NAME,
+        }
+    return verified
+
+
+def check_notebook_executor(
+    notebooks: Mapping[str, dict],
+    *,
+    import_module: Callable[[str], Any] = importlib.import_module,
+) -> None:
+    """The notebook-executor gate: refuse, here, when this runtime cannot
+    execute a notebook — never after the run is already under way.
+
+    This cell installs only what `run-config.json`'s `environment.install`
+    declares, and nothing in this skill can know what a given worker image
+    ships. So the mechanism is not ASSUMED to be present: it is probed,
+    and its absence is a refusal that names the remedy, which is the
+    target declaring it in `environment.install` like any other
+    dependency. Responsibility 4 runs before this, so a declared install
+    is what this gate then measures.
+
+    Three probes, because three different absences produce the same
+    unusable runtime:
+
+    - `nbformat`/`nbclient` — the reader and the executor themselves.
+    - `jupyter_client` and an actual kernelspec for each notebook's own
+      declared kernel. A missing kernelspec is not a hypothetical: a
+      notebook with no resolvable kernel made the service's own runner
+      refuse before a single cell executed, and that was discovered only
+      after a real push with the quota already gone. The same failure,
+      one layer in, is a notebook this cell hands to `nbclient` that
+      names a kernel nothing here can start.
+
+    A job that declares no notebook passes through untouched — no import
+    is attempted, and a callable-shaped run keeps behaving exactly as it
+    did before any of this existed.
+    """
+    if not notebooks:
+        return
+    for module_name in NOTEBOOK_EXECUTOR_MODULES:
+        try:
+            import_module(module_name)
+        except ImportError as exc:
+            raise BootstrapError(
+                f"notebook executor missing: {module_name!r} is not importable "
+                f"in this runtime, and this job declares a notebook run "
+                f"({sorted(notebooks)}). Declare it in run-config.json's "
+                f"environment.install (--environment-requirement) so it is "
+                f"installed before this cell asks for it: {exc}"
+            ) from exc
+    kernelspec_module = import_module("jupyter_client.kernelspec")
+    manager = kernelspec_module.KernelSpecManager()
+    for name, info in sorted(notebooks.items()):
+        kernel = info.get("kernel") or DEFAULT_KERNEL_NAME
+        try:
+            manager.get_kernel_spec(kernel)
+        except Exception as exc:  # noqa: BLE001 - any resolution failure is the refusal
+            raise BootstrapError(
+                f"notebook executor missing: notebook {name!r} declares kernel "
+                f"{kernel!r} and this runtime has no kernelspec for it "
+                f"({type(exc).__name__}: {exc}); the notebook would be handed "
+                "to an executor that cannot start a kernel for it"
+            ) from exc
 
 
 def _capability_to_arch(capability: tuple[int, int]) -> str:
@@ -431,10 +610,20 @@ def write_bootstrap_output(
     run_config: Mapping[str, Any],
     environment: Mapping[str, Any],
     imports: Mapping[str, str],
+    notebooks: Mapping[str, dict] | None = None,
 ) -> Path:
     """`bootstrap.json` — responsibility 7: the commit, the config, the
     detected environment, and the resolved import locations responsibility
     4 just proved.
+
+    `notebooks` carries the same proof for the notebook shape — each
+    declared notebook's resolved location inside the clone and the kernel
+    it asks for — and is written for the same reason `imports` is: the
+    notebook-executor gate below refuses AFTER this file exists, so its
+    evidence (which notebook, which kernel) is already readable on disk
+    when it fires. Always present, `{}` for a callable-shaped run, never
+    absent — an absent key and an empty one are different facts and only
+    one of them is true here.
     """
     base = Path(base_dir) if base_dir is not None else Path.cwd()
     payload = {
@@ -442,6 +631,7 @@ def write_bootstrap_output(
         "config": dict(run_config),
         "environment": dict(environment),
         "imports": dict(imports),
+        "notebooks": dict(notebooks or {}),
     }
     path = base / BOOTSTRAP_OUTPUT_FILENAME
     path.write_text(json.dumps(payload, sort_keys=True, indent=2), encoding="utf-8")
@@ -490,8 +680,16 @@ def bootstrap(
     hardware_import: Callable[[str], Any] = importlib.import_module,
 ) -> dict[str, Any]:
     """The whole of cell 0, in the fixed order the design pins:
-    config -> clone -> `sys.path` -> install -> imports -> hardware ->
-    `bootstrap.json` -> the accelerator gate.
+    config -> clone -> `sys.path` -> install -> imports -> notebooks ->
+    hardware -> `bootstrap.json` -> the notebook-executor gate -> the
+    accelerator gate.
+
+    The two gates sit together after the write, and the notebook one is
+    first only because it is the cheaper question. Both are runtime
+    CAPABILITY questions — can this runtime execute what was declared —
+    as against `verify_imports_under_clone()`/`verify_notebooks_under_
+    clone()` above them, which ask whether the pinned code ARRIVED and
+    therefore belong beside the clone that was supposed to deliver it.
 
     Any of config / code / hardware missing raises `SystemExit` on the
     spot — responsibility 8 — so cell 1 never runs against a
@@ -515,6 +713,9 @@ def bootstrap(
         install_environment(run_config)
         modules = declared_modules(run_config)
         imports = verify_imports_under_clone(modules, src_dir)
+        notebooks = verify_notebooks_under_clone(
+            declared_notebooks(run_config), clone_dir
+        )
         environment = detect_hardware(import_module=hardware_import)
         write_bootstrap_output(
             base,
@@ -522,11 +723,18 @@ def bootstrap(
             run_config=run_config,
             environment=environment,
             imports=imports,
+            notebooks=notebooks,
         )
+        check_notebook_executor(notebooks)
         check_accelerator(run_config, environment)
     except BootstrapError as exc:
         raise SystemExit(f"bootstrap refused: {exc}") from exc
-    return {"commit": run_config["commit"], "environment": environment, "imports": imports}
+    return {
+        "commit": run_config["commit"],
+        "environment": environment,
+        "imports": imports,
+        "notebooks": notebooks,
+    }
 
 
 if __name__ == "__main__":
