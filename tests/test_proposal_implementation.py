@@ -26220,11 +26220,16 @@ _ENGLISH_COUNTS = {
     # (the-pilot-proves-the-science, slice B).
     7: "Seven", 8: "Eight",
     9: "Nine", 10: "Ten", 11: "Eleven",
+    # `Twelve` is `usage.md`'s tally once `undeclaredStepNotebooks` joined the
+    # reported-but-never-a-finding list, and `Twenty-three` is `SKILL.md`'s
+    # Output Contract row count with the same key in it.
+    12: "Twelve",
     17: "Seventeen", 18: "Eighteen", 19: "Nineteen",
     # `Twenty-one` is `verify`'s status count once `undeclaredProduces` joined
     # it -- the per-step half of the same "reported, never demanded" family
     # `undeclaredLadder` and `undeclaredRecords` already sit in.
     20: "Twenty", 21: "Twenty-one", 22: "Twenty-two",
+    23: "Twenty-three",
     26: "Twenty-six", 27: "Twenty-seven", 28: "Twenty-eight",
     29: "Twenty-nine", 30: "Thirty", 31: "Thirty-one", 32: "Thirty-two",
     33: "Thirty-three", 34: "Thirty-four", 35: "Thirty-five",
@@ -29261,6 +29266,251 @@ class UndeclaredProducesReportTests(unittest.TestCase):
                                     "| Status | What it reports | Gates? |")[0]}
         self.assertIn("undeclaredProduces", rows)
         self.assertIn("never", rows["undeclaredProduces"].lower())
+
+
+class UndeclaredStepNotebookReportTests(unittest.TestCase):
+    """`verify.undeclaredStepNotebooks` -- the from-zero half of the pattern
+    `pilotCompleteness.withoutNotebook` can only report after a run.
+
+    The gap this closes, stated as the incident rather than as a rule. A
+    repository is never told the pattern exists, so it discovers it the way one
+    already did: after a pilot ran, from a report nobody was watching. Of ten
+    declared steps, six executed a notebook and four computed by calling the
+    target's library directly; the notebooks those four own -- one of them the
+    file a remote worker would have been handed -- were never executed by the
+    flow that was supposed to validate them.
+
+    **Why a new key and not a widening of `withoutNotebook`.** The two answer
+    different questions and one of them cannot be asked yet at the moment the
+    other is needed. `withoutNotebook` is computed from a pilot's own evidence
+    -- a position sequence, the notebook reports, an ordering somebody already
+    declared -- and answers `status: "undeclared"` with empty lists for a
+    repository that declared no ordering at all. It says *this repository
+    opened no notebook here*. The from-zero question is *nobody ever asked it
+    to have one*, and it has to be answerable off the declaration alone, before
+    any run exists. Folding the demand into the report would make one key's
+    emptiness mean both "every step owns a notebook" and "no pilot has run",
+    which is the confusion this branch has already paid for.
+
+    **Why the two lists overlap on purpose.** A step declaring no `produces` at
+    all is named here as well as in `undeclaredProduces`, because `[]` from
+    this key has to mean *every declared step owns a notebook*. Subtract, and a
+    repository whose ten steps all declare nothing reads `[]` -- a report that
+    says nothing is missing because it was looking at nobody.
+    """
+
+    def _bench(self, steps, *, holder="__init__.py", package=True):
+        box = FORGE / "implementations" / f"_e2e_stepnb_{os.getpid()}_{id(self)}"
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        if package:
+            root = box / "src" / "Method_Benchmark"
+            root.mkdir(parents=True)
+            (root / holder).write_text(f"__steps__ = {steps!r}\n",
+                                       encoding="utf-8")
+        else:
+            box.mkdir(parents=True)
+        return box
+
+    @staticmethod
+    def _step(*roots):
+        entry = {"module": "m", "function": "f"}
+        if roots:
+            entry["produces"] = list(roots)
+        return entry
+
+    def test_a_step_owning_no_notebook_is_named_with_its_consequence(self):
+        steps = {"one": self._step("Results/one")}
+        box = self._bench(steps)
+        entries = impl.undeclared_step_notebooks_state(box, "Method", steps)
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["step"], "one")
+        self.assertEqual(entries[0]["path"], "src/Method_Benchmark/__init__.py")
+        self.assertIn("produces", entries[0]["declaration"])
+        self.assertEqual(entries[0]["consequence"],
+                         impl.STEP_NOTEBOOK_UNDECLARED_CONSEQUENCE)
+
+    def test_a_step_naming_its_own_notebook_is_asked_nothing(self):
+        steps = {"one": self._step("Results/one", "Notebooks/one.ipynb")}
+        box = self._bench(steps)
+        self.assertEqual(
+            impl.undeclared_step_notebooks_state(box, "Method", steps), [])
+
+    def test_every_step_that_owns_none_is_named_and_not_only_a_bare_repository(self):
+        """**The mutation, and the weaker guard it beats.** A check that fires
+        only when a target declares NO steps at all passes this target
+        outright: three steps are declared, one of them scaffolds its notebook
+        and two do not, and the whole point is that the two are named
+        individually. `steps` is non-empty, so a repository-level guard sees
+        nothing to say and returns `[]`; only a per-step reading answers
+        `["draw", "measure"]` here.
+        """
+        steps = {"compute": self._step("Results/compute",
+                                       "Notebooks/compute.ipynb"),
+                 "measure": self._step("Results/measure"),
+                 "draw": self._step("Results/draw")}
+        box = self._bench(steps)
+        entries = impl.undeclared_step_notebooks_state(box, "Method", steps)
+        self.assertEqual([entry["step"] for entry in entries],
+                         ["draw", "measure"])
+
+    def test_a_step_declaring_no_roots_at_all_is_named_here_too(self):
+        """The no-subtraction decision, asserted rather than promised. Both
+        keys name the step and neither is a copy of the other: one says its run
+        is measured against nothing, this one says the pilot cannot exercise it
+        as the artefact it will be sent as."""
+        steps = {"one": self._step()}
+        box = self._bench(steps)
+        self.assertEqual(
+            [entry["step"] for entry in
+             impl.undeclared_step_notebooks_state(box, "Method", steps)],
+            ["one"])
+        self.assertEqual(
+            [entry["step"] for entry in
+             impl.undeclared_produces_state(box, "Method", steps)],
+            ["one"])
+        self.assertNotEqual(impl.STEP_NOTEBOOK_UNDECLARED_CONSEQUENCE,
+                            impl.PRODUCES_UNDECLARED_CONSEQUENCE)
+
+    def test_the_notebook_category_is_read_segment_wise(self):
+        """`_owns`, reused rather than respelled, is what keeps this a guard
+        and not a guard-shaped string comparison: a root that merely STARTS
+        with the folder's letters owns no notebook of the product, and a
+        notebook buried under another category is not one either."""
+        for roots, owns in ((["Notebooks"], True),
+                            (["Notebooks/deep/one.ipynb"], True),
+                            (["NotebooksDraft/one.ipynb"], False),
+                            (["Results/one/Notebooks/two.ipynb"], False),
+                            ([" "], False),
+                            ([42], False)):
+            with self.subTest(roots=roots):
+                self.assertEqual(
+                    bool(impl._step_notebook_roots({"produces": roots})), owns)
+
+    def test_a_target_declaring_no_steps_is_asked_nothing(self):
+        """The restraint every sibling report keeps: a repository with nothing
+        to declare has not left a question unanswered."""
+        box = self._bench({})
+        self.assertEqual(
+            impl.undeclared_step_notebooks_state(box, "Method", {}), [])
+
+    def test_a_target_with_nowhere_to_write_it_is_asked_nothing(self):
+        steps = {"one": self._step("Results/one")}
+        box = self._bench(steps, package=False)
+        self.assertEqual(
+            impl.undeclared_step_notebooks_state(box, "Method", steps), [],
+            "structure.scaffoldGaps already names the missing file")
+
+    def test_every_entry_carries_the_same_four_keys_whatever_the_state(self):
+        """The payload shape must not vary with why a step owns no notebook: a
+        consumer that has to test for a key before reading it is a consumer
+        that one day forgets and reads `None`."""
+        steps = {"declared": self._step("Results/declared"),
+                 "undeclared": self._step(),
+                 "malformed": {"module": "m", "function": "f",
+                               "produces": "Results/one"}}
+        box = self._bench(steps)
+        entries = impl.undeclared_step_notebooks_state(box, "Method", steps)
+        self.assertEqual([entry["step"] for entry in entries],
+                         ["declared", "malformed", "undeclared"])
+        for entry in entries:
+            self.assertEqual(sorted(entry),
+                             ["consequence", "declaration", "path", "step"])
+
+    def test_the_key_is_returned_by_verify_and_never_by_probe(self):
+        """`returned_keys` reads dict-literal keys at the top level of a
+        function's own return, so a key nested inside another would ship
+        undocumented -- the constraint every sibling key in `cmd_verify`
+        carries. Absent from `probe` for the identical reason the others are:
+        it names no work about to be run, only a declaration to make."""
+        self.assertIn("undeclaredStepNotebooks", returned_keys(CLI, "cmd_verify"))
+        self.assertNotIn("undeclaredStepNotebooks", returned_keys(CLI, "cmd_probe"))
+
+    def test_the_report_never_gates_verify(self):
+        """Reported, never demanded: a repository may legitimately compute in
+        its own library and render elsewhere, and a refusal would corner an
+        operator whose layout is exactly what they meant."""
+        rows = {row[0].strip("`"): row[2] for row in
+                markdown_table_rows(SKILL_MD.read_text(encoding="utf-8"),
+                                    "| Status | What it reports | Gates? |")[0]}
+        self.assertIn("undeclaredStepNotebooks", rows)
+        self.assertIn("never", rows["undeclaredStepNotebooks"].lower())
+
+    def test_the_usage_reference_tells_a_reader_how_to_read_it(self):
+        """A status that reached the JSON is worth nothing to a reader never
+        told it exists -- `undeclaredOptional`'s own documentation doctrine."""
+        usage = USAGE_MD.read_text(encoding="utf-8")
+        section = usage[usage.index("## Reading `verify`"):]
+        section = section[:section.index("\n## ", 1)]
+        self.assertIn("`undeclaredStepNotebooks`", section)
+
+    def test_the_kit_template_ships_both_kinds_of_step(self):
+        """Constraint (b), asserted rather than promised, one pattern past the
+        single key. A repository that is never shown the shape discovers it
+        after a pilot has run, which is exactly the incident this closes -- so
+        the template demonstrates a step that COMPUTES and a step that DRAWS,
+        each naming its own notebook, and says what collapsing them costs."""
+        template = (KIT / "src_benchmark" / "__init__.py").read_text(
+            encoding="utf-8")
+        example = template[template.index("__steps__ = {"):
+                           template.index("__steps__: dict = {}")]
+        notebooks = re.findall(r'"(Notebooks/[^"]+)"', example)
+        self.assertEqual(len(notebooks), 2,
+                         "the example shows one kind of step, not two")
+        self.assertEqual(len(set(notebooks)), 2,
+                         "both steps point at one notebook, which is the "
+                         "collapse the comment warns against")
+        self.assertIn("undeclaredStepNotebooks", template,
+                      "the template shows the pattern but never says where a "
+                      "target is told it is missing")
+        lowered = template.lower()
+        for phrase in ("computes", "draws", "collapsing"):
+            self.assertIn(phrase, lowered,
+                          f"the template never says what {phrase!r} means "
+                          "here, so a reader gets two steps and no reason")
+
+    def test_the_one_declaration_it_reads_is_stated_as_a_limit(self):
+        """The overclaim this nearly shipped, held as a lock.
+
+        `_pilot_notebooks` reaches a step's notebooks TWO ways: through the
+        `produces` roots this reads, and through the sequence item at the
+        step's `advances` ordinal when that item witnesses a notebook. This
+        state takes no sequence at all, so a step reached only the second way
+        is named here even though a pilot does open its notebook. That is the
+        price of the question being answerable from zero -- a sequence witness
+        is a mark in `AGREED.md`, which the repository this exists for has not
+        written -- and a limit a reader is not told about is a false positive
+        they meet as a surprise. Every surface that carries the consequence
+        carries the limit beside it.
+        """
+        usage = USAGE_MD.read_text(encoding="utf-8")
+        section = usage[usage.index("## Reading `verify`"):]
+        section = section[:section.index("\n## ", 1)]
+        for surface, body in (("consequence",
+                               impl.STEP_NOTEBOOK_UNDECLARED_CONSEQUENCE),
+                              ("docstring",
+                               impl.undeclared_step_notebooks_state.__doc__),
+                              ("usage reference", section)):
+            with self.subTest(surface=surface):
+                lowered = body.lower()
+                self.assertIn("position sequence", lowered,
+                              "the second route to a notebook is unmentioned, "
+                              "so the false positive reads as a defect")
+                self.assertIn("advances", lowered)
+
+    def test_nothing_this_change_ships_borrows_a_repository_s_vocabulary(self):
+        """The standing instruction, measured on the surfaces this change
+        actually adds rather than assumed from the forge-wide scan: the
+        consequence sentence and the kit's own worked example."""
+        template = (KIT / "src_benchmark" / "__init__.py").read_text(
+            encoding="utf-8")
+        example = template[template.index("__steps__ = {"):
+                           template.index("__steps__: dict = {}")]
+        for surface, body in (("consequence",
+                               impl.STEP_NOTEBOOK_UNDECLARED_CONSEQUENCE),
+                              ("kit example", example)):
+            with self.subTest(surface=surface):
+                self.assertEqual(leaks_in(body), [],
+                                 f"the {surface} borrows a target's words")
 
 
 class FlowWalkReportTests(unittest.TestCase):

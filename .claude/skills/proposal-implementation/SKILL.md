@@ -1414,6 +1414,36 @@ change: a report met for the first time on the run where it matters is a report
 nobody has learnt to read. It is a different absence from `unmeasurable` — that one
 is a step nobody could look at, this one a step there was nothing to open.
 
+**And a repository built from zero is asked the question before it can run into
+it.** `withoutNotebook` reports after a pilot has been paid for; the from-zero
+half is `verify`'s own `undeclaredStepNotebooks`, read off the declaration alone
+and answerable on a repository that has run nothing yet. It names every declared
+step whose `produces` roots include none under `Notebooks/`, beside what the
+absence costs, and it refuses nothing. It reads that one declaration and never
+the position sequence, which is stated rather than left to be found: a step
+whose notebook is witnessed only by the item at its `advances` ordinal is named
+here anyway, because a sequence witness is a mark in `AGREED.md` and a
+repository built from zero has not written one — a check that consulted it
+would go quiet on exactly the repository it exists for. The two are separate keys and not one
+widened key on purpose: they answer different questions — *this repository
+opened no notebook here* and *nobody ever asked it to have one* — and folding
+the demand into the report would make one key's emptiness mean both "every step
+owns a notebook" and "no pilot has run".
+
+**The pattern it asks for, stated once so the kit and the report agree.** A flow
+has two kinds of step, and each owns a notebook: one that **computes** —
+orchestrating the target's own library, writing data, drawing nothing — and one
+that **draws**, reading what the computing step left behind and rendering
+tables, figures and conclusions. Both are then executed by the pilot *as
+notebooks*, which is the whole point: the artefact later handed to a worker
+elsewhere is a notebook, so a pilot that exercises anything else has not tested
+what gets sent. The kit ships both kinds in its own `__steps__` example.
+Collapsing them into one step stays a legitimate design and nothing refuses it —
+what it costs, written down so the choice is made rather than defaulted into, is
+that a figure can no longer be redrawn without paying for the computation behind
+it again, and that whichever half sits outside a notebook is the half the pilot
+never exercised in the shape it will be sent in.
+
 **An item whose witness is not a notebook adds nothing to its step**, and that
 restraint is what keeps this rung reachable. A record must meet its own declared
 scale and a campaign run short leaves no shard at all, so both are evidence only
@@ -2331,7 +2361,7 @@ have to count rows to learn the answer.
 
 Report: the bound revision, the target path, the migration commit hash (if
 any), the object → module map, the test result, and every verification status
-`verify` returns, separately. There are twenty-two of them, and a list written
+`verify` returns, separately. There are twenty-three of them, and a list written
 inline is a list that loses one — two of these were computed, returned and named
 in no doctrine at all, so a reader met them first in the JSON:
 
@@ -2359,6 +2389,7 @@ in no doctrine at all, so a reader met them first in the JSON:
 | `undeclaredRecords` | The named records `__records__` names, when it names none: the declaration, the file that would carry it, and the exact `consequence` its absence carries — a leveled `@record:level <name>` witness can only ever derive `None` (unmeasured), and `position` refuses `POSITION_RECORD_UNKNOWN` outright before that state is ever written to a mark. `null` when at least one record is declared, and when the target has no benchmark package to declare one in | **Never** — a repository whose only leveled `@record` witness is the bare, operand-less one needs no named record and is not defective for having none; this only makes the option visible and names what it costs |
 | `unfinishableFlow` | An ordered flow the target's own declared scale makes unwalkable: `requiredScale` (the scale that decides), `blockedBy` (each sequence item a run below that scale can never tick — a two-state `@record` witness, which `impl_position._derive_record` grades against `search.scaleSatisfied`), `blockedSteps` (every `__steps__` entry whose `advances` ordinal sits above the earliest of them, and which `step` therefore refuses `STEP_SEQUENCE_NOT_REACHED` on every call) and the consequence, which names the exit: a leveled `@record:level <name>` witness backed by one `__records__` entry per record the flow produces, each with its own `requiredScale`. `null` when no scale is declared, when no item is graded against one, and when no step waits behind such an item | Never — the refusal it reports ahead of is unchanged; this only says before the first step runs what `step` would otherwise say several steps in |
 | `undeclaredProduces` | One entry per declared `__steps__` step that names no `produces`: the `step`, the exact `declaration` key that would carry it, the file that would carry it, and the `consequence` its absence carries — `step` snapshots the product folder before and after every run, so with no declared root it can tell neither a run that returned having written nothing from one that produced its whole output, nor a run that stayed in its own tree from one that wrote into a neighbour's. `[]` when every declared step names its roots, when the target declares no steps at all, and when it has no benchmark package to declare them in | **Never** — an absent declaration switches a reading off; it does not make the step defective, and a refusal here would grade an act whose subprocess has already run. The kit ships the key in its own `__steps__` example so a repository built from zero meets the question rather than defaulting past it |
+| `undeclaredStepNotebooks` | One entry per declared `__steps__` step that names no notebook among its `produces` roots: the `step`, the exact `declaration` key that would carry it, the file that would carry it, and the `consequence` its absence carries — a pilot is the declared flow walked with the declared notebooks, `_pilot_notebooks` reads a step's notebooks off those roots and nothing else, so a step naming none is walked by calling the target's library while the notebook that would carry the same work elsewhere is never executed by the run meant to validate it. **One declaration and never the position sequence:** `_pilot_notebooks` also reaches a notebook through the item at a step's `advances` ordinal, and a step reached only that way is named here anyway — a sequence witness is a mark in `AGREED.md`, which the repository this exists for has not written yet, so consulting it would go quiet on exactly that repository. Every step that owns no notebook, INCLUDING one that declares no `produces` at all, and deliberately not subtracted from `undeclaredProduces`: `[]` here has to mean *every declared step owns a notebook*, and subtracting would let a repository whose steps all declare nothing read empty. `[]` when every declared step names one, when the target declares no steps at all, and when it has no benchmark package to declare them in | **Never** — a repository may legitimately compute in its own library and render elsewhere, and a refusal would corner an operator whose layout is exactly what they meant. It is a new key and not a widening of `pilotCompleteness.withoutNotebook` because the two answer different questions: that one is computed from a pilot's own evidence and says *this repository opened no notebook here*, this one is read off the declaration alone and says *nobody ever asked it to have one*, which is the question a repository built from zero has to meet before any run exists. The kit ships both kinds of step in its own `__steps__` example — one that computes and one that draws, each naming its own notebook |
 
 Column one is read by the suite against `verify`'s own return, so a status added
 to the command fails the tests until it has a row here. Columns two and three are

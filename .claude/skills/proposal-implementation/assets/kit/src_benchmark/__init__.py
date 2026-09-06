@@ -172,12 +172,47 @@ __levels__: list = []
 # nothing here defaults a root on your behalf -- the forge never guesses which
 # work belongs to which step.
 #
-# Example:
+# The pattern that key exists to make possible, and the one worth scaffolding
+# on the first day rather than discovering after a run: a flow has two kinds of
+# step, and each one owns a notebook.
+#
+#   - a step that COMPUTES -- it orchestrates this package's own library,
+#     writes data, and draws nothing;
+#   - a step that DRAWS -- it reads what the computing step left on disk and
+#     renders tables, figures and conclusions.
+#
+# Each names its own notebook among its `produces` roots, so a pilot executes
+# both of them AS notebooks. That is the point of the split: the artefact that
+# is later handed to a worker elsewhere is a notebook, so a pilot that
+# exercises anything else has not tested what gets sent.
+#
+# Collapsing the two into one step is a legitimate design and nothing in this
+# forge refuses it -- but what it costs is written down here so the choice is
+# made rather than defaulted into. A figure can no longer be redrawn without
+# paying for the computation behind it again; and whichever half is left
+# outside a notebook is the half the pilot never exercised in the shape it
+# will be sent in. `verify` says so, per step, in `undeclaredStepNotebooks`,
+# and it never refuses -- it names what the absence costs and leaves the
+# design yours.
+#
+# Example -- two steps, each owning its own notebook:
 #     __steps__ = {
-#         "verification": {
+#         "computation": {
 #             "module": "Example_Method_Benchmark.steps",
-#             "function": "run_verification",
-#             "produces": ["Results/verification", "Notebooks/verification.ipynb"],
+#             "function": "run_computation",
+#             # Writes data and draws nothing. Its notebook is what the pilot
+#             # executes and what a worker elsewhere would be handed.
+#             "produces": ["Results/computation",
+#                          "Notebooks/computation.ipynb"],
+#         },
+#         "rendering": {
+#             "module": "Example_Method_Benchmark.steps",
+#             "function": "run_rendering",
+#             # Reads what "computation" left behind and renders. It writes no
+#             # data of its own, so its notebook is the whole of what it
+#             # produces -- and it can be re-run on its own, without paying
+#             # for the computation a second time.
+#             "produces": ["Notebooks/rendering.ipynb"],
 #         },
 #     }
 __steps__: dict = {}
