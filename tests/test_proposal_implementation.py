@@ -47,6 +47,19 @@ from forge_vocabulary import (  # noqa: E402  (path set above)
 
 SKILL_ROOT = CLI.parent.parent
 KIT = SKILL_ROOT / "assets" / "kit"
+
+#: The cell `remote-execution` OWNS and this kit copies: the one answer to
+#: "where is the repository this notebook runs against". It lives there and
+#: not here because the reason it is not simply `parents[1]` is a fact about
+#: the remote transport — under a runner the kernel's working directory is
+#: the runner's own, the clone sits one level inside it, and two directories
+#: up names a directory that exists on any worker. This skill has no business
+#: knowing that, and two skills owning half a contract each is how everything
+#: that has ever drifted in this forge drifted. Reached by path, exactly the
+#: way `implementation_cli.py` already reaches that skill's `ledger.py`.
+OWNED_REPOSITORY_CELL = (
+    FORGE / ".claude/skills/remote-execution/assets/notebook_repo_root.py"
+)
 PYPROJECT_TEMPLATE = SKILL_ROOT / "assets" / "pyproject.template.toml"
 
 SCAFFOLD_TOKENS = ("{{NAME}}", "{{NAME_LOWER}}", "{{PKG}}", "{{SEED}}", "{{REVISION}}")
@@ -705,9 +718,16 @@ class ProbeStateTests(unittest.TestCase):
         self.assertIn(impl.BENCHMARK_MODULE, text,
                       "the notebook must drive the benchmark, not describe it")
         self.assertIn("subprocess", text, "it has to actually execute something")
-        self.assertIn("parents[1]", text,
-                      "the output path must be anchored to the repository, never a "
-                      "bare ../ that resolves outside it")
+        # Was `parents[1]`, the arithmetic itself. That arithmetic now lives in
+        # the one cell `remote-execution` owns, because on a remote worker it
+        # names a directory two levels above the clone that exists anyway --
+        # so what this asserts is the binding, not the sum. Stronger than the
+        # spelling it replaces: a comment could carry `parents[1]`, and only an
+        # executed statement can carry this.
+        self.assertIn("ROOT = resolve_repository_root()", text,
+                      "the output path must be anchored to the repository the "
+                      "owned cell resolves, never a bare ../ that resolves "
+                      "outside it and never a second answer of the notebook's own")
 
 
 class BackendStateTests(unittest.TestCase):
@@ -7122,8 +7142,12 @@ class NotebookSealAgreementTests(unittest.TestCase):
         """Whether a cell runs the report's work rather than describing it.
 
         Read as a call, not as a name: `probe.ipynb` imports `subprocess` in the
-        cell that binds `ROOT`, several cells before the one that uses it, and
-        skipping that cell would leave every later cell without a repository.
+        cell that binds `HERE` and the reduction, several cells before the one
+        that uses it, and skipping that cell would leave every later cell
+        without a configuration. The cell that binds `ROOT` is under the same
+        rule for a sharper reason -- it is the FIRST cell, every later cell
+        reads what it binds, and it names no process at all precisely so that
+        no checker of these notebooks ever has cause to skip it.
         """
         return any(isinstance(node, ast.Call)
                    and ast.unparse(node.func) in ("subprocess.run", "pytest.main")
@@ -7197,6 +7221,7 @@ class NotebookSealAgreementTests(unittest.TestCase):
         self.assertEqual(offenders, {},
                          "a kit notebook hashes a tree of its own instead of "
                          "importing the one implementation")
+
 
     def test_the_verification_notebook_imports_the_seal_it_stamps(self):
         """It can, and only because the seal now has a scaffold destination
@@ -7392,6 +7417,96 @@ class NotebookSealAgreementTests(unittest.TestCase):
                    if self.spawns_a_process(ast.parse(source))]
         self.assertEqual(len(harness), 1, "exactly one cell runs the harness")
         self.assertLess(index, harness[0])
+
+
+class OwnedRepositoryCellTests(unittest.TestCase):
+    """Every kit notebook opens with the cell `remote-execution` owns, and
+    none of them answers that question a second time.
+
+    The same argument as the seal one class up, about a different fact.
+    Locating the repository used to be one line inlined in each notebook,
+    and the line was right — on a person's own machine. Under the remote
+    transport the kernel's working directory is the RUNNER's own and the
+    clone sits one level inside it, so "two directories up" names a
+    directory two levels ABOVE the working directory that exists on any
+    worker: the insert succeeds, the wrong tree goes on the path, and the
+    run dies later with a missing module naming a package rather than a
+    root. A second copy of that arithmetic anywhere is a second answer, and
+    the one that is wrong is the one that still runs.
+
+    So there is one cell, it lives in the skill that owns the transport,
+    and this kit carries it byte for byte. A copy nobody compares is a
+    second spelling waiting to drift; these two tests are the comparison.
+
+    Reachable red: the owned cell did not exist and both notebooks inlined
+    their own `parents[1]`.
+    """
+
+    NOTEBOOKS = ("verification.ipynb", "probe.ipynb")
+
+    def loaded(self, notebook):
+        return json.loads((KIT / "nb" / notebook).read_text(encoding="utf-8"))
+
+    def test_every_kit_notebook_opens_with_the_owned_cell_byte_for_byte(self):
+        """Byte for byte, and FIRST. Not "contains it somewhere": every
+        later cell reads what it binds, so a copy sitting below one of its
+        own readers is a notebook that fails on the reader.
+        """
+        owned = OWNED_REPOSITORY_CELL.read_text(encoding="utf-8")
+        self.assertIn("resolve_repository_root", owned,
+                      "the owned cell must be the one that resolves the root, "
+                      "or this test is comparing two unrelated files happily")
+        for notebook in self.NOTEBOOKS:
+            first = self.loaded(notebook)["cells"][0]
+            self.assertEqual(first["cell_type"], "code", notebook)
+            self.assertEqual(
+                "".join(first["source"]), owned,
+                f"{notebook}'s first cell is not the cell "
+                f"{OWNED_REPOSITORY_CELL.name} owns; one of the two has been "
+                "edited on its own and the copies have drifted")
+
+    def test_no_kit_notebook_resolves_the_repository_a_second_time(self):
+        """The drift this is really guarding against: somebody re-adds the
+        old one-liner to a cell further down, both answers exist, and the
+        notebook keeps working on a laptop while the remote run silently
+        uses the wrong one.
+
+        Read as code, never as a substring: `ROOT` is written in comments
+        and inside strings across these notebooks, and a rule that counted
+        those would have to grow exemptions until it said nothing.
+        """
+        offenders = {}
+        for notebook in self.NOTEBOOKS:
+            for index, source in kit_notebook_cells(notebook):
+                if index == 0:
+                    continue
+                for node in ast.walk(ast.parse(source)):
+                    rebinds = (isinstance(node, ast.Assign)
+                               and any(getattr(t, "id", None) == "ROOT"
+                                       for t in node.targets))
+                    walks_up = (isinstance(node, ast.Subscript)
+                                and isinstance(node.value, ast.Attribute)
+                                and node.value.attr == "parents")
+                    if rebinds or walks_up:
+                        offenders.setdefault(notebook, []).append(index)
+                        break
+        self.assertEqual(offenders, {},
+                         "a kit notebook answers 'where is the repository' "
+                         "somewhere other than the one cell that owns it")
+
+    def test_the_doctrine_sends_a_maintainer_to_the_file_that_owns_the_cell(self):
+        """A copy nobody can find the owner of gets edited in place.
+
+        Derived from the path this suite compares against rather than
+        proof-read, so moving or renaming the owned asset goes red here as
+        well as in the comparison above — prose that outlived its mechanism
+        is the failure this forge keeps finding, and a filename is exactly
+        the kind of fact a document goes on stating after the code moved.
+        """
+        doctrine = SKILL_MD.read_text(encoding="utf-8")
+        self.assertIn(OWNED_REPOSITORY_CELL.name, doctrine)
+        self.assertIn("remote-execution", doctrine,
+                      "and say which skill owns it, since it is not this one")
 
 
 class SuiteFailureReachesTheVerdictTests(unittest.TestCase):

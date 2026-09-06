@@ -577,6 +577,21 @@ date. Drift is Flow B's fourth step, not a reason to start over.
    not collected at all. `admissibility.py` belongs in `tests/` specifically —
    it reads the ruling from beside itself, which is where `admit` writes it.
 
+   **Both kit notebooks open with a cell this skill does not own.** Its first
+   code cell binds `ROOT`, every later cell reads it, and its bytes are a copy
+   of `remote-execution`'s `assets/notebook_repo_root.py` — bound by a forge
+   test that goes red the moment the two differ. Do not edit it here and do not
+   re-answer that question further down the notebook. The reason lives in that
+   skill: locating the repository two directories above the working directory
+   is right on a person's own machine and wrong on a remote worker, where the
+   kernel's working directory is the runner's own, the clone sits one level
+   inside it, and two directories up names a directory that exists anyway — so
+   the wrong tree goes on the path and the run dies much later naming a missing
+   package rather than a wrong root. The cell reads a clone directory and a
+   pinned commit from the environment when a runner exported them, proves the
+   checkout is at that commit, refuses a half-exported pair, and falls back to
+   the local layout only when nothing at all was handed over.
+
    `materialize --stage scaffold` substitutes the scaffold-time `{{TOKEN}}`
    placeholders (`{{PKG}}`, `{{SEED}}`) itself; the step-9 tokens are left
    standing on purpose — see `references/usage.md` for the full token table
