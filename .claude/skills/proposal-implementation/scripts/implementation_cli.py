@@ -2061,6 +2061,150 @@ def undeclared_produces_state(target: Path, name: str, steps: dict) -> list[dict
             if not (isinstance(entry, dict) and entry.get(PRODUCES_KEY))]
 
 
+def _step_notebook_roots(entry: dict) -> list[str]:
+    """The declared output roots of one step that name a notebook, or `[]`.
+
+    Two helpers already defined below hold the whole answer, and both are
+    reused rather than respelled: `_produces_roots` for what a step declares
+    (dropping a malformed entry the way every reporting path in this file
+    drops one, never raising), and `_owns` for whether a root falls under the
+    product's notebook category. `_owns` is segment-wise, which is the part
+    that matters here: a root of `NotebooksDraft/one.ipynb` names no notebook
+    of the product and a `str.startswith` comparison would say it does.
+
+    Defined above the two it calls, and that is deliberate rather than an
+    accident of ordering: it belongs beside the report that reads it, and the
+    names resolve when it is called rather than when it is written.
+    """
+    return [root for root in _produces_roots(entry)
+            if _owns(root, [PRODUCT_NOTEBOOKS])]
+
+
+#: What a step gives up by naming no notebook among its own output roots,
+#: written out rather than labelled -- `PRODUCES_UNDECLARED_CONSEQUENCE`'s own
+#: doctrine and its own shape, one reading deeper into the same declaration.
+#: Every fact here is read off code that already exists: `_pilot_notebooks`,
+#: which derives a step's notebooks from exactly these roots and from nothing
+#: else, and `pilotCompleteness.withoutNotebook`, which names the same absence
+#: AFTER a pilot has been paid for.
+STEP_NOTEBOOK_UNDECLARED_CONSEQUENCE = (
+    "this step names no notebook among its output roots, so nothing in its "
+    "own declaration says it renders one. A pilot is the declared flow walked "
+    f"with the declared notebooks, and `_pilot_notebooks` reads a step's "
+    f"notebooks off these `{PRODUCES_KEY}` roots -- so on this declaration "
+    "alone the step is walked by calling the target's own library, while the "
+    "notebook that would carry the same work to a worker elsewhere is never "
+    "executed by the run that was supposed to validate it. Those are two code "
+    "paths, and nothing downstream compares them -- measured on one "
+    "repository at four declared steps in ten, one of them the file a remote "
+    "worker would have been handed. **What this cannot see, said rather than "
+    "implied: the position sequence.** `_pilot_notebooks` has a second source "
+    "-- the item at a step's `advances` ordinal, when that item witnesses a "
+    "notebook -- and a step reached only that way IS opened by a pilot and is "
+    "still named here, because that witness is a mark in a file a repository "
+    "built from zero has not written yet. This reads one declaration and says "
+    "so; `pilotCompleteness.withoutNotebook` is where both routes are unioned "
+    "and measured against a run. The shape that closes it is two steps rather "
+    "than one, each "
+    f"naming its own root under `{PRODUCT_NOTEBOOKS}/`: a step that COMPUTES "
+    "-- orchestrating the library, writing data, drawing nothing -- and a "
+    "step that DRAWS, reading what the first left behind and rendering "
+    "tables, figures and conclusions. Collapsing the two into one step is a "
+    "legitimate design and nothing here refuses it; what it costs is that the "
+    "drawing can no longer be re-run without paying for the computation "
+    "again, and that whichever half sits outside a notebook is the half the "
+    "pilot never exercised in the shape it will be sent in. The exit is the "
+    f"target's own and already exists: name a `{PRODUCT_NOTEBOOKS}/<file>` "
+    f"root in the `{PRODUCES_KEY}` list this entry's own `declaration` names "
+    "-- the same list `step` already measures a run's write scope against -- "
+    "and nothing else has to change.")
+
+
+def undeclared_step_notebooks_state(target: Path, name: str,
+                                    steps: dict) -> list[dict]:
+    """Every declared step that owns no notebook, beside what that costs.
+
+    `undeclared_produces_state`'s shape, its restraint and its reasoning, one
+    reading deeper into the one declaration both read. That one asks whether a
+    step named its output roots at all; this one asks whether any of the roots
+    it named is a notebook -- the artefact a pilot executes and the artefact
+    that later leaves this machine.
+
+    **One declaration and never the position sequence, stated as a limit
+    rather than left to be discovered.** `_pilot_notebooks` reaches a step's
+    notebooks two ways: through these roots, and through the sequence item at
+    the step's `advances` ordinal when that item witnesses a notebook. Only
+    the first is read here, and a step reached only the second way is named
+    anyway. That is not an oversight and it is the price of the question being
+    answerable at all from zero: a sequence witness is a mark in `AGREED.md`,
+    which a repository that has run nothing has not written, so a check that
+    consulted it would go quiet on exactly the repository it exists for. The
+    cost is the false positive, and it is bounded and cheap -- the exit is to
+    name the notebook in `produces` too, which is the declaration the pilot
+    reads first anyway. `pilotCompleteness.withoutNotebook` is where both
+    routes are unioned and graded against a run that happened.
+
+    **A new key and not a widening of `pilotCompleteness.withoutNotebook`, and
+    the reason is what each of the two can answer.** `withoutNotebook` is
+    computed from the pilot's own evidence: it needs a position sequence, the
+    notebook reports, and a flow somebody already declared an ordering for --
+    and it answers `status: "undeclared"` with empty lists for a repository
+    that declared no ordering at all. It says *this repository opened no
+    notebook here*, after a run. The question a from-zero repository has to be
+    asked is the other one -- *nobody ever asked it to have one* -- and it has
+    to be answerable before any run exists, off the declaration alone. Folding
+    the demand into the report would make one key's emptiness mean two things:
+    every target that has not run a pilot yet, and every target whose steps
+    each own a notebook. That is the exact confusion this branch has already
+    paid for twice.
+
+    **Every step that owns no notebook, including one that declares no
+    `produces` at all -- deliberately NOT subtracted from
+    `undeclaredProduces`.** The two overlap in membership and they are not the
+    same claim, and the emptiness is what decides it: `[]` here has to mean
+    *every declared step owns a notebook*, full stop. Subtract the steps that
+    declared nothing and a repository whose ten steps all declare no roots
+    reads `[]` from this key, which is precisely the false reading -- a report
+    that says nothing is missing because it was looking at nobody. The
+    consequences differ too, so neither entry is a copy of the other: one
+    names a run measured against nothing, this one a step the pilot cannot
+    exercise as the artefact it will be sent as.
+
+    **Reported, never demanded**, for both arguments `undeclared_produces_
+    state` already makes and one more that is specific to this reading. A
+    repository may legitimately keep its computation in a library and render
+    elsewhere -- `PILOT_WITHOUT_NOTEBOOK_NOTE` says so in as many words -- and
+    a refusal here would corner an operator whose layout is exactly what they
+    meant. What must never happen again is that nobody is told, which is the
+    whole difference between this and a rule.
+
+    **A target with nowhere to write it is asked nothing**, the identical
+    restraint every sibling report keeps: no benchmark package, or no file
+    `resolve_steps_declaration` reads, is a scaffold gap
+    `structure.scaffoldGaps` already names.
+
+    `steps` is passed in rather than resolved here, from the same
+    `resolve_steps_declaration` call `verify` already makes -- two reads of one
+    declaration in one command is how the two come to disagree.
+    """
+    if not steps:
+        return []
+    bench_root = target / "src" / f"{package_name(name)}_Benchmark"
+    if not bench_root.is_dir():
+        return []
+    holder = next((candidate for candidate in ("__init__.py", "config.py")
+                   if (bench_root / candidate).is_file()), None)
+    if holder is None:
+        return []
+    return [{"step": step, "declaration": f"{STEPS_DECLARATION}[{step!r}]"
+                                          f"[{PRODUCES_KEY!r}]",
+             "path": (bench_root / holder).relative_to(target).as_posix(),
+             "consequence": STEP_NOTEBOOK_UNDECLARED_CONSEQUENCE}
+            for step, entry in sorted(steps.items())
+            if not _step_notebook_roots(entry if isinstance(entry, dict)
+                                        else {})]
+
+
 def search_cost_forecast(reduction: dict, required_scale: dict) -> dict | None:
     """What the declared search would cost, projected from what was actually measured.
 
@@ -13666,6 +13810,19 @@ def cmd_verify(args: argparse.Namespace) -> dict:
         # with its consequence rather than refused, and where the from-zero
         # demand lives.
         "undeclaredProduces": undeclared_produces_state(
+            target, name, declared_steps),
+        # The same declaration, one reading deeper, and the half
+        # `undeclaredProduces` cannot answer: a step that named its roots and
+        # named no notebook among them. A new top-level key rather than a
+        # widening of `pilotCompleteness.withoutNotebook`, because that one is
+        # computed from a pilot's own evidence and answers "this repository
+        # opened no notebook here", while a repository built from zero has to
+        # be asked the other question -- "nobody ever asked it to have one" --
+        # before any run exists. Top-level for the identical `returned_keys`
+        # constraint every key above carries. See
+        # `undeclared_step_notebooks_state`'s own docstring for why the two
+        # lists deliberately overlap and why neither refuses.
+        "undeclaredStepNotebooks": undeclared_step_notebooks_state(
             target, name, declared_steps),
     }
 

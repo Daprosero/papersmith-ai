@@ -598,7 +598,7 @@ Two independent findings, reported separately:
   in `--revision`; `invariantsWithoutTest` are claims declared in code with no
   test enforcing them. Both need the user's decision before you touch anything.
 
-Eleven more are reported and none of them is a finding, which is exactly why
+Twelve more are reported and none of them is a finding, which is exactly why
 they were easy to leave undocumented:
 
 - **`coupling`** — which notebook cells reach into the target's internals instead
@@ -767,6 +767,41 @@ they were easy to leave undocumented:
   compared by hand. Declare the roots, or leave the reading switched off
   knowingly. The kit ships the key in its own `__steps__` example, so a
   repository built from zero is asked rather than defaulted past.
+- **`undeclaredStepNotebooks`** — the same declaration one reading deeper, and
+  the half `undeclaredProduces` cannot answer: one entry per declared
+  `__steps__` step that names no notebook among its `produces` roots. A pilot
+  is the declared flow walked with the declared notebooks, and a step's
+  notebooks are read off those roots and off nothing else, so a step naming
+  none is walked by calling the target's own library while the notebook that
+  would carry the same work to a worker elsewhere goes untouched by the very
+  run meant to validate it. It reads that one declaration and **never the
+  position sequence**: a notebook is also reachable through the item at a
+  step's `advances` ordinal, and a step reached only that way is named here
+  anyway, because a sequence witness is a mark in `AGREED.md` that a repository
+  built from zero has not written — consulting it would go quiet on exactly the
+  repository this exists for. The exit for that false positive is the cheap
+  one: name the notebook in `produces` too. The shape it asks for is two steps rather than one,
+  each naming its own root under `Notebooks/`: one that **computes** —
+  orchestrating the library, writing data, drawing nothing — and one that
+  **draws**, reading what the first left behind and rendering tables, figures
+  and conclusions. Collapsing them is a legitimate design and this never
+  refuses it; what it costs is that a figure cannot be redrawn without paying
+  for the computation again, and that whichever half sits outside a notebook is
+  the half the pilot never exercised in the shape it will be sent in. It names
+  every step that owns no notebook, **including one that declares no
+  `produces` at all** — deliberately not subtracted from `undeclaredProduces`,
+  because `[]` here has to mean *every declared step owns a notebook* and
+  subtracting would let a repository whose steps all declare nothing read
+  empty. A new key and not a widening of `pilotCompleteness.withoutNotebook`:
+  that one is computed from a pilot's own evidence and says *this repository
+  opened no notebook here*, after a run; this one is read off the declaration
+  alone and says *nobody ever asked it to have one*, which is the question a
+  repository built from zero has to meet before any run exists. `[]` when every
+  declared step names one, when no step is declared, and when there is no
+  benchmark package to declare one in — `structure.scaffoldGaps` already names
+  that missing file. It **never gates**. The kit ships both kinds of step in
+  its own `__steps__` example, so a repository built from zero meets the
+  pattern rather than discovering it after a pilot has run.
 
 Omit `--revision` and `fidelity.status` is `unknown`: the modules' declared
 revisions are still listed, but nothing is compared. Never report an
