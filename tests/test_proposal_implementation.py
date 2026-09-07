@@ -31282,6 +31282,97 @@ class FlowWalkReportTests(unittest.TestCase):
         self.assertEqual(impl.product_artefacts(box, "Method"), [])
 
 
+class FlowActsTests(unittest.TestCase):
+    """The half of the walk that says what to DO next, not only where we are.
+
+    `_walk_report` answered *where am I* and nothing answered *what is the
+    next act*, so every rung published a question whose answer changed
+    nothing and the walk from one step to the next was performed by hand.
+    These hold the routing to the five answers it can give.
+    """
+
+    def test_a_walked_step_owes_nothing_and_is_dropped(self) -> None:
+        rows = [{"step": "verification", "walk": "walked"}]
+        steps = {"verification": {"placement": "local"}}
+        self.assertEqual(impl.flow_acts(rows, steps, []), [])
+
+    def test_a_local_step_is_routed_to_a_local_run(self) -> None:
+        rows = [{"step": "report", "walk": "notWalked"}]
+        steps = {"report": {"placement": "local"}}
+        acts = impl.flow_acts(rows, steps, [])
+        self.assertEqual([a["act"] for a in acts], [impl.ACT_RUN_LOCAL])
+        self.assertIsNone(acts[0]["needs"])
+
+    def test_a_remote_step_walks_generate_rehearse_launch_in_that_order(self) -> None:
+        """One step, three states of its own job folder, three different acts.
+
+        The order is the remote chain's own: a folder has to exist before a
+        rehearsal can run on the commit it pins, and a rehearsal has to pass
+        before a launch is offered -- which is what stops a campaign being
+        offered on a wire nobody proved carries current.
+        """
+        rows = [{"step": "sweep", "walk": "notWalked"}]
+        steps = {"sweep": {"placement": "remote", "job": "noise-sweep"}}
+
+        absent = impl.flow_acts(rows, steps, [])
+        unrehearsed = impl.flow_acts(
+            rows, steps, [{"job": "noise-sweep", "smokeReady": False}])
+        ready = impl.flow_acts(
+            rows, steps, [{"job": "noise-sweep", "smokeReady": True}])
+
+        self.assertEqual(absent[0]["act"], impl.ACT_GENERATE_JOB)
+        self.assertEqual(unrehearsed[0]["act"], impl.ACT_REHEARSE)
+        self.assertEqual(ready[0]["act"], impl.ACT_LAUNCH)
+        for acts in (absent, unrehearsed, ready):
+            self.assertEqual(acts[0]["job"], "noise-sweep")
+
+    def test_an_unrouted_step_blocks_and_never_defaults(self) -> None:
+        """Two ways a remote step is unroutable, and neither is a guess.
+
+        A placement nobody declared, and a remote step naming no job folder.
+        Routing either by default is how a run measured in days lands
+        somewhere nobody chose, so both answer `blocked` and both say what is
+        missing rather than picking one.
+        """
+        rows = [{"step": "a", "walk": "notWalked"},
+                {"step": "b", "walk": "notWalked"}]
+        steps = {"a": {}, "b": {"placement": "remote"}}
+
+        acts = impl.flow_acts(rows, steps, [])
+
+        self.assertEqual([a["act"] for a in acts],
+                         [impl.ACT_BLOCKED, impl.ACT_BLOCKED])
+        self.assertIsNone(acts[0]["placement"])
+        self.assertIn("runs here or on a worker", acts[0]["needs"])
+        self.assertEqual(acts[1]["placement"], impl.PLACEMENT_REMOTE)
+        self.assertIn("names no job folder", acts[1]["needs"])
+
+    def test_the_declared_order_is_the_order_of_the_acts(self) -> None:
+        """The rows arrive in the flow's own order and leave in it.
+
+        Sorting here would put a cheap local drawing in front of the remote
+        run whose output it reads.
+        """
+        rows = [{"step": "one", "walk": "notWalked"},
+                {"step": "two", "walk": "notWalked"},
+                {"step": "three", "walk": "notWalked"}]
+        steps = {name: {"placement": "local"} for name in ("one", "two", "three")}
+        self.assertEqual([a["step"] for a in impl.flow_acts(rows, steps, [])],
+                         ["one", "two", "three"])
+
+    def test_an_undeclared_placement_is_reported_with_what_it_costs(self) -> None:
+        """Reported, never demanded: a repository that never leaves rehearsal
+        scale needs no placement on anything and is not defective for it."""
+        state = impl.undeclared_placement_state(
+            {"a": {"placement": "remote"}, "b": {}, "c": {"placement": "nope"}})
+
+        self.assertEqual([row["step"] for row in state], ["b", "c"])
+        self.assertEqual(state[0]["declaration"], "__steps__['b']['placement']")
+        self.assertTrue(all(row["consequence"] for row in state))
+        self.assertEqual(impl.undeclared_placement_state(
+            {"a": {"placement": "local"}}), [])
+
+
 class PublishedCommandsRunVerbatimTests(unittest.TestCase):
     """Every command this engine publishes runs as printed, from anywhere.
 

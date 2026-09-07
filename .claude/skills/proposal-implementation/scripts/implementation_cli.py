@@ -3718,6 +3718,17 @@ def cmd_probe(args) -> dict:
         # somebody opening a clean repository to run the flow from the top
         # actually has. Gates nothing. See `walk_state`.
         "walk": walk,
+        # The half `walk` could not answer. `walk` says where this repository
+        # stands; this says what the next act is for every step still owed, in
+        # the flow's own order, routed by each step's declared `placement`.
+        # Without it a session could read its position perfectly and had
+        # nothing telling it how to move -- every rung published a question
+        # whose answer changed no state, and the walk from one step to the
+        # next was performed by hand. Reports and issues nothing: running any
+        # of these acts is the caller's, and every guard each one carries
+        # stays where it is. See `flow_acts`.
+        "flowActs": flow_acts(walk["steps"], probe_steps,
+                              jobs.get("jobs") or []),
         # What went out to a remote worker (the ledger), plus what job
         # folders exist right now (the filesystem), plus — purely additive,
         # this slice refuses nothing on it — whether each job classifies as
@@ -9251,6 +9262,145 @@ WALK_OUTSIDE = "outsideTheWalk"
 #: walked of them -- an artefact is not produced until everything that writes
 #: into it has run.
 WALK_ORDER = ("notWalked", "unfinished", "walked")
+
+#: Where a declared step runs once the flow leaves rehearsal scale, and the
+#: name of the job folder that carries it when it runs elsewhere. Both are
+#: read off the target's own `__steps__`, and both are optional.
+#:
+#: **They are a declaration and not a ledger read, and that is the whole
+#: point.** The placement of every step of a real flow was decided in
+#: conversation and recorded as `discuss` answers -- free prose, in a file
+#: under `.implementation/`, which `.gitignore` excludes. So the decision
+#: could not be consumed (nothing can parse "Locally. It is the smallest step
+#: of the ten" into a route) and could not travel (a clone receives none of
+#: it), while the walk that has to act on it runs from a clone. The ledger
+#: keeps the REASON, with its numbers and its measurements; the declaration
+#: carries the FACT, which is the only half a machine consumes.
+#:
+#: `job` exists because nothing tied a job folder to a step. That link was
+#: deliberately not invented here -- a forge that guessed it would be deciding
+#: somebody's layout for them -- so the target names it, exactly as it names
+#: its own `produces` roots and its own `advances` ordinal.
+PLACEMENT_KEY = "placement"
+JOB_KEY = "job"
+PLACEMENT_LOCAL = "local"
+PLACEMENT_REMOTE = "remote"
+PLACEMENTS = (PLACEMENT_LOCAL, PLACEMENT_REMOTE)
+
+#: What an undeclared placement costs, said where the absence is reported.
+PLACEMENT_UNDECLARED_CONSEQUENCE = (
+    "the walk cannot route this step once the flow leaves rehearsal scale: it "
+    "knows the step exists, what it produces and where it sits in the order, "
+    "and not whether it runs here or on a worker. So the flow stops at it "
+    "rather than choosing, and a choice made by default is the one nobody "
+    "would have approved.")
+
+
+def _step_placement(entry: object) -> str | None:
+    """Where one declared step runs, or `None` when it declares nothing.
+
+    A value outside the two the contract names reads as undeclared rather
+    than raising: the same restraint `_produces_roots` applies to a malformed
+    root, and for the same reason -- a reporting path that raises on a
+    declaration it does not recognise turns a typo into a dead command.
+    """
+    if not isinstance(entry, dict):
+        return None
+    value = entry.get(PLACEMENT_KEY)
+    return value if value in PLACEMENTS else None
+
+
+def _step_job(entry: object) -> str | None:
+    """The job folder one remote step runs through, or `None`."""
+    if not isinstance(entry, dict):
+        return None
+    value = entry.get(JOB_KEY)
+    return value if isinstance(value, str) and value.strip() else None
+
+
+#: The acts a step can still owe. `blocked` is a first-class answer and never
+#: a blank: a step nobody routed is not a step with nothing to do.
+ACT_RUN_LOCAL = "run-local"
+ACT_GENERATE_JOB = "generate-job"
+ACT_REHEARSE = "rehearse"
+ACT_LAUNCH = "launch"
+ACT_BLOCKED = "blocked"
+
+
+def flow_acts(rows: list[dict], steps: dict, jobs: list[dict]) -> list[dict]:
+    """The ordered acts standing between this repository and a walked flow.
+
+    One entry per declared step that has not been walked, in the order the
+    flow declares, each carrying the single act that step still owes. This is
+    the half that did not exist: `_walk_report` answers *where am I* and this
+    answers *what is the next act*, which is the question a session has to be
+    able to answer to move at all. Without it every rung published a question
+    whose answer changed nothing, and the walk from one step to the next was
+    performed by whoever was driving the CLI -- by hand, in a throwaway shell
+    script, three times on the day this was written.
+
+    **Pure, and it issues nothing.** It reads rows the caller already computed
+    and returns what WOULD be done, in order. Running any of it is the
+    caller's act, and every guard those acts carry stays exactly where it is.
+    A function that both decided and dispatched would be a launch path with no
+    `gate` standing in front of it.
+
+    A step whose placement is undeclared yields `blocked` rather than a guess.
+    Routing by default is how a campaign measured in days ends up somewhere
+    nobody chose, and `undeclared_placement_state` is what names that absence
+    before the walk ever reaches it.
+    """
+    by_name = {job.get("job"): job for job in jobs if isinstance(job, dict)}
+    acts = []
+    for row in rows:
+        if row["walk"] == "walked":
+            continue
+        entry = steps.get(row["step"])
+        placement = _step_placement(entry)
+        if placement is None:
+            acts.append({"step": row["step"], "placement": None,
+                         "act": ACT_BLOCKED,
+                         "needs": PLACEMENT_UNDECLARED_CONSEQUENCE})
+            continue
+        if placement == PLACEMENT_LOCAL:
+            acts.append({"step": row["step"], "placement": placement,
+                         "act": ACT_RUN_LOCAL, "needs": None})
+            continue
+        job_name = _step_job(entry)
+        if job_name is None:
+            acts.append({"step": row["step"], "placement": placement,
+                         "act": ACT_BLOCKED,
+                         "needs": f"{STEPS_DECLARATION}[{row['step']!r}]"
+                                  f"[{JOB_KEY!r}] names no job folder, so "
+                                  "nothing ties this step to the thing that "
+                                  "would carry it elsewhere"})
+            continue
+        job = by_name.get(job_name)
+        if job is None:
+            act = ACT_GENERATE_JOB
+        elif not job.get("smokeReady"):
+            act = ACT_REHEARSE
+        else:
+            act = ACT_LAUNCH
+        acts.append({"step": row["step"], "placement": placement,
+                     "act": act, "job": job_name, "needs": None})
+    return acts
+
+
+def undeclared_placement_state(steps: dict) -> list[dict]:
+    """One entry per declared step that names no placement.
+
+    Reported and never demanded, the same shape `undeclaredProduces` uses: a
+    repository that never leaves rehearsal scale needs no placement on
+    anything and is not defective for saying nothing. What the absence costs
+    is named rather than left for somebody to discover at the point the walk
+    stops.
+    """
+    return [{"step": step,
+             "declaration": f"{STEPS_DECLARATION}[{step!r}][{PLACEMENT_KEY!r}]",
+             "consequence": PLACEMENT_UNDECLARED_CONSEQUENCE}
+            for step, entry in sorted(steps.items())
+            if _step_placement(entry) is None]
 
 
 def product_artefacts(target: Path, name: str) -> list[str]:
