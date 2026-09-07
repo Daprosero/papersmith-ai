@@ -31361,6 +31361,44 @@ class FlowActsTests(unittest.TestCase):
         self.assertEqual([a["step"] for a in impl.flow_acts(rows, steps, [])],
                          ["one", "two", "three"])
 
+    def test_a_step_walked_at_a_lower_rung_is_still_owed_at_a_higher_one(self) -> None:
+        """The distinction the whole function turns on, and it was measured.
+
+        On a real repository all ten declared steps read `walked` -- every one
+        of them at the floor rung, because the ledger's step events carry no
+        scale at all. Skipping on `walked` therefore answered "nothing is
+        owed" for a full run that had not started, which is the one wrong
+        answer that costs a campaign. The ladder the target declares is what
+        tells the two apart.
+        """
+        levels = ["none", "middle", "top"]
+        rows = [{"step": "alpha", "walk": "walked", "rung": "none"}]
+        steps = {"alpha": {"placement": "local"}}
+
+        at_floor = impl.flow_acts(rows, steps, [], level="none", levels=levels)
+        at_top = impl.flow_acts(rows, steps, [], level="top", levels=levels)
+
+        self.assertEqual(at_floor, [], "its own rung reaches what is aimed at")
+        self.assertEqual([a["act"] for a in at_top], [impl.ACT_RUN_LOCAL])
+
+    def test_an_unmeasured_rung_reaches_nothing(self) -> None:
+        """Unmeasured is not attained -- the reading every witness here takes."""
+        levels = ["none", "top"]
+        rows = [{"step": "alpha", "walk": "walked", "rung": None}]
+        steps = {"alpha": {"placement": "local"}}
+        self.assertEqual(
+            [a["act"] for a in impl.flow_acts(rows, steps, [], level="none",
+                                              levels=levels)],
+            [impl.ACT_RUN_LOCAL])
+
+    def test_without_a_declared_ladder_walked_is_the_whole_of_what_is_known(self) -> None:
+        """A repository that declared no ladder has no order to compare
+        against, so nothing here invents a scale for it."""
+        rows = [{"step": "alpha", "walk": "walked", "rung": None}]
+        steps = {"alpha": {"placement": "local"}}
+        self.assertEqual(impl.flow_acts(rows, steps, [], level=None, levels=[]),
+                         [])
+
     def test_an_undeclared_placement_is_reported_with_what_it_costs(self) -> None:
         """Reported, never demanded: a repository that never leaves rehearsal
         scale needs no placement on anything and is not defective for it."""

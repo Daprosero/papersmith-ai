@@ -3727,8 +3727,16 @@ def cmd_probe(args) -> dict:
         # next was performed by hand. Reports and issues nothing: running any
         # of these acts is the caller's, and every guard each one carries
         # stays where it is. See `flow_acts`.
-        "flowActs": flow_acts(walk["steps"], probe_steps,
-                              jobs.get("jobs") or []),
+        "flowActs": flow_acts(
+            walk["steps"], probe_steps, jobs.get("jobs") or [],
+            # The rung the operator's own position header aims at, never the
+            # top of the ladder: `position --target-level` is the knob that
+            # says which phase this pass is walking toward, and it carries its
+            # own no-skip guard. Reading `topRung` here would report every
+            # step as owed on a repository deliberately resting at a lower
+            # rung, which is a report nobody would read twice.
+            level=(position or {}).get("targetLevel"),
+            levels=walk.get("levels") or []),
         # What went out to a remote worker (the ledger), plus what job
         # folders exist right now (the filesystem), plus — purely additive,
         # this slice refuses nothing on it — whether each job classifies as
@@ -9327,7 +9335,30 @@ ACT_LAUNCH = "launch"
 ACT_BLOCKED = "blocked"
 
 
-def flow_acts(rows: list[dict], steps: dict, jobs: list[dict]) -> list[dict]:
+def _rung_reaches(rung: str | None, level: str | None,
+                  levels: list[str]) -> bool:
+    """Whether a step's own rung already reaches the rung being walked toward.
+
+    The ladder the target declares is the order, so `none` does not reach
+    `pilot` and `pilot` does not reach `remote`. A rung nothing measured
+    (`None`) reaches nothing: unmeasured is not attained, the same reading
+    every witness in this file already takes.
+
+    A target that declares no ladder has no order to compare against, and
+    there `walked` is the whole of what can be known -- so the caller falls
+    back to it rather than this function inventing a scale for a repository
+    that declared none. `undeclaredLadder` is where that absence is named.
+    """
+    if level is None or rung is None:
+        return False
+    if rung not in levels or level not in levels:
+        return False
+    return levels.index(rung) >= levels.index(level)
+
+
+def flow_acts(rows: list[dict], steps: dict, jobs: list[dict],
+              *, level: str | None = None,
+              levels: list[str] | None = None) -> list[dict]:
     """The ordered acts standing between this repository and a walked flow.
 
     One entry per declared step that has not been walked, in the order the
@@ -9350,10 +9381,24 @@ def flow_acts(rows: list[dict], steps: dict, jobs: list[dict]) -> list[dict]:
     nobody chose, and `undeclared_placement_state` is what names that absence
     before the walk ever reaches it.
     """
+    levels = list(levels or [])
     by_name = {job.get("job"): job for job in jobs if isinstance(job, dict)}
     acts = []
     for row in rows:
-        if row["walk"] == "walked":
+        # A step is owed until its own rung reaches the one being walked
+        # toward -- NOT until it has been walked once. That distinction is the
+        # whole of this function's correctness at more than one scale, and it
+        # was measured rather than reasoned: on a real repository all ten
+        # declared steps read `walked`, every one of them at rung `none`,
+        # because the ledger's step events carry no scale at all. Skipping on
+        # `walked` therefore answered "nothing is owed" for a full run that
+        # had not started, which is the one wrong answer that costs a campaign.
+        #
+        # Where no ladder is declared there is no order to compare against and
+        # `walked` is the whole of what can be known, so that is what decides.
+        reached = (_rung_reaches(row.get("rung"), level, levels) if levels
+                   else row["walk"] == "walked")
+        if reached:
             continue
         entry = steps.get(row["step"])
         placement = _step_placement(entry)
