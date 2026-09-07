@@ -195,7 +195,32 @@ __levels__: list = []
 # and it never refuses -- it names what the absence costs and leaves the
 # design yours.
 #
-# Example -- two steps, each owning its own notebook:
+# And one more key, asked of every step and defaulted for none: `placement`,
+# which says WHERE the step runs once the flow leaves rehearsal scale --
+# `"local"` on this machine, or `"remote"` on a worker. A remote one also
+# names the `job` folder that carries it, because nothing else ties a step to
+# a job and the forge deliberately does not invent that link: which work goes
+# through which job folder is this repository's layout, not the forge's to
+# guess.
+#
+# It is a DECLARATION and not a decision recorded somewhere else, and the
+# reason is worth having on the first day. That routing gets decided in
+# conversation, and a conversation lands in the ledger under
+# `.implementation/` -- free prose, in a directory `.gitignore` excludes. So a
+# decision left there can be neither consumed (nothing parses a sentence into
+# a route) nor travelled with (a clone receives none of it), while the walk
+# that has to act on it runs from a clone. The ledger keeps the REASON, with
+# its numbers; this key carries the FACT, which is the half a machine reads.
+#
+# Leave it out and the walk cannot route that step: it knows the step exists,
+# what it produces and where it sits in the order, and not whether it runs
+# here or elsewhere. `verify` says so, per step, in `undeclaredPlacement`, and
+# it never refuses -- but nothing defaults it either. Routing an unrouted step
+# by convention is how a run measured in days lands somewhere nobody chose, so
+# `probe`'s own `flowActs` reports that step as `blocked` and names what is
+# missing rather than picking for you.
+#
+# Example -- two steps, each owning its own notebook, each saying where it runs:
 #     __steps__ = {
 #         "computation": {
 #             "module": "Example_Method_Benchmark.steps",
@@ -204,6 +229,10 @@ __levels__: list = []
 #             # executes and what a worker elsewhere would be handed.
 #             "produces": ["Results/computation",
 #                          "Notebooks/computation.ipynb"],
+#             # The expensive half, so it goes to a worker at full scale -- and
+#             # it names the job folder that carries it there.
+#             "placement": "remote",
+#             "job": "computation",
 #         },
 #         "rendering": {
 #             "module": "Example_Method_Benchmark.steps",
@@ -213,6 +242,10 @@ __levels__: list = []
 #             # produces -- and it can be re-run on its own, without paying
 #             # for the computation a second time.
 #             "produces": ["Notebooks/rendering.ipynb"],
+#             # Seconds of drawing, and the artefact a person reads. Sending it
+#             # to a worker would put the thing somebody has to read behind a
+#             # download and buy nothing, so it stays here and names no job.
+#             "placement": "local",
 #         },
 #     }
 __steps__: dict = {}

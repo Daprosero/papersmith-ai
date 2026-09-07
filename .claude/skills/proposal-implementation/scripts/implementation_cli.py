@@ -14456,6 +14456,20 @@ def cmd_verify(args: argparse.Namespace) -> dict:
         # demand lives.
         "undeclaredProduces": undeclared_produces_state(
             target, name, declared_steps),
+        # The third reading of the same declaration, and the one the walk
+        # routes on. `undeclaredProduces` asks what a step writes and
+        # `undeclaredStepNotebooks` asks whether any of it is a notebook; this
+        # asks WHERE the step runs once the flow leaves rehearsal scale.
+        # Reported with its consequence and never refused, for the reason its
+        # two neighbours already carry: a repository that never leaves
+        # rehearsal scale needs no placement on anything and is not defective
+        # for saying nothing. What it must not do is default -- routing an
+        # unrouted step by convention is how a run measured in days lands
+        # somewhere nobody chose, so `flow_acts` blocks on it and this is
+        # where the absence is named before the walk ever reaches it. The
+        # from-zero demand is the kit's own `__steps__` example, which ships
+        # both keys. See `undeclared_placement_state`.
+        "undeclaredPlacement": undeclared_placement_state(declared_steps),
         # The same declaration, one reading deeper, and the half
         # `undeclaredProduces` cannot answer: a step that named its roots and
         # named no notebook among them. A new top-level key rather than a

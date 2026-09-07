@@ -27807,6 +27807,7 @@ _ENGLISH_COUNTS = {
     # `undeclaredLadder` and `undeclaredRecords` already sit in.
     20: "Twenty", 21: "Twenty-one", 22: "Twenty-two",
     23: "Twenty-three",
+    24: "Twenty-four", 25: "Twenty-five",
     26: "Twenty-six", 27: "Twenty-seven", 28: "Twenty-eight",
     29: "Twenty-nine", 30: "Thirty", 31: "Thirty-one", 32: "Thirty-two",
     33: "Thirty-three", 34: "Thirty-four", 35: "Thirty-five",
@@ -31292,13 +31293,13 @@ class FlowActsTests(unittest.TestCase):
     """
 
     def test_a_walked_step_owes_nothing_and_is_dropped(self) -> None:
-        rows = [{"step": "verification", "walk": "walked"}]
-        steps = {"verification": {"placement": "local"}}
+        rows = [{"step": "alpha", "walk": "walked"}]
+        steps = {"alpha": {"placement": "local"}}
         self.assertEqual(impl.flow_acts(rows, steps, []), [])
 
     def test_a_local_step_is_routed_to_a_local_run(self) -> None:
-        rows = [{"step": "report", "walk": "notWalked"}]
-        steps = {"report": {"placement": "local"}}
+        rows = [{"step": "gamma", "walk": "notWalked"}]
+        steps = {"gamma": {"placement": "local"}}
         acts = impl.flow_acts(rows, steps, [])
         self.assertEqual([a["act"] for a in acts], [impl.ACT_RUN_LOCAL])
         self.assertIsNone(acts[0]["needs"])
@@ -31311,20 +31312,20 @@ class FlowActsTests(unittest.TestCase):
         before a launch is offered -- which is what stops a campaign being
         offered on a wire nobody proved carries current.
         """
-        rows = [{"step": "sweep", "walk": "notWalked"}]
-        steps = {"sweep": {"placement": "remote", "job": "noise-sweep"}}
+        rows = [{"step": "beta", "walk": "notWalked"}]
+        steps = {"beta": {"placement": "remote", "job": "job-b"}}
 
         absent = impl.flow_acts(rows, steps, [])
         unrehearsed = impl.flow_acts(
-            rows, steps, [{"job": "noise-sweep", "smokeReady": False}])
+            rows, steps, [{"job": "job-b", "smokeReady": False}])
         ready = impl.flow_acts(
-            rows, steps, [{"job": "noise-sweep", "smokeReady": True}])
+            rows, steps, [{"job": "job-b", "smokeReady": True}])
 
         self.assertEqual(absent[0]["act"], impl.ACT_GENERATE_JOB)
         self.assertEqual(unrehearsed[0]["act"], impl.ACT_REHEARSE)
         self.assertEqual(ready[0]["act"], impl.ACT_LAUNCH)
         for acts in (absent, unrehearsed, ready):
-            self.assertEqual(acts[0]["job"], "noise-sweep")
+            self.assertEqual(acts[0]["job"], "job-b")
 
     def test_an_unrouted_step_blocks_and_never_defaults(self) -> None:
         """Two ways a remote step is unroutable, and neither is a guess.
