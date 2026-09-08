@@ -229,6 +229,13 @@ __levels__: list = []
 #         "computation": {
 #             "module": "Example_Method_Benchmark.steps",
 #             "function": "run_computation",
+#             # Where this step sits in the order, and what it consumes from
+#             # the steps above it. `advances` is the position item this step
+#             # produces evidence for; `reads` is empty here because nothing
+#             # precedes it, and an empty list is an answer -- it is what tells
+#             # a remote rehearsal there is no upstream output to wait for.
+#             "advances": 1,
+#             "reads": [],
 #             # Writes data and draws nothing. Its notebook is what the pilot
 #             # executes and what a worker elsewhere would be handed.
 #             "produces": ["Results/computation",
@@ -243,6 +250,11 @@ __levels__: list = []
 #         "rendering": {
 #             "module": "Example_Method_Benchmark.steps",
 #             "function": "run_rendering",
+#             "advances": 2,
+#             # What it consumes, named: this is the link a remote rehearsal
+#             # reads to refuse before opening a notebook whose inputs are not
+#             # there yet, naming each missing root and which step writes it.
+#             "reads": ["Results/computation"],
 #             # Reads what "computation" left behind and renders. It writes no
 #             # data of its own, so its notebook is the whole of what it
 #             # produces -- and it can be re-run on its own, without paying

@@ -3737,6 +3737,14 @@ def cmd_probe(args) -> dict:
             # rung, which is a report nobody would read twice.
             level=(position or {}).get("targetLevel"),
             levels=walk.get("levels") or []),
+        # Where the flow is GOING, as against what it owes toward the rung
+        # aimed at. Reported always and never acted on: a repository resting
+        # at the floor with every step reaching the floor owes nothing there
+        # and would read as finished, which is the one way this ladder can
+        # tell a session it arrived when it did not. See `flow_destination`.
+        "flowDestination": flow_destination(
+            walk["steps"], probe_steps, jobs.get("jobs") or [],
+            walk.get("levels") or []),
         # What went out to a remote worker (the ledger), plus what job
         # folders exist right now (the filesystem), plus — purely additive,
         # this slice refuses nothing on it — whether each job classifies as
@@ -9289,6 +9297,19 @@ WALK_ORDER = ("notWalked", "unfinished", "walked")
 #: deliberately not invented here -- a forge that guessed it would be deciding
 #: somebody's layout for them -- so the target names it, exactly as it names
 #: its own `produces` roots and its own `advances` ordinal.
+#: Every key this skill reads off one `__steps__` entry, and the roster the
+#: kit is held to. Data rather than a sentence, so a key added here fails a
+#: test until the kit's own example ships it -- which is what makes "a
+#: repository built from zero is asked for everything the skill reads" a
+#: measured property instead of a promise.
+#:
+#: It carries no target vocabulary and cannot: these are the forge's own
+#: contract names, the same class as `advances` and `produces`. What a step is
+#: CALLED, what it writes, which service it sends to -- all of that is the
+#: target's word and none of it appears here.
+STEP_KEYS = ("module", "function", "advances", "reads", "produces",
+             "placement", "job", "service")
+
 PLACEMENT_KEY = "placement"
 JOB_KEY = "job"
 SERVICE_KEY = "service"
@@ -9470,6 +9491,47 @@ def flow_acts(rows: list[dict], steps: dict, jobs: list[dict],
         acts.append({"step": row["step"], "placement": placement,
                      "act": act, "job": job_name, "needs": None})
     return acts
+
+
+def flow_destination(rows: list[dict], steps: dict, jobs: list[dict],
+                     levels: list[str] | None) -> dict:
+    """Where this flow is going, and everything still between it and there.
+
+    `flow_acts` answers what is owed toward the rung the position header
+    AIMS at, which is the right question for deciding what to do next and
+    the wrong one for knowing whether the work is finished. A repository
+    resting at the floor with every step reaching the floor answers `[]`
+    there -- nothing owed -- and a session reading that concludes it
+    arrived. It has not: the destination is the top of the ladder the target
+    itself declared, and the distance to it is exactly what nobody was
+    told.
+
+    So this is computed toward `levels[-1]` and reported ALWAYS, whatever
+    the header aims at. It is a report and never a thing to act on: acting
+    happens against `flow_acts`, one rung at a time, because the ladder
+    refuses a skipped rung and this would otherwise read as permission to
+    jump. What it guarantees is narrower and is the whole point -- the flow
+    cannot look finished while it is not.
+
+    Which rung the top IS remains the target's word. A ladder whose top is a
+    local rung has a local destination and this says so; nothing here
+    assumes the top means a worker, because a forge that assumed it would be
+    deciding somebody's flow for them.
+    """
+    levels = list(levels or [])
+    if not levels:
+        return {"rung": None, "remaining": [],
+                "note": "no ladder is declared, so this flow states no "
+                        "destination; `undeclaredLadder` names what that "
+                        "absence costs"}
+    top = levels[-1]
+    remaining = flow_acts(rows, steps, jobs, level=top, levels=levels)
+    return {"rung": top, "remaining": remaining,
+            "note": "every act still standing between this repository and "
+                    "the top of its own declared ladder, reported whatever "
+                    "the position header aims at. Act against `flowActs`, "
+                    "one rung at a time; read this to know whether there is "
+                    "anywhere left to go."}
 
 
 #: What a walk performs on its own, and what it stops at. The split is the

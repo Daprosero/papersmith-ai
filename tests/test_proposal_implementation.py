@@ -31426,6 +31426,96 @@ class FlowActsTests(unittest.TestCase):
             {"a": {"placement": "local"}}), [])
 
 
+class KitDemandsEveryStepKeyTests(unittest.TestCase):
+    """From zero, a repository is asked for everything the skill reads.
+
+    The half that is easy to forget: a key the forge learns to read is a key
+    a repository built from zero must be made to ship, and nothing held the
+    kit to that. `placement` went in and the kit could have stayed silent
+    about it, so the first target built after it would meet the question only
+    when the walk stopped — which is the same "discovered late" failure the
+    `produces` and notebook demands already exist to prevent.
+
+    Derived from `STEP_KEYS`, never from a list written twice: a key added to
+    the roster fails this until the kit's own example names it.
+    """
+
+    KIT = (Path(impl.__file__).resolve().parent.parent
+           / "assets" / "kit" / "src_benchmark" / "__init__.py")
+
+    def test_the_kit_example_names_every_key_the_skill_reads(self) -> None:
+        example = self.KIT.read_text(encoding="utf-8")
+        missing = [key for key in impl.STEP_KEYS
+                   if f'"{key}":' not in example]
+        self.assertEqual(
+            missing, [],
+            "the kit's `__steps__` example is silent about a key this skill "
+            "reads, so a repository built from zero would not be asked for it")
+
+    def test_the_roster_carries_no_target_vocabulary(self) -> None:
+        """These are the forge's own contract names. What a step is called,
+        what it writes and which service it sends to are the target's word."""
+        self.assertEqual(leaks_in(" ".join(impl.STEP_KEYS)), [])
+
+    def test_an_absent_key_is_reported_rather_than_defaulted(self) -> None:
+        """The demand is a report with its cost named, never a refusal: a
+        repository that never leaves rehearsal scale needs no placement and is
+        not defective for saying nothing."""
+        state = impl.undeclared_placement_state({"a": {}})
+        self.assertEqual(len(state), 1)
+        self.assertTrue(state[0]["consequence"])
+
+
+class FlowDestinationTests(unittest.TestCase):
+    """Whether the flow can tell a session it arrived when it has not."""
+
+    LEVELS = ["none", "pilot", "remote"]
+
+    def test_a_flow_owing_nothing_where_it_aims_still_names_where_it_goes(self) -> None:
+        """The failure this exists to close, and it is the expensive one.
+
+        A repository resting at the floor with every step reaching the floor
+        owes nothing toward the rung it aims at. `flow_acts` answers `[]`
+        there -- correctly -- and a session reading only that concludes the
+        work is done. The destination is the top of the ladder the target
+        itself declared, and the distance to it is what nobody was told.
+        """
+        rows = [{"step": "a", "walk": "walked", "rung": "none", "advances": 1},
+                {"step": "b", "walk": "walked", "rung": "none", "advances": 2}]
+        steps = {"a": {"placement": "local"},
+                 "b": {"placement": "remote", "job": "j", "service": "s"}}
+
+        aimed = impl.flow_acts(rows, steps, [], level="none", levels=self.LEVELS)
+        going = impl.flow_destination(rows, steps, [], self.LEVELS)
+
+        self.assertEqual(aimed, [], "nothing is owed toward the floor")
+        self.assertEqual(going["rung"], "remote")
+        self.assertEqual([a["step"] for a in going["remaining"]], ["a", "b"])
+
+    def test_the_destination_is_the_targets_own_top_rung(self) -> None:
+        """Never assumed to mean a worker: a ladder whose top is a local rung
+        has a local destination, and a forge that assumed otherwise would be
+        deciding somebody's flow for them."""
+        rows = [{"step": "a", "walk": "notWalked", "rung": None, "advances": 1}]
+        steps = {"a": {"placement": "local"}}
+        self.assertEqual(
+            impl.flow_destination(rows, steps, [], ["lower", "upper"])["rung"],
+            "upper")
+
+    def test_a_flow_actually_at_the_top_owes_nothing_to_reach_it(self) -> None:
+        rows = [{"step": "a", "walk": "walked", "rung": "remote", "advances": 1}]
+        steps = {"a": {"placement": "local"}}
+        self.assertEqual(
+            impl.flow_destination(rows, steps, [], self.LEVELS)["remaining"], [])
+
+    def test_no_declared_ladder_states_no_destination_and_says_so(self) -> None:
+        """An absence with its cost named, never a silent empty answer."""
+        going = impl.flow_destination([], {}, [], [])
+        self.assertIsNone(going["rung"])
+        self.assertEqual(going["remaining"], [])
+        self.assertIn("undeclaredLadder", going["note"])
+
+
 class WalkPlanTests(unittest.TestCase):
     """What a walk performs on its own, and the act it stops at."""
 
