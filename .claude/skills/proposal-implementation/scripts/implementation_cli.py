@@ -9462,6 +9462,88 @@ def flow_acts(rows: list[dict], steps: dict, jobs: list[dict],
     return acts
 
 
+#: What a walk performs on its own, and what it stops at. The split is the
+#: whole of this walker's safety and it is stated as data rather than as a
+#: branch, so a test can read it and an act added later has to be classified
+#: rather than silently inheriting one behaviour or the other.
+#:
+#: `launch` is the line. Everything above it is local work, a job folder
+#: written on this disk, or the rehearsal the doctrine already makes the
+#: agent's to run -- minutes, and the cheapest possible answer to whether the
+#: wire carries current. A launch is hours of somebody's quota against a
+#: campaign, and it is the one act whose plan a person asked to see before it
+#: happens. A walk that took it would be the launch path with no gate in
+#: front of it that `flow_acts` refuses to be.
+WALK_PERFORMS = (ACT_RUN_LOCAL, ACT_GENERATE_JOB, ACT_REHEARSE)
+WALK_STOPS_AT = (ACT_LAUNCH, ACT_BLOCKED)
+
+
+def generate_job_argv(target: Path, name: str, step: str, entry: dict,
+                      repo_url: str, repo_ref: str,
+                      notebook: str | None) -> list[str]:
+    """The exact `generate-job` invocation for one remote step.
+
+    Every value is derived from what the repository already declares or from
+    its own git remote, never invented here: the service and the job folder
+    come from `__steps__`, the product is the name this flow was invoked
+    with, the notebook is the one that step names among its own `produces`
+    roots, and the clone paths are the two a runner needs -- the package
+    source and the product's notebooks.
+
+    Composed, and returned as an argv the CALLER executes. It is never
+    published in a payload, because the service name is in it and this
+    skill's own rule is that a service is read to walk a directory and
+    reduced to a count before anything is returned. An argv executed is not a
+    payload returned, which is the whole reason this shape is a list of
+    strings rather than a string.
+
+    `--repo-ref` is the branch and `--commit` is deliberately left out: the
+    remote skill resolves and then PROVES the pin against the declared
+    remote, in a scratch repository, before writing a byte. Passing a commit
+    from here would be this skill asserting a fact that one is built to
+    verify.
+    """
+    argv = [sys.executable, str(REMOTE_EXECUTION_CLI_SCRIPT), "generate-job",
+            "--target", str(target),
+            "--service", _step_service(entry) or "",
+            "--job-name", _step_job(entry) or "",
+            "--product", name,
+            "--repo-url", repo_url,
+            "--repo-ref", repo_ref,
+            "--clone-path", "src",
+            "--clone-path", f"{name}/Notebooks"]
+    if notebook:
+        argv += ["--run-notebook", notebook]
+    return argv
+
+
+def walk_plan(acts: list[dict]) -> dict:
+    """What a walk would perform, in order, and the act it stops at.
+
+    Pure, and it performs nothing: it decides. The caller executes, so every
+    guard each act carries stays exactly where it is.
+
+    It stops at the FIRST act it will not take rather than filtering those
+    out and continuing, because the flow is ordered: a step that cannot run
+    is one whose output every later step reads, and walking past it would
+    run the rest against material that was never produced. A `blocked` step
+    stops the walk for the same reason a `launch` does -- one because nobody
+    routed it, the other because somebody has to approve it.
+    """
+    performs: list[dict] = []
+    for act in acts:
+        if act["act"] in WALK_STOPS_AT:
+            return {"performs": performs, "stopsAt": act}
+        if act["act"] not in WALK_PERFORMS:
+            return {"performs": performs,
+                    "stopsAt": {**act, "needs": (
+                        f"{act['act']!r} is classified in neither "
+                        "WALK_PERFORMS nor WALK_STOPS_AT, so nothing here "
+                        "knows whether a walk may take it")}}
+        performs.append(act)
+    return {"performs": performs, "stopsAt": None}
+
+
 def undeclared_placement_state(steps: dict) -> list[dict]:
     """One entry per declared step that names no placement.
 

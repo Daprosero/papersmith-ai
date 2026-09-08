@@ -31414,6 +31414,125 @@ class FlowActsTests(unittest.TestCase):
             {"a": {"placement": "local"}}), [])
 
 
+class WalkPlanTests(unittest.TestCase):
+    """What a walk performs on its own, and the act it stops at."""
+
+    def test_a_launch_is_never_performed(self) -> None:
+        """The property this walker exists to keep.
+
+        Everything above a launch is local work, a job folder written on this
+        disk, or the rehearsal doctrine already makes the agent's to run. A
+        launch is hours of somebody's quota, and it is the one act whose plan
+        a person asked to see before it happens. A walk that took it would be
+        exactly the launch path with no gate in front of it that `flow_acts`
+        refuses to be.
+        """
+        acts = [{"step": "a", "act": impl.ACT_LAUNCH}]
+        plan = impl.walk_plan(acts)
+        self.assertEqual(plan["performs"], [])
+        self.assertEqual(plan["stopsAt"]["act"], impl.ACT_LAUNCH)
+        self.assertNotIn(impl.ACT_LAUNCH, impl.WALK_PERFORMS)
+
+    def test_it_stops_at_the_first_act_it_will_not_take(self) -> None:
+        """Stops rather than filtering and continuing, because the flow is
+        ordered: a step that cannot run is one whose output every later step
+        reads, and walking past it runs the rest against material that was
+        never produced."""
+        acts = [{"step": "a", "act": impl.ACT_RUN_LOCAL},
+                {"step": "b", "act": impl.ACT_LAUNCH},
+                {"step": "c", "act": impl.ACT_RUN_LOCAL}]
+
+        plan = impl.walk_plan(acts)
+
+        self.assertEqual([a["step"] for a in plan["performs"]], ["a"])
+        self.assertEqual(plan["stopsAt"]["step"], "b")
+
+    def test_a_blocked_step_stops_the_walk_exactly_as_a_launch_does(self) -> None:
+        acts = [{"step": "a", "act": impl.ACT_BLOCKED, "needs": "nobody routed it"}]
+        plan = impl.walk_plan(acts)
+        self.assertEqual(plan["performs"], [])
+        self.assertEqual(plan["stopsAt"]["needs"], "nobody routed it")
+
+    def test_nothing_is_owed_and_the_walk_stops_at_nothing(self) -> None:
+        self.assertEqual(impl.walk_plan([]),
+                         {"performs": [], "stopsAt": None})
+
+    def test_an_unclassified_act_stops_the_walk_rather_than_defaulting(self) -> None:
+        """An act in neither list is not a walk-it act by omission.
+
+        The two rosters are data so that an act added later has to be
+        classified; this is what makes forgetting to cost a refusal instead of
+        a silent execution.
+        """
+        plan = impl.walk_plan([{"step": "a", "act": "something-new"}])
+        self.assertEqual(plan["performs"], [])
+        self.assertIn("classified in neither", plan["stopsAt"]["needs"])
+
+    def test_every_act_flow_acts_can_return_is_classified(self) -> None:
+        """The two rosters have to cover the acts, or the check above fires on
+        an act this file itself produces."""
+        produced = {impl.ACT_RUN_LOCAL, impl.ACT_GENERATE_JOB,
+                    impl.ACT_REHEARSE, impl.ACT_LAUNCH, impl.ACT_BLOCKED}
+        self.assertEqual(
+            produced, set(impl.WALK_PERFORMS) | set(impl.WALK_STOPS_AT))
+
+
+class GenerateJobArgvTests(unittest.TestCase):
+    """The remote act, composed from what the repository already declares."""
+
+    def _argv(self, **over):
+        entry = {"placement": "remote", "job": "job-b", "service": "svc",
+                 **over.pop("entry", {})}
+        return impl.generate_job_argv(
+            Path("/t"), "Prod", "beta", entry,
+            "https://example.invalid/r", "main",
+            "Prod/Notebooks/b.ipynb", **over)
+
+    def test_every_value_comes_from_the_declaration_or_the_remote(self) -> None:
+        argv = self._argv()
+        pairs = dict(zip(argv, argv[1:]))
+        self.assertEqual(pairs["--service"], "svc")
+        self.assertEqual(pairs["--job-name"], "job-b")
+        self.assertEqual(pairs["--product"], "Prod")
+        self.assertEqual(pairs["--repo-url"], "https://example.invalid/r")
+        self.assertEqual(pairs["--repo-ref"], "main")
+        self.assertEqual(pairs["--run-notebook"], "Prod/Notebooks/b.ipynb")
+
+    def test_the_pin_is_not_asserted_from_here(self) -> None:
+        """`--commit` is deliberately absent.
+
+        The remote skill resolves the pin and then PROVES it against the
+        declared remote, in a scratch repository, before writing a byte.
+        Passing a commit from here would be this skill asserting the fact that
+        one is built to verify.
+        """
+        self.assertNotIn("--commit", self._argv())
+
+    def test_the_clone_carries_the_source_and_the_notebooks(self) -> None:
+        """A runner clones sparsely, so the two roots it needs are named: the
+        package source it imports and the product notebooks it runs."""
+        argv = self._argv()
+        paths = [argv[i + 1] for i, a in enumerate(argv) if a == "--clone-path"]
+        self.assertEqual(paths, ["src", "Prod/Notebooks"])
+
+    def test_a_step_with_no_notebook_names_none(self) -> None:
+        argv = impl.generate_job_argv(
+            Path("/t"), "Prod", "beta",
+            {"placement": "remote", "job": "job-b", "service": "svc"},
+            "https://example.invalid/r", "main", None)
+        self.assertNotIn("--run-notebook", argv)
+
+    def test_it_returns_an_argv_and_never_a_string(self) -> None:
+        """The shape is the rule. A service name may be read here and must be
+        reduced to a count before anything is RETURNED; an argv the caller
+        executes is not a payload returned, and a joined string would invite
+        being printed into one.
+        """
+        argv = self._argv()
+        self.assertIsInstance(argv, list)
+        self.assertTrue(all(isinstance(a, str) for a in argv))
+
+
 class PublishedCommandsRunVerbatimTests(unittest.TestCase):
     """Every command this engine publishes runs as printed, from anywhere.
 
