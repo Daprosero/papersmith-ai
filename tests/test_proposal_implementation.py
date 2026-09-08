@@ -18177,6 +18177,12 @@ class CommandRosterTests(unittest.TestCase):
     def test_every_command_dispatched_is_accounted_for(self):
         write_verbs = {"position", "discuss", "propose", "gate", "offer",
                        "close", "step", "settle", "defect",
+                       # `walk` writes nothing to the ledger itself -- every
+                       # write it causes goes through `step` or `position` --
+                       # but it does commit each walked step's product, so it
+                       # belongs with the verbs that change the target rather
+                       # than with the ones that only report.
+                       "walk",
                        "materialize"}
         dispatched = set(impl.COMMANDS)
         self.assertEqual(
@@ -18253,12 +18259,12 @@ class CommandRosterClosureTests(unittest.TestCase):
                 for header in (self.WRITE_TABLE_HEADER, self.REST_TABLE_HEADER)
                 for row in self._table(header)]
 
-    def test_the_roster_derivation_finds_the_measured_nineteen(self):
+    def test_the_roster_derivation_finds_the_measured_twenty(self):
         """Sanity on the walk, not on the roster. A command added to or removed
         from the CLI should move this number; a broken header, a renamed column
         or a table that stopped parsing should not be able to leave it green."""
         rostered = self.rostered_commands()
-        self.assertEqual(len(rostered), 19)
+        self.assertEqual(len(rostered), 20)
         self.assertEqual(
             sorted(rostered), sorted(set(rostered)),
             "a command is rostered twice; two rows for one command is two "

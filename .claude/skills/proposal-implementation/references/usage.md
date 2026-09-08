@@ -1955,6 +1955,40 @@ python3 .claude/skills/proposal-implementation/scripts/implementation_cli.py ste
   --step verification
 ```
 
+## `walk` — the flow walks itself, act by act
+
+`step` runs exactly one. `walk` runs the ones the flow still owes, in the
+order the flow declares, and stops at the first act a person has to take.
+
+```bash
+python3 .claude/skills/proposal-implementation/scripts/implementation_cli.py walk \
+  --target implementations/<repo> --name <Name> --session <your-session-id> \
+  --revision research-concept-r17.md
+```
+
+It asks `probe` what is owed, routes each step by its own declared
+`placement`, and then **executes the published subcommands as subprocesses**
+rather than calling their functions -- so every guard those carry applies
+exactly as it does to somebody running them by hand. After each local step it
+refreshes the position and records that step's product, because `step`
+refuses on a dirty tree and every step dirties it with its own output; the
+message names the step and narrates nothing, which is the half that stays
+yours.
+
+It stops, rather than refusing, and says where: at a `launch`, at a `blocked`
+step nobody routed, or at the first act that refused -- returning `performed`
+and `stoppedAt` so the answer is what it did and what is left. It stops
+rather than skipping ahead because the flow is ordered: a step that cannot
+run is one whose output every later step reads.
+
+**It has no path to `submit`.** A launch is hours of somebody's quota and is
+the one act whose plan a person asked to see first, so the walk hands it over
+instead of taking it.
+
+Omit `--revision` and no position refresh runs between steps, which means an
+ordered next step will refuse -- the flag is what lets a walk be more than one
+step long.
+
 Runs exactly one step per call — no flag sequences or dispatches more than
 one, and this never consults `probe`'s `nextStep`. A step that declares
 `advances` is refused `STEP_SEQUENCE_NOT_REACHED` while an earlier sequence

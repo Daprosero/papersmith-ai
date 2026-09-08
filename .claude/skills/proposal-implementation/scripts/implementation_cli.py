@@ -16319,7 +16319,13 @@ def cmd_walk(args: argparse.Namespace) -> dict:
     target = resolve_target(args.target)
     name = validate_name(args.name)
     _require_no_open_defect(target, name)
-    require_named_product_dir(target, name)
+    # No `require_named_product_dir` here, and its absence is derived rather
+    # than forgotten: that guard's scope is the set of commands that append to
+    # the ledger themselves, and this one appends nothing. Every write it
+    # causes goes through `step` or `position`, each of which carries the
+    # guard already, so calling it here would put a tenth name in a set the
+    # suite holds equal to the nine that actually append -- and a guard whose
+    # scope stops matching what it guards is one nobody can reason about.
 
     probe = cmd_probe(argparse.Namespace(
         target=str(target), name=args.name, revision=args.revision))
