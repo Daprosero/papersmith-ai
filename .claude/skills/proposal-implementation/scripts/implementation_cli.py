@@ -3717,6 +3717,12 @@ def cmd_probe(args) -> dict:
         # is broken" and this answers "where am I", which is the question
         # somebody opening a clean repository to run the flow from the top
         # actually has. Gates nothing. See `walk_state`.
+        # Why this skill was invoked and where it has to arrive, reported
+        # ABOVE every measurement below it. Every other key here answers
+        # "where am I" by reading products; this answers "what is this for",
+        # which no product implies and which a blocked session needs first.
+        # See `OBJECTIVE_FLOW`.
+        "objective": OBJECTIVE_FLOW,
         "walk": walk,
         # The half `walk` could not answer. `walk` says where this repository
         # stands; this says what the next act is for every step still owed, in
@@ -9307,6 +9313,69 @@ WALK_ORDER = ("notWalked", "unfinished", "walked")
 #: contract names, the same class as `advances` and `produces`. What a step is
 #: CALLED, what it writes, which service it sends to -- all of that is the
 #: target's word and none of it appears here.
+#: WHY THIS SKILL WAS INVOKED, AND WHERE IT HAS TO ARRIVE.
+#:
+#: Declared, invariant, and deliberately independent of anything on disk. Every
+#: other reading in this file answers *where am I* by measuring products --
+#: `walk` the ledger, `flowActs` what is owed, `flowDestination` the rung. This
+#: answers a question none of them can: *what is this for*. A session that hits
+#: an error, an interruption, or a gap consults it, locates itself, resolves
+#: what blocks, and rejoins -- rather than improvising forward, which is what an
+#: agent does when a blocker detaches it from the purpose.
+#:
+#: **It is not the agreements and does not replace them.** What the mathematics
+#: says lives in the managed revision; what was settled about this repository
+#: lives in its `AGREED.md`. This says only what the skill is FOR, which is the
+#: one thing neither of those states and no artefact implies.
+#:
+#: Each stage names what it establishes and how a reader knows it is behind
+#: them. The conditions are written to be READ, not computed: a stage derived
+#: from products would make the purpose depend on the products, which is
+#: exactly the dependency this exists without.
+OBJECTIVE_FLOW = {
+    "purpose": (
+        "carry the agreed formulation as far as complete runs that can be "
+        "reported -- not a green verification, not a passing rehearsal"),
+    "stages": [
+        {"stage": "fidelity",
+         "establishes": "the code says what the bound revision says, and every "
+                        "claim it makes carries an invariant with a test",
+         "behindWhen": "`fidelity` is clean and the target's own suite is green "
+                       "under its own interpreter"},
+        {"stage": "audit",
+         "establishes": "what the formulation gets wrong, established over the "
+                        "declared sweep, with each remedy ruled admissible "
+                        "before it is measured and validated after",
+         "behindWhen": "`audit` is no longer `incomplete`"},
+        {"stage": "declaration",
+         "establishes": "what the experiment compares, over which statistical "
+                        "unit, by which metric, and what it produces",
+         "behindWhen": "the benchmark declaration is answered rather than "
+                       "sitting at its scaffolded empty value"},
+        {"stage": "rehearsal",
+         "establishes": "the declared flow runs end to end with its own "
+                        "notebooks, and the document a person reads agrees "
+                        "with the run",
+         "behindWhen": "the pilot is complete and `report` is `ok`"},
+        {"stage": "full-scale",
+         "establishes": "every step routed to where it was decided to run, and "
+                        "executed there at the scale the protocol declares",
+         "behindWhen": "this is the arrival; it is behind nobody"},
+    ],
+    "arrival": (
+        "complete runs at the declared scale, local or remote as each step "
+        "declares, with the record they leave"),
+    # Said here because a blocked agent needs it most: some stops are not
+    # defects and must not be repaired. Publishing a commit and authorizing a
+    # launch are decisions a person owes, and an agent that treats them as
+    # blockers to resolve will either stall on them or take them.
+    "humanStops": [
+        "publishing the commit a worker would clone",
+        "authorizing a launch, which is hours of somebody's quota",
+    ],
+}
+
+
 STEP_KEYS = ("module", "function", "advances", "reads", "produces",
              "placement", "job", "service")
 
@@ -16981,8 +17050,16 @@ def main(argv: list[str] | None = None) -> int:
         # `GATING_REFUSALS` calls the code a work state -- somebody has to act
         # on the repository, and this says what -- and absent otherwise, so its
         # presence is itself the classification rather than a field to skim.
+        # The north, on every refusal without exception. A blocked session is
+        # exactly the one that has lost the purpose, and the cheapest possible
+        # remedy is that the refusal itself carries it: what this is for, where
+        # it has to arrive, and which stops are a person's rather than a defect
+        # to repair. It is small, invariant, and reads the same on every code,
+        # which is what lets an agent locate itself and rejoin instead of
+        # improvising forward. See `OBJECTIVE_FLOW`.
         payload = {"status": "refused", "code": refused.code,
-                   "detail": refused.detail}
+                   "detail": refused.detail,
+                   "objective": OBJECTIVE_FLOW}
         resolution = refusal_resolution(refused.code, args)
         if resolution is not None:
             payload["resolve"] = resolution

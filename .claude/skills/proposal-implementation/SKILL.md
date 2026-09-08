@@ -66,6 +66,47 @@ metadata records no version — never a pass. It reports and never gates: a
 foreign interpreter is not a wrong number, it is a reason to distrust the
 numbers, and folding the two into one status destroys the distinction.
 
+## The objective flow
+
+**Why this skill was invoked, and where it has to arrive.** Declared here and in
+`OBJECTIVE_FLOW`, held equal by a test, and deliberately independent of anything
+on disk. Every other reading answers *where am I* by measuring products; this
+answers *what is this for*, which no product implies.
+
+It exists for the moment something breaks. A session that hits an error, an
+interruption or a gap consults it, locates itself, resolves what blocks, and
+rejoins — rather than improvising forward, which is what an agent does when a
+blocker detaches it from the purpose. Every refusal this engine raises carries
+it, at the single place they all reach a reader, so it is never further away
+than the thing that stopped you.
+
+**It is not the agreements and does not replace them.** What the mathematics
+says lives in the managed revision; what was settled about a repository lives in
+its `AGREED.md`. This says only what the skill is for.
+
+**Purpose:** carry the agreed formulation as far as complete runs that can be
+reported — not a green verification, not a passing rehearsal.
+
+| Stage | Establishes | Behind you when |
+| --- | --- | --- |
+| `fidelity` | The code says what the bound revision says, and every claim carries an invariant with a test | `fidelity` is clean and the target's own suite is green under its own interpreter |
+| `audit` | What the formulation gets wrong, established over the declared sweep, each remedy ruled admissible before it is measured and validated after | `audit` is no longer `incomplete` |
+| `declaration` | What the experiment compares, over which statistical unit, by which metric, and what it produces | the benchmark declaration is answered rather than sitting at its scaffolded empty value |
+| `rehearsal` | The declared flow runs end to end with its own notebooks, and the document a person reads agrees with the run | the pilot is complete and `report` is `ok` |
+| `full-scale` | Every step routed to where it was decided to run, and executed there at the scale the protocol declares | this is the arrival; it is behind nobody |
+
+**Arrival:** complete runs at the declared scale, local or remote as each step declares, with the record they leave.
+
+**Two stops are a person's, not defects to repair:** publishing the commit a
+worker would clone, and authorizing a launch. An agent that reads either as a
+blocker will stall on it or take it, and the second is how quota gets spent by
+somebody who was not asked.
+
+The conditions above are written to be READ, not computed. A stage derived from
+products would make the purpose depend on the products, which is the one
+dependency this exists without: it has to read the same on a repository with
+nothing in it as on one mid-campaign.
+
 ## Activation Contract
 
 Activate when the user asks to implement, code, scaffold, reorganize or verify
@@ -2441,6 +2482,7 @@ is a fact nobody reads:
 
 | Fact | What it reports | Gates? |
 | --- | --- | --- |
+| `objective` | Why this skill was invoked and where it has to arrive: the declared `purpose`, the ordered `stages` with what each establishes and how a reader knows it is behind them, the `arrival`, and the `humanStops` that are a person's decision rather than a defect to repair. Reported **above** every measurement beside it, and carried by every refusal this engine raises. Invariant and independent of anything on disk — every other fact here answers *where am I* by reading products; this answers *what is this for*, which no product implies. See the section **The objective flow** and `OBJECTIVE_FLOW` | **Never**, and it is never derived either: a stage computed from products would make the purpose depend on the products, which is the one dependency it exists without. It has to read the same on a repository with nothing in it as on one mid-campaign |
 | `backend` | Whether the implementation can be trained at all, and what it computes with | Yes — `convert` is the answer when it cannot |
 | `baselines` | The prior implementations there are to compare against | Yes — nothing to compare against outranks everything else on the ladder |
 | `comparable` | Whether that list is non-empty, stated once so nobody re-derives it | Reported whatever it says |

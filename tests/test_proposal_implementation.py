@@ -22179,7 +22179,12 @@ class OfferCommandTests(unittest.TestCase):
         # went through the coded `Refused` path, never argparse `choices`,
         # which would have printed usage text on stderr and nothing
         # JSON-shaped on stdout at all.
-        self.assertEqual(set(result), {"status", "code", "detail"})
+        # `objective` joins the three: every refusal carries the north,
+        # because a blocked session is exactly the one that has lost the
+        # purpose. Pinned here rather than tolerated, so a key added to the
+        # refusal payload is a decision somebody takes and not a drift.
+        self.assertEqual(set(result),
+                         {"status", "code", "detail", "objective"})
 
     def test_offer_refuses_before_any_answer_and_publishes_no_actions_key(self):
         box, commit = self._box()
@@ -31424,6 +31429,65 @@ class FlowActsTests(unittest.TestCase):
         self.assertTrue(all(row["consequence"] for row in state))
         self.assertEqual(impl.undeclared_placement_state(
             {"a": {"placement": "local"}}), [])
+
+
+class ObjectiveFlowTests(unittest.TestCase):
+    """The north: why the skill was invoked and where it has to arrive."""
+
+    def test_every_refusal_carries_it(self) -> None:
+        """A blocked session is exactly the one that has lost the purpose, so
+        the refusal itself carries it. Asserted at the single place every
+        refusal in this engine reaches a reader, so no code can be added that
+        answers without it."""
+        source = Path(impl.__file__).read_text(encoding="utf-8")
+        block = source[source.index('payload = {"status": "refused"'):][:400]
+        self.assertIn('"objective": OBJECTIVE_FLOW', block)
+
+    def test_it_is_declared_and_not_derived(self) -> None:
+        """Invariant on purpose. A stage computed from products would make the
+        purpose depend on the products, which is the one dependency this
+        exists without: it has to read the same on a repository with nothing
+        in it as on one mid-campaign."""
+        flow = impl.OBJECTIVE_FLOW
+        self.assertTrue(flow["purpose"] and flow["arrival"])
+        self.assertEqual([s["stage"] for s in flow["stages"]],
+                         ["fidelity", "audit", "declaration", "rehearsal",
+                          "full-scale"])
+        for stage in flow["stages"]:
+            self.assertTrue(stage["establishes"], stage["stage"])
+            self.assertTrue(stage["behindWhen"], stage["stage"])
+
+    def test_it_names_the_stops_that_are_not_defects(self) -> None:
+        """The half a blocked agent needs most. Publishing a commit and
+        authorizing a launch are decisions a person owes; an agent that reads
+        them as blockers either stalls on them or takes them, and the second
+        is how quota gets spent by somebody who was not asked."""
+        self.assertTrue(impl.OBJECTIVE_FLOW["humanStops"])
+
+    def test_it_carries_no_target_vocabulary(self) -> None:
+        """It travels with the skill and describes no repository."""
+        import json as _json
+        self.assertEqual(leaks_in(_json.dumps(impl.OBJECTIVE_FLOW)), [])
+
+    def test_the_doctrine_states_the_same_stages(self) -> None:
+        """Held equal to the code, the discipline the command roster and the
+        status tables already carry: doctrine that drifts from the data is
+        doctrine nobody can trust."""
+        skill = SKILL_MD.read_text(encoding="utf-8")
+        # Scoped to the section's own table, never to the whole document: the
+        # first version of this asserted each stage name appeared ANYWHERE in
+        # SKILL.md, and words like `rehearsal` appear all over the doctrine —
+        # so renaming a row in the table left it green. Measured by mutation,
+        # not noticed by reading.
+        start = skill.index("## The objective flow")
+        table = skill[start:skill.index("**Arrival:**", start)]
+        rows = [line for line in table.splitlines() if line.startswith("| `")]
+        self.assertEqual(
+            [line.split("`")[1] for line in rows],
+            [stage["stage"] for stage in impl.OBJECTIVE_FLOW["stages"]],
+            "the doctrine's table and `OBJECTIVE_FLOW` name different stages, "
+            "or name them in a different order")
+        self.assertIn(impl.OBJECTIVE_FLOW["arrival"], skill)
 
 
 class KitDemandsEveryStepKeyTests(unittest.TestCase):
