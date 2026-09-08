@@ -31356,12 +31356,18 @@ class FlowActsTests(unittest.TestCase):
         Sorting here would put a cheap local drawing in front of the remote
         run whose output it reads.
         """
-        rows = [{"step": "one", "walk": "notWalked"},
-                {"step": "two", "walk": "notWalked"},
-                {"step": "three", "walk": "notWalked"}]
-        steps = {name: {"placement": "local"} for name in ("one", "two", "three")}
+        # Deliberately alphabetical-hostile: `_walk_report` sorts its rows by
+        # NAME, so rows arrive in an order that is not the flow's, and acts
+        # executed in it would run a step before the one whose output it
+        # reads. Measured on a real repository: the drawing step came out
+        # first and the suite-and-invariants step everything rests on came out
+        # last.
+        rows = [{"step": "zulu", "walk": "notWalked", "advances": 1},
+                {"step": "alpha", "walk": "notWalked", "advances": 2},
+                {"step": "mike", "walk": "notWalked", "advances": None}]
+        steps = {n: {"placement": "local"} for n in ("zulu", "alpha", "mike")}
         self.assertEqual([a["step"] for a in impl.flow_acts(rows, steps, [])],
-                         ["one", "two", "three"])
+                         ["zulu", "alpha", "mike"])
 
     def test_a_step_walked_at_a_lower_rung_is_still_owed_at_a_higher_one(self) -> None:
         """The distinction the whole function turns on, and it was measured.

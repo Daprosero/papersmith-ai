@@ -9407,7 +9407,17 @@ def flow_acts(rows: list[dict], steps: dict, jobs: list[dict],
     levels = list(levels or [])
     by_name = {job.get("job"): job for job in jobs if isinstance(job, dict)}
     acts = []
-    for row in rows:
+    # By the ORDER THE FLOW DECLARES, never the order the rows arrive in.
+    # `_walk_report` sorts its rows by step name because it is a report and a
+    # reader looks names up in it; acts are executed, and executing them
+    # alphabetically would run a step before the one whose output it reads --
+    # on a real repository the first act came out as the drawing step and the
+    # suite-and-invariants step that everything else rests on came out last.
+    # A step declaring no ordinal has no place in the order and goes after the
+    # ones that claim one, in the report's own order, which is the same
+    # restraint `pilot_completeness_state` already applies.
+    for row in sorted(rows, key=lambda r: (r.get("advances") is None,
+                                           r.get("advances") or 0)):
         # A step is owed until its own rung reaches the one being walked
         # toward -- NOT until it has been walked once. That distinction is the
         # whole of this function's correctness at more than one scale, and it
@@ -16279,7 +16289,137 @@ def refusal_resolution(code: str, args) -> dict | None:
         return None
 
 
-COMMANDS = {"env": cmd_env, "name": cmd_name, "plan": cmd_plan, "apply": cmd_apply,
+def cmd_walk(args: argparse.Namespace) -> dict:
+    """Walk the declared flow toward the rung the position header aims at.
+
+    The piece that did not exist. Every part of the ordered flow was here --
+    the steps, their guards, the position sequence, the ledger, and the whole
+    remote chain -- and nothing carried a repository from step N to step N+1,
+    so that walk was performed by whoever drove the CLI, by hand, in a
+    throwaway shell script.
+
+    **It executes the published subcommands as subprocesses rather than
+    calling their functions.** Every guard those commands carry -- the dirty
+    worktree, the sequence order, the interpreter, the pin -- then applies
+    exactly as it does to a human running them, with nothing re-implemented
+    and nothing bypassed. A walker that reached inside would be a second path
+    to the same acts, and the second path is always the one missing a check.
+
+    It performs local work, writes job folders, and stops at a launch. That
+    line is `walk_plan`'s and is stated there; what it means here is that
+    this function has no path to `submit` at all.
+
+    Between two steps it refreshes the position, because an ordered next step
+    refuses while an earlier item's mark is the one written before this run,
+    and `position` is the only writer into that section. It does not commit:
+    what belongs in the history and what the message says are the operator's,
+    and a walker authoring commit messages would be writing the record of
+    somebody else's work.
+    """
+    target = resolve_target(args.target)
+    name = validate_name(args.name)
+    _require_no_open_defect(target, name)
+    require_named_product_dir(target, name)
+
+    probe = cmd_probe(argparse.Namespace(
+        target=str(target), name=args.name, revision=args.revision))
+    plan = walk_plan(probe["flowActs"])
+
+    performed: list[dict] = []
+    for act in plan["performs"]:
+        if act["act"] == ACT_RUN_LOCAL:
+            argv = [sys.executable, str(CLI_PATH), "step",
+                    "--target", str(target), "--name", args.name,
+                    "--step", act["step"], "--session", args.session]
+        else:
+            # Composed here and never published: the argv carries a service
+            # name, and this skill's own rule is that a service is read to
+            # walk a directory and reduced to a count before anything is
+            # returned. Executing one is not returning one.
+            steps = resolve_steps_declaration(target, name)
+            entry = steps.get(act["step"]) or {}
+            notebooks = _step_notebook_roots(entry)
+            argv = generate_job_argv(
+                target, name, act["step"], entry,
+                _target_remote_url(target), _target_branch(target),
+                f"{name}/{notebooks[0]}" if notebooks else None)
+        ran = subprocess.run(argv, capture_output=True, text=True)
+        performed.append({"step": act["step"], "act": act["act"],
+                          "exitStatus": ran.returncode,
+                          "detail": (ran.stdout or ran.stderr)[-600:]})
+        if ran.returncode != 0:
+            # The refusal is the answer. Walking past a step that would not
+            # run would put every later step against material never produced,
+            # which is the same reason `walk_plan` stops rather than filters.
+            return {"command": "walk", "target": str(target), "name": name,
+                    "performed": performed, "stoppedAt": act,
+                    "reason": "the act above refused; its own message says why"}
+        if act["act"] == ACT_RUN_LOCAL and args.revision:
+            subprocess.run(
+                [sys.executable, str(CLI_PATH), "position",
+                 "--target", str(target), "--name", args.name,
+                 "--session", args.session, "--revision", args.revision],
+                capture_output=True, text=True)
+            _commit_walked_step(target, act["step"])
+    return {"command": "walk", "target": str(target), "name": name,
+            "performed": performed, "stoppedAt": plan["stopsAt"],
+            "reason": None if plan["stopsAt"] is None else
+                      plan["stopsAt"].get("needs")
+                      or "a launch is the operator's to authorize"}
+
+
+def _commit_walked_step(target: Path, step: str) -> None:
+    """Record what one walked step produced, so the next one can run.
+
+    A tension worth stating rather than hiding. `step` publishes its own next
+    acts and says of the first that the commit message is the operator's and
+    this skill never writes one -- which is right for a person running one
+    step and reading what it left. It cannot hold for a walk: `step` refuses
+    on a dirty tree, every step dirties the tree with its own product, and a
+    walker that stopped after each one to ask for a message would not be a
+    walker at all. That was measured, not reasoned: the first walk ran one
+    step and the second refused DIRTY_WORKTREE.
+
+    So the message here is deliberately mechanical -- it names the step and
+    nothing else. It records that an act happened; it does not narrate what
+    the work means, which is the half that stays the operator's and which
+    they can rewrite freely, since none of this is pushed.
+
+    Silent when there is nothing to record: a step that legitimately wrote
+    nothing is not an error, and `step`'s own `wrote` block is where that is
+    reported.
+    """
+    if not subprocess.run(["git", "-C", str(target), "status", "--porcelain"],
+                          capture_output=True, text=True).stdout.strip():
+        return
+    subprocess.run(["git", "-C", str(target), "add", "-A"],
+                   capture_output=True, text=True)
+    subprocess.run(
+        ["git", "-C", str(target), "commit", "-q", "-m",
+         f"walk: {step}",
+         "-m", "What this step declared it produces, recorded so the next "
+               "step in the flow can run: `step` refuses on a dirty tree. "
+               "The message is mechanical on purpose -- it records that an "
+               "act happened and narrates nothing, which stays yours."],
+        capture_output=True, text=True)
+
+
+def _target_remote_url(target: Path) -> str:
+    """The target's own `origin`, read at runtime and never stored here."""
+    ran = subprocess.run(["git", "-C", str(target), "remote", "get-url", "origin"],
+                         capture_output=True, text=True)
+    return ran.stdout.strip() if ran.returncode == 0 else ""
+
+
+def _target_branch(target: Path) -> str:
+    """The branch the target is on, which is what a job pins against."""
+    ran = subprocess.run(["git", "-C", str(target), "branch", "--show-current"],
+                         capture_output=True, text=True)
+    return ran.stdout.strip() if ran.returncode == 0 else ""
+
+
+COMMANDS = {"walk": cmd_walk,
+            "env": cmd_env, "name": cmd_name, "plan": cmd_plan, "apply": cmd_apply,
             "admit": cmd_admit, "handoff": cmd_handoff, "compose": cmd_compose,
             "probe": cmd_probe,
             "verify": cmd_verify,
@@ -16500,6 +16640,14 @@ def main(argv: list[str] | None = None) -> int:
                                 "exactly this operator-declared list; the "
                                 "engine never substitutes one of its own. "
                                 "Omit it for a single-send launch")
+        if name == "walk":
+            p.add_argument("--session", required=True,
+                           help="the session driving this walk, stamped on "
+                                "every position write it triggers")
+            p.add_argument("--revision", default=None,
+                           help="the managed revision the position binds to; "
+                                "omitted, no position refresh runs between "
+                                "steps and an ordered next step will refuse")
         if name == "step":
             p.add_argument("--step", required=True,
                            help="the declared __steps__ entry to run; no "
