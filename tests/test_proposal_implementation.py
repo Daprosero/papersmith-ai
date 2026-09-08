@@ -31313,7 +31313,8 @@ class FlowActsTests(unittest.TestCase):
         offered on a wire nobody proved carries current.
         """
         rows = [{"step": "beta", "walk": "notWalked"}]
-        steps = {"beta": {"placement": "remote", "job": "job-b"}}
+        steps = {"beta": {"placement": "remote", "job": "job-b",
+                          "service": "service-b"}}
 
         absent = impl.flow_acts(rows, steps, [])
         unrehearsed = impl.flow_acts(
@@ -31346,7 +31347,8 @@ class FlowActsTests(unittest.TestCase):
         self.assertIsNone(acts[0]["placement"])
         self.assertIn("runs here or on a worker", acts[0]["needs"])
         self.assertEqual(acts[1]["placement"], impl.PLACEMENT_REMOTE)
-        self.assertIn("names no job folder", acts[1]["needs"])
+        self.assertIn("['job']", acts[1]["needs"])
+        self.assertIn("['service']", acts[1]["needs"])
 
     def test_the_declared_order_is_the_order_of_the_acts(self) -> None:
         """The rows arrive in the flow's own order and leave in it.

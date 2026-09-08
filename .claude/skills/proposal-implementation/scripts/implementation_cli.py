@@ -9291,6 +9291,7 @@ WALK_ORDER = ("notWalked", "unfinished", "walked")
 #: its own `produces` roots and its own `advances` ordinal.
 PLACEMENT_KEY = "placement"
 JOB_KEY = "job"
+SERVICE_KEY = "service"
 PLACEMENT_LOCAL = "local"
 PLACEMENT_REMOTE = "remote"
 PLACEMENTS = (PLACEMENT_LOCAL, PLACEMENT_REMOTE)
@@ -9320,9 +9321,31 @@ def _step_placement(entry: object) -> str | None:
 
 def _step_job(entry: object) -> str | None:
     """The job folder one remote step runs through, or `None`."""
+    return _step_text(entry, JOB_KEY)
+
+
+def _step_service(entry: object) -> str | None:
+    """The service one remote step's job folder lives under, or `None`.
+
+    Declared by the TARGET and never discovered here, and the reason is a rule
+    this skill already carries: a service may be read to walk a directory and
+    is reduced to a count before anything is returned, so nothing in this file
+    may name one. Discovery could not fill the gap either -- adapters register
+    lazily, so the registry is empty until somebody names one, and listing the
+    adapter directory would read a sibling helper as a backend.
+
+    So the target says it, exactly as it says its own `job`, and the name
+    travels only in an argv the walker executes -- never in a payload this
+    skill returns.
+    """
+    return _step_text(entry, SERVICE_KEY)
+
+
+def _step_text(entry: object, key: str) -> str | None:
+    """One non-blank string key off a step's declaration, or `None`."""
     if not isinstance(entry, dict):
         return None
-    value = entry.get(JOB_KEY)
+    value = entry.get(key)
     return value if isinstance(value, str) and value.strip() else None
 
 
@@ -9412,13 +9435,20 @@ def flow_acts(rows: list[dict], steps: dict, jobs: list[dict],
                          "act": ACT_RUN_LOCAL, "needs": None})
             continue
         job_name = _step_job(entry)
-        if job_name is None:
+        service = _step_service(entry)
+        missing = [key for key, value in ((JOB_KEY, job_name),
+                                          (SERVICE_KEY, service))
+                   if value is None]
+        if missing:
+            keys = " and ".join(
+                f"{STEPS_DECLARATION}[{row['step']!r}][{key!r}]"
+                for key in missing)
             acts.append({"step": row["step"], "placement": placement,
                          "act": ACT_BLOCKED,
-                         "needs": f"{STEPS_DECLARATION}[{row['step']!r}]"
-                                  f"[{JOB_KEY!r}] names no job folder, so "
-                                  "nothing ties this step to the thing that "
-                                  "would carry it elsewhere"})
+                         "needs": f"{keys} names nothing, so this step is not "
+                                  "tied to the job folder that would carry it "
+                                  "elsewhere, nor to the service that folder "
+                                  "lives under"})
             continue
         job = by_name.get(job_name)
         if job is None:

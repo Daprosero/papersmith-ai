@@ -198,10 +198,14 @@ __levels__: list = []
 # And one more key, asked of every step and defaulted for none: `placement`,
 # which says WHERE the step runs once the flow leaves rehearsal scale --
 # `"local"` on this machine, or `"remote"` on a worker. A remote one also
-# names the `job` folder that carries it, because nothing else ties a step to
-# a job and the forge deliberately does not invent that link: which work goes
-# through which job folder is this repository's layout, not the forge's to
-# guess.
+# names two more: the `job` folder that carries it and the `service` that
+# folder lives under. Nothing else ties a step to a job, and the forge
+# deliberately does not invent that link -- which work goes through which job
+# folder is this repository's layout, not the forge's to guess. The service is
+# yours to name for a harder reason: the forge may read a service name to walk
+# a directory and must reduce it to a count before returning anything, so
+# nothing there can name one, and it cannot discover one either -- adapters
+# register lazily, so the registry is empty until somebody names one.
 #
 # It is a DECLARATION and not a decision recorded somewhere else, and the
 # reason is worth having on the first day. That routing gets decided in
@@ -233,6 +237,8 @@ __levels__: list = []
 #             # it names the job folder that carries it there.
 #             "placement": "remote",
 #             "job": "computation",
+#             "service": "the-service-you-send-to",
+#             "service": "the-service-you-send-to",
 #         },
 #         "rendering": {
 #             "module": "Example_Method_Benchmark.steps",
