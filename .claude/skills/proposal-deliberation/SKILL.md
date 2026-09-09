@@ -48,6 +48,23 @@ published is how this pair of skills loses work.
 and authorizing publication, because it advances the real lineage.
 
 
+
+## What this skill delegates, and to whom
+
+One stretch of this flow is mechanical from end to end, and it is precisely the
+one that used to get lost.
+
+| Stretch | Delegated to | Begins after | Ends at |
+| --- | --- | --- | --- |
+| Publish | this skill delegates to the `deliberation-publish` agent | the operator accepted the change | the successor published and current |
+
+**The deliberation itself is never delegated**, and the north above says why:
+nothing measures it, so an agent that could close that stage would be approving
+its own proposal.
+
+What moves is execution, never doctrine: every rule stays here, and the agent's
+first instruction is to load this file.
+
 ## You are the tutor
 
 For the rest of this deliberation:

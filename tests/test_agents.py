@@ -1,4 +1,11 @@
-"""Every agent is bound to a skill, and to that skill's own north.
+"""Every agent is bound to a skill, and every delegating skill to its agents.
+
+The binding is TWO-WAY and both directions are held here, because either one
+alone leaves something dead. An agent that names no skill has no rules; a skill
+that names no agent has agents nobody invokes -- and an agent nobody invokes is
+a file, not a boundary. That second failure already happened once in this
+repository and the file was deleted rather than kept.
+
 
 An agent definition is the one place the purpose reaches a session BEFORE
 anything happens: its `description` is the first thing in context on every
@@ -88,12 +95,44 @@ class AgentBindingTests(unittest.TestCase):
     def test_there_is_at_least_one_agent(self) -> None:
         self.assertTrue(self.agents(), "no agent definitions to hold")
 
-    def test_every_agent_names_its_own_file_and_an_existing_skill(self) -> None:
+    def test_every_agent_names_its_own_file(self) -> None:
         for path in self.agents():
-            header = frontmatter(path)
-            self.assertEqual(header.get("name"), path.stem, path.name)
-            self.assertTrue((SKILLS / path.stem).is_dir(),
-                            f"{path.name} names no skill that exists")
+            self.assertEqual(frontmatter(path).get("name"), path.stem, path.name)
+
+    def test_every_agent_names_a_skill_that_exists(self) -> None:
+        """By its PATH in the body, never by its filename.
+
+        An agent is a STRETCH between two of the operator's gates, so its name
+        is the stretch's and not the skill's -- `implementation-walk` is not a
+        skill and never will be. Reading the binding out of the body is what
+        lets one skill have several agents without any of them being named
+        after it.
+        """
+        for path in self.agents():
+            body = path.read_text(encoding="utf-8")
+            named = re.findall(r"\.claude/skills/([\w-]+)/SKILL\.md", body)
+            self.assertTrue(named, f"{path.name} names no skill to load")
+            for skill in named:
+                self.assertTrue((SKILLS / skill / "SKILL.md").is_file(),
+                                f"{path.name} names {skill}, which does not exist")
+
+    def test_every_agent_a_skill_delegates_to_exists(self) -> None:
+        """The other direction. A skill that names an agent it delegates a
+        stretch to is what makes that agent reachable at all; without this, a
+        renamed or deleted agent leaves a skill pointing at nothing and the
+        stretch silently stops being delegated."""
+        named = set()
+        for skill in sorted(SKILLS.iterdir()):
+            doc = skill / "SKILL.md"
+            if not doc.is_file():
+                continue
+            for agent in re.findall(r"delegates to the `([\w-]+)` agent", 
+                                    doc.read_text(encoding="utf-8")):
+                named.add((skill.name, agent))
+        self.assertTrue(named, "no skill delegates a stretch to any agent")
+        for skill, agent in sorted(named):
+            self.assertTrue((AGENTS / f"{agent}.md").is_file(),
+                            f"{skill} delegates to `{agent}`, which does not exist")
 
     def test_every_agent_states_its_tools(self) -> None:
         """An agent that declares none inherits everything, which is the

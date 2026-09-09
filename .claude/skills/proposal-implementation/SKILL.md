@@ -118,6 +118,55 @@ products would make the purpose depend on the products, which is the one
 dependency this exists without: it has to read the same on a repository with
 nothing in it as on one mid-campaign.
 
+
+## What this skill delegates, and to whom
+
+Two stretches of this flow are mechanical from end to end — they carry out
+decisions already taken and take none of their own — and each runs in an agent
+of its own rather than in the conversation. What moves is EXECUTION, never
+doctrine: every rule stays here, and each agent's first instruction is to load
+this file.
+
+A stretch begins after one of the operator's gates and ends before the next.
+That boundary is the whole design: an agent that started mid-decision would
+take it, which is the failure this shape exists to prevent.
+
+| Stretch | Delegated to | Begins after | Ends before |
+| --- | --- | --- | --- |
+| Build | this skill delegates to the `implementation-build` agent | the object-to-module map is approved | the operator decides what to do with the findings |
+| Walk | this skill delegates to the `implementation-walk` agent | each step's placement is decided | the launch the operator must authorize |
+
+### `remote-execution` is driven, not delegated to
+
+An agent of its own was considered and rejected, and the reasoning is kept
+because the case for it was good and somebody will make it again.
+
+**What argued for one.** It is the only thing in this forge that spends money,
+and a boundary around what spends is the most valuable boundary there is. Its
+doctrine is large, and carrying it in a walk agent's head is the context bloat
+this whole shape exists to reduce. And its tools could be cut to `Read` and
+`Bash`, making "it never edits the target" structural rather than doctrinal.
+
+**What decided against.** The walk stretch does not need that doctrine — it
+drives `remote_cli`, and that CLI refuses precisely and carries its own north in
+every refusal, so what the walk needs is to run commands and read what comes
+back. A second agent would be a hop that buys nothing it does not already have.
+
+And the quota argument does not survive inspection: **the boundary that stops a
+campaign is the launch gate, not an agent.** The walk stretch ends there by
+construction and has no path to submitting one. Putting an agent in front of a
+gate that already holds adds a door beside an open wall.
+
+**What would change this.** If a stretch ever needed to run remote acts *past*
+the launch gate — polling, fetching, reconciling a campaign already out — that
+stretch has a different end and a different risk, and the case for its own agent
+would have to be made again from there.
+
+**Nothing here forces a delegation.** Running a stretch in the conversation is
+legitimate and is what happens when the operator wants to watch it. What the
+declaration buys is that the boundary is written down: a stretch that could have
+been delegated is one whose ends somebody had to name.
+
 ## Activation Contract
 
 Activate when the user asks to implement, code, scaffold, reorganize or verify
