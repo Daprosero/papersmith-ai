@@ -14,6 +14,47 @@ service — that is a concrete adapter, still to come — but the CLI a user
 would invoke directly (`submit`, `status`, `poll`, `fetch`, `reconcile`) is
 in place today, exercised against a `FakeAdapter` only.
 
+## The objective flow
+
+**Why this skill was invoked, and where it has to arrive.** Declared here and in
+`OBJECTIVE_FLOW`, held equal by a test, and independent of any ledger, job folder
+or result on disk. `status` answers *where am I* by folding what happened; this
+answers *what is this for*, which nothing on disk implies.
+
+It exists for the moment something breaks. A session that hits an error, an
+interruption or a gap consults it, locates itself, resolves what blocks, and
+rejoins. Every refusal this CLI raises carries it — which required creating the
+single place they all reach a reader, because there were fourteen and nothing
+could hold them to agreeing.
+
+**Purpose:** carry work a repository declared to a worker and bring its result
+back verified — not accepted, not running, back and current.
+
+| Stage | Establishes | Behind you when |
+| --- | --- | --- |
+| `reachable` | A job folder pinned to a commit the declared remote can actually serve, which is what a worker clones | `generate-job` wrote the folder — it proves the pin against the remote before writing a byte, so a folder that exists is a pin that was published |
+| `wire` | That this worker, at this pin, carries current — paid in minutes rather than in the hours a campaign costs | `readiness` says ready, from a verdict derived from a rehearsal's own evidence and never asserted |
+| `authorized` | A launch bound to this exact commit, entrypoint and unit list, with a token minted for it and consumed once | a `gate` record matches; a bound fact that moved makes it stale, which is not the same as time passing |
+| `sent` | The submission is out and the ledger knows it, so no second one answers a question already being answered | the ledger holds it with a terminal state |
+| `returned` | The result is on disk, current, and not quarantined | this is the arrival; it is behind nobody |
+
+**Arrival:** the result on disk and verified as the current one, which is the only thing anybody can read a number out of.
+
+**`reconcile` is not a stage and never advances one.** It is the way back when
+the ledger and the service stop agreeing — `drift`, or a ledger line that could
+not be read at all — and it returns to `sent`. Said explicitly because without
+it `drift` reads as having lost the work rather than as a detour.
+
+**Two stops are a person's, not defects to repair:** publishing the commit a
+worker would clone, which `generate-job` refuses without and names precisely,
+and authorizing the launch itself.
+
+**Arrival is the result back and verified, never the submission accepted.** That
+distinction is the whole point: a submission the service took is a receipt, and
+a receipt is not a measurement. Between the two sit a poll, a fetch, and a
+quarantine that refuses a result which is not current.
+
+
 ## What this skill cannot see
 
 **It does not know how much time budget a worker has left, and it has no way

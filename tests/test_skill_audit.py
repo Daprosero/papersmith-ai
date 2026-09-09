@@ -1701,16 +1701,23 @@ class NumeralCheckTests(BoxMixin, unittest.TestCase):
     def test_the_live_target_names_both_halves_at_file_and_line(self):
         """Move 2, on a real document: a skill that says three above a list of
         more than three, in the repository as it stands."""
-        found = audit_cli_module().numeral_mismatches(
-            FORGE / ".claude" / "skills" / "remote-execution" / "SKILL.md")
+        SKILL = FORGE / ".claude" / "skills" / "remote-execution" / "SKILL.md"
+        found = audit_cli_module().numeral_mismatches(SKILL)
         self.assertEqual(len(found), 1, found)
         finding = found[0]
-        # This anchor has moved three times now, every time because a
-        # section was inserted ABOVE it in the live subject. The sentence is
-        # unchanged; only its line is. Inserting above shifts every anchor
-        # below. The latest shift is four lines, from `reconcile`'s failure
-        # discipline being written into "What this skill cannot see".
-        self.assertEqual(finding["numeralLine"], 59)
+        # Anchored to the SENTENCE, not to a number, and the change is what
+        # four moves earned. The pinned line moved every time a section was
+        # inserted above it in the live subject -- three times before this,
+        # and a fourth when the skill's objective flow went in at the top --
+        # and every one of those was a test breaking on an edit it was never
+        # about. What it is actually about is that a finding points at the
+        # right place, and the sentence is what "the right place" means.
+        anchor = "Three modules exist so far"
+        expected = next(
+            number for number, line in enumerate(
+                SKILL.read_text(encoding="utf-8").splitlines(), start=1)
+            if line.startswith(anchor))
+        self.assertEqual(finding["numeralLine"], expected)
         self.assertEqual(finding["stated"], 3)
         self.assertGreater(
             finding["counted"], finding["stated"],

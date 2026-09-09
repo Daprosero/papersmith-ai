@@ -20195,6 +20195,71 @@ class PushSurfaceHookTests(unittest.TestCase):
         self.assertEqual(stderr, "")
 
 
+class ObjectiveFlowTests(unittest.TestCase):
+    """The north: why this skill was invoked and where it has to arrive."""
+
+    def test_there_is_one_place_a_refusal_reaches_a_reader(self) -> None:
+        """It did not exist. Fourteen call sites each printed the error and
+        returned 1, so there was nowhere to attach what every refusal should
+        carry and nothing could hold them to agreeing. This pins the single
+        place: the only `print(f"error: ...")` left is the one inside it.
+        """
+        source = REMOTE_CLI_SCRIPT.read_text(encoding="utf-8")
+        self.assertEqual(
+            source.count('print(f"error: {exc}", file=sys.stderr)'), 1,
+            "a refusal prints outside `_refused`, so it reaches a reader "
+            "without the north the others carry")
+        self.assertIn('"objective": OBJECTIVE_FLOW', source)
+
+    def test_a_refusal_carries_it(self) -> None:
+        """Asserted through the function itself rather than by reading the
+        source twice: what a reader receives is what this returns."""
+        buffer = io.StringIO()
+        with contextlib.redirect_stderr(buffer):
+            status = REMOTE_CLI._refused(RuntimeError("something refused"))
+        written = buffer.getvalue()
+        self.assertEqual(status, 1, "the exit status is unchanged")
+        self.assertIn("something refused", written)
+        self.assertIn(REMOTE_CLI.OBJECTIVE_FLOW["purpose"], written)
+
+    def test_it_is_declared_and_not_derived(self) -> None:
+        """Invariant on purpose: it has to read the same on a repository that
+        has submitted nothing as on one mid-campaign."""
+        flow = REMOTE_CLI.OBJECTIVE_FLOW
+        self.assertEqual([s["stage"] for s in flow["stages"]],
+                         ["reachable", "wire", "authorized", "sent", "returned"])
+        for stage in flow["stages"]:
+            self.assertTrue(stage["establishes"] and stage["behindWhen"])
+
+    def test_reconcile_is_a_repair_that_returns_and_not_a_stage(self) -> None:
+        """Said explicitly because without it `drift` reads as having lost the
+        work rather than as a detour."""
+        flow = REMOTE_CLI.OBJECTIVE_FLOW
+        self.assertNotIn("reconcile", [s["stage"] for s in flow["stages"]])
+        repair = flow["repairs"][0]
+        self.assertEqual(repair["act"], "reconcile")
+        self.assertEqual(repair["returnsTo"], "sent")
+
+    def test_arrival_is_the_result_back_and_not_the_submission_accepted(self) -> None:
+        """The distinction this whole skill turns on: a submission the service
+        took is a receipt, and a receipt is not a measurement."""
+        self.assertIn("verified", REMOTE_CLI.OBJECTIVE_FLOW["arrival"])
+        self.assertTrue(REMOTE_CLI.OBJECTIVE_FLOW["humanStops"])
+
+    def test_the_doctrine_states_the_same_stages(self) -> None:
+        """Held equal to the data, scoped to the section's own table -- a
+        whole-document search finds these words everywhere and would stay
+        green through a renamed row."""
+        skill = SKILL_MD.read_text(encoding="utf-8")
+        start = skill.index("## The objective flow")
+        table = skill[start:skill.index("**Arrival:**", start)]
+        rows = [line for line in table.splitlines() if line.startswith("| `")]
+        self.assertEqual(
+            [line.split("`")[1] for line in rows],
+            [stage["stage"] for stage in REMOTE_CLI.OBJECTIVE_FLOW["stages"]])
+        self.assertIn(REMOTE_CLI.OBJECTIVE_FLOW["arrival"], skill)
+
+
 class AnnotatedModuleConstantFoldTests(unittest.TestCase):
     """`NAME: type = value` is `ast.AnnAssign`, and `_fold_module_constants()`
     walked only `ast.Assign`.

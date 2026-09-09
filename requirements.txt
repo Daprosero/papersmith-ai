@@ -1,3 +1,22 @@
+# The forge's OWN dependencies. This file is the manifest of the virtualenv the
+# suite runs under -- not a target's, and not optional: measured on 2026-09-08,
+# a bare interpreter without these collected 2020 of 2750 tests and reported OK
+# over every one it managed to reach, which is indistinguishable from a green
+# suite. Three whole test modules failed to import and said nothing anybody
+# read. `tests/test_suite_collects.py` is stdlib-only for exactly that reason
+# and names any module that does not load.
+requests>=2.31        # tests/test_remote_execution.py: the adapter's wire tests
+nbformat>=5.9         # remote-execution's runner/notebook assembly and its tests
+nbclient>=0.9         # executing a scaffolded notebook inside a test
+ipykernel>=6.29       # the kernel that execution resolves; without it a notebook test cannot run
+numpy>=1.26           # a scaffolded target computes with it before any conversion
+pytest>=8.0           # the suite a scaffolded target ships, run by tests that build one
+torch>=2.0            # the kit's own `benchmark.py` imports it, so every test that
+# builds a target from the kit and introspects it needs it present. It is the
+# heaviest entry here by a wide margin, and it was measured rather than assumed:
+# without it 18 of this suite's tests fail, all of them reporting something other
+# than the missing package -- four routed a kit-built target to `env-first`, which
+# reads as a defect in the target rather than an absence in the environment.
 PyMuPDF>=1.23
 PyYAML>=6.0
 jsonschema>=4.0

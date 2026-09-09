@@ -52,8 +52,84 @@ if __package__:
 else:
     from verdict import DESCRIPTIVE, HIGHER, LOWER, judge, render, tally
 
-import torch
-import torch.nn as nn
+def hosted_runtime() -> str | None:
+    """Is this a notebook service, where there is no interpreter of our own to use?
+
+    Asked positively, and that matters. The tempting shortcut is to infer it from a
+    missing virtualenv — but a repository where nobody has created one yet also has
+    no virtualenv, and there the guard is exactly right to refuse. Inferring from the
+    absence would drop the protection on the user's own machine to buy portability
+    somewhere else.
+    """
+    if "google.colab" in sys.modules or Path("/content").is_dir():
+        return "colab"
+    if os.environ.get("KAGGLE_KERNEL_RUN_TYPE") or Path("/kaggle").is_dir():
+        return "kaggle"
+    if os.environ.get("BINDER_SERVICE_HOST") or os.environ.get("CODESPACES"):
+        return "hosted"
+    return None
+
+
+def refuse_foreign_interpreter() -> None:
+    """Stop before anything heavy is imported, when this is the wrong interpreter.
+
+    **Above the `import torch` below, and called at import time, and that
+    placement is the whole of it.** The check used to live inside
+    `environment()`, several hundred lines down and reached only when a caller
+    asked for the stamp — so importing this module under a foreign interpreter
+    died on `import torch` first, and what a reader met was
+    `ModuleNotFoundError: No module named 'torch'`. A broken-environment
+    message, for a correctly-installed environment that simply was not this
+    repository's own. The doctrine says the guard refuses BEFORE anything is
+    measured; a guard that cannot be reached refuses nothing.
+
+    Standard library only, for the same reason: a guard that needed an
+    installed package to decide whether the packages are the right ones could
+    not run in the one case it exists for.
+
+    The file sits at <repo>/src/<Package>_Benchmark/benchmark.py, so the
+    repository is two levels up.
+    """
+    repository = Path(__file__).resolve().parents[2]
+    prefix = Path(sys.prefix).resolve()
+    if prefix.is_relative_to(repository) or hosted_runtime():
+        return
+    raise SystemExit(
+        f"refusing to run under {prefix}\n"
+        f"  this benchmark must use {repository}'s own virtualenv, because wall "
+        f"time and peak memory are the measurement: another interpreter would "
+        f"measure a different environment correctly and report it as this one.\n"
+        f"  invoke this file with {repository}/.venv/bin/python directly, or\n"
+        f"  run the notebook with\n"
+        f'    PATH="{repository}/.venv/bin:$PATH" {repository}/.venv/bin/python -m jupyter \\\n'
+        f"      nbconvert --to notebook --execute --inplace <notebook>\n"
+        f"  The PATH prefix is not optional and is the reason you are seeing "
+        f"this: a kernelspec launches a bare `python` resolved off PATH, so "
+        f"naming the interpreter without also putting it first still hands the "
+        f"cells to whichever one was already there.")
+
+
+# Not called unconditionally, and the correction is worth stating. Refusing at
+# import time reaches something this guard has no business refusing: `verify`
+# and `probe` IMPORT this module to answer whether the declared entry point is
+# importable at all, and an import is not a measurement -- a kit-built target
+# was routed to `env-first` by its own guard, which is a check reporting a
+# defect it created.
+#
+# So the two cases are separated by what actually happens. If the heavy import
+# succeeds, nothing is refused: importing is free and whoever measures calls
+# `environment()`, which refuses there. If it FAILS, the interpreter decides
+# which failure it is -- a foreign one is the cause and says so, a correct one
+# is a genuinely absent package and the original error stands untouched. That
+# is the whole defect this closes: under a foreign interpreter a reader used to
+# meet `No module named 'torch'`, a broken-environment message for an
+# environment that was correctly installed and simply was not this one.
+try:
+    import torch
+    import torch.nn as nn
+except ImportError:
+    refuse_foreign_interpreter()
+    raise
 from torch.utils.data import DataLoader, Subset
 
 # No dataset catalogue lives here. The comparison only happens when a baseline is
@@ -291,24 +367,10 @@ def environment() -> dict:
     The file sits at <repo>/src/<Package>_Benchmark/benchmark.py, so the repository is
     two levels up.
     """
+    refuse_foreign_interpreter()
     repository = Path(__file__).resolve().parents[2]
     prefix = Path(sys.prefix).resolve()
     inside = prefix.is_relative_to(repository)
-    if not inside and not hosted_runtime():
-        raise SystemExit(
-            f"refusing to run under {prefix}\n"
-            f"  this benchmark must use {repository}'s own virtualenv, because wall "
-            f"time and peak memory are the measurement: another interpreter would "
-            f"measure a different environment correctly and report it as this one.\n"
-            f"  invoke this file with {repository}/.venv/bin/python directly, or\n"
-            f"  run the notebook with\n"
-            f'    PATH="{repository}/.venv/bin:$PATH" {repository}/.venv/bin/python -m jupyter \\\n'
-            f"      nbconvert --to notebook --execute --inplace <notebook>\n"
-            f"  The PATH prefix is not optional and is the reason you are seeing "
-            f"this: a kernelspec launches a bare `python` resolved off PATH, so "
-            f"naming the interpreter without also putting it first still hands the "
-            f"cells to whichever one was already there."
-        )
     return {
         "repository": str(repository),
         "interpreter": str(prefix),

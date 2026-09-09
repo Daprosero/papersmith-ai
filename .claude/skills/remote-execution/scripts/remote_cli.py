@@ -2675,6 +2675,93 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+#: WHY THIS SKILL WAS INVOKED, AND WHERE IT HAS TO ARRIVE.
+#:
+#: Declared, invariant, and independent of any ledger, job folder or result on
+#: disk. `status` answers *where am I* by folding what happened; this answers
+#: *what is this for*, which nothing on disk implies. A session that hits an
+#: error, an interruption or a gap consults it, locates itself, resolves what
+#: blocks, and rejoins -- rather than improvising forward, which is what an
+#: agent does when a blocker detaches it from the purpose.
+#:
+#: **Arrival is the result back and verified, never the submission accepted.**
+#: The distinction is the whole point of this skill: a submission the service
+#: took is a receipt, and a receipt is not a measurement. Between the two sit a
+#: poll, a fetch, and a quarantine that refuses a result which is not current.
+OBJECTIVE_FLOW = {
+    "purpose": (
+        "carry work a repository declared to a worker and bring its result "
+        "back verified -- not accepted, not running, back and current"),
+    "stages": [
+        {"stage": "reachable",
+         "establishes": "a job folder exists pinned to a commit the declared "
+                        "remote can actually serve, which is what a worker "
+                        "clones",
+         "behindWhen": "`generate-job` wrote the folder -- it proves the pin "
+                       "against the remote before writing a byte, so a folder "
+                       "that exists is a pin that was published"},
+        {"stage": "wire",
+         "establishes": "that this worker, at this pin, carries current -- the "
+                        "cheapest possible answer, paid in minutes rather than "
+                        "in the hours a campaign costs",
+         "behindWhen": "`readiness` says ready, from a verdict derived from a "
+                       "rehearsal's own evidence and never asserted"},
+        {"stage": "authorized",
+         "establishes": "a launch bound to this exact commit, entrypoint and "
+                        "unit list, with a token minted for it and consumed "
+                        "once",
+         "behindWhen": "a `gate` record matches; a bound fact that moved makes "
+                       "it stale, which is not the same as time passing"},
+        {"stage": "sent",
+         "establishes": "the submission is out and the ledger knows it, so no "
+                        "second one answers a question already being answered",
+         "behindWhen": "the ledger holds it with a terminal state"},
+        {"stage": "returned",
+         "establishes": "the result is on disk, current, and not quarantined",
+         "behindWhen": "this is the arrival; it is behind nobody"},
+    ],
+    "arrival": (
+        "the result on disk and verified as the current one, which is the "
+        "only thing anybody can read a number out of"),
+    # `reconcile` is not a stage and never advances one. It is the way back
+    # when the ledger and the service stop agreeing, and a blocked session
+    # needs to be told that explicitly: without it, `drift` reads as having
+    # lost the work rather than as a detour that returns to `sent`.
+    "repairs": [
+        {"when": "the ledger and the service disagree, or a stale result "
+                 "arrived (`drift`), or a ledger line could not be read at "
+                 "all (`unreliable`)",
+         "act": "reconcile",
+         "returnsTo": "sent"},
+    ],
+    # Stops that are a person's decision, not defects to repair. An agent that
+    # reads either as a blocker will stall on it or take it, and the second
+    # spends somebody's quota without being asked.
+    "humanStops": [
+        "publishing the commit a worker would clone, which `generate-job` "
+        "refuses without and names precisely",
+        "authorizing the launch itself",
+    ],
+}
+
+
+def _refused(exc: object) -> int:
+    """The one place a refusal from this CLI reaches a reader.
+
+    It did not exist: fourteen call sites each printed `error: {exc}` and
+    returned 1, so there was nowhere to attach anything that every refusal
+    should carry, and nothing could hold them to agreeing. Creating the single
+    place is what makes the north reachable from a blocked session -- which is
+    exactly the session that has lost it.
+
+    Both halves go to stderr and the exit status is unchanged, so every caller
+    that reads this CLI's stdout as data reads exactly what it read before.
+    """
+    print(f"error: {exc}", file=sys.stderr)
+    print(json.dumps({"objective": OBJECTIVE_FLOW}, indent=2), file=sys.stderr)
+    return 1
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
 
@@ -2683,8 +2770,7 @@ def main(argv: list[str] | None = None) -> int:
             _load_backend_module(args.backend)
             adapter_cls = ADAPTER.resolve(args.backend)
         except KeyError as exc:
-            print(f"error: {exc}", file=sys.stderr)
-            return 1
+            return _refused(exc)
 
         provider = CREDENTIALS.provider(
             accounts_cli=_accounts_cli_for(adapter_cls), override=args.credential_dir
@@ -2703,8 +2789,7 @@ def main(argv: list[str] | None = None) -> int:
             )
         except (RemoteCLIError, PACKER.PackerError, LEDGER.LedgerError,
                 ADAPTER.AdapterError, JOBFOLDER.JobFolderError) as exc:
-            print(f"error: {exc}", file=sys.stderr)
-            return 1
+            return _refused(exc)
 
         if args.units:
             # Campaign mode's own JSON shape -- `assignments[]`/
@@ -2743,8 +2828,14 @@ def main(argv: list[str] | None = None) -> int:
         try:
             result = cmd_status(target=args.target, entrypoint=args.entrypoint)
         except (RemoteCLIError, LEDGER.LedgerError, ADAPTER.AdapterError) as exc:
-            print(f"error: {exc}", file=sys.stderr)
-            return 1
+            return _refused(exc)
+
+        # The north, above the fold that answers "where am I". `status` reports
+        # what happened; nothing on disk says what any of it was FOR, and a
+        # session reading a ledger without that has the facts and not the
+        # purpose. Composed here rather than inside `cmd_status`, which many
+        # callers use as data: this is the reporting surface, not the fold.
+        result = {"objective": OBJECTIVE_FLOW, **result}
 
         # `default=str` rather than naming each `Path` key by hand: the
         # hand-named form stringified the top-level `ledgerPath` and left
@@ -2759,8 +2850,7 @@ def main(argv: list[str] | None = None) -> int:
             _load_backend_module(args.backend)
             adapter_cls = ADAPTER.resolve(args.backend)
         except KeyError as exc:
-            print(f"error: {exc}", file=sys.stderr)
-            return 1
+            return _refused(exc)
 
         provider = CREDENTIALS.provider(
             accounts_cli=_accounts_cli_for(adapter_cls), override=args.credential_dir
@@ -2774,8 +2864,7 @@ def main(argv: list[str] | None = None) -> int:
             )
         except (RemoteCLIError, PACKER.PackerError, LEDGER.LedgerError,
                 ADAPTER.AdapterError) as exc:
-            print(f"error: {exc}", file=sys.stderr)
-            return 1
+            return _refused(exc)
 
         print(json.dumps(result, sort_keys=True))
         if result["places"] == 0 and result["units"] > 0:
@@ -2787,8 +2876,7 @@ def main(argv: list[str] | None = None) -> int:
             _load_backend_module(args.backend)
             adapter_cls = ADAPTER.resolve(args.backend)
         except KeyError as exc:
-            print(f"error: {exc}", file=sys.stderr)
-            return 1
+            return _refused(exc)
 
         provider = CREDENTIALS.provider(
             accounts_cli=_accounts_cli_for(adapter_cls), override=args.credential_dir
@@ -2798,8 +2886,7 @@ def main(argv: list[str] | None = None) -> int:
                 submission_id=args.submission_id, adapter=_construct_adapter(adapter_cls, provider)
             )
         except (RemoteCLIError, ADAPTER.AdapterError) as exc:
-            print(f"error: {exc}", file=sys.stderr)
-            return 1
+            return _refused(exc)
 
         print(
             json.dumps(
@@ -2814,8 +2901,7 @@ def main(argv: list[str] | None = None) -> int:
             _load_backend_module(args.backend)
             adapter_cls = ADAPTER.resolve(args.backend)
         except KeyError as exc:
-            print(f"error: {exc}", file=sys.stderr)
-            return 1
+            return _refused(exc)
 
         provider = CREDENTIALS.provider(
             accounts_cli=_accounts_cli_for(adapter_cls), override=args.credential_dir
@@ -2831,8 +2917,7 @@ def main(argv: list[str] | None = None) -> int:
                 smoke=args.smoke,
             )
         except (RemoteCLIError, LEDGER.LedgerError, ADAPTER.AdapterError) as exc:
-            print(f"error: {exc}", file=sys.stderr)
-            return 1
+            return _refused(exc)
 
         arbitration = result["arbitration"]
         if arbitration is not None:
@@ -2862,8 +2947,7 @@ def main(argv: list[str] | None = None) -> int:
             _load_backend_module(args.backend)
             adapter_cls = ADAPTER.resolve(args.backend)
         except KeyError as exc:
-            print(f"error: {exc}", file=sys.stderr)
-            return 1
+            return _refused(exc)
 
         provider = CREDENTIALS.provider(
             accounts_cli=_accounts_cli_for(adapter_cls), override=args.credential_dir
@@ -2878,8 +2962,7 @@ def main(argv: list[str] | None = None) -> int:
                 smoke=args.smoke,
             )
         except (RemoteCLIError, LEDGER.LedgerError, ADAPTER.AdapterError) as exc:
-            print(f"error: {exc}", file=sys.stderr)
-            return 1
+            return _refused(exc)
 
         arbitration = result.pop("arbitration")
         for note in arbitration:
@@ -2927,8 +3010,7 @@ def main(argv: list[str] | None = None) -> int:
                 local_budget_seconds=args.local_budget_seconds,
             )
         except (JOBFOLDER.JobFolderError, ADAPTER.AdapterError, KeyError) as exc:
-            print(f"error: {exc}", file=sys.stderr)
-            return 1
+            return _refused(exc)
 
         # Routes through the SAME single reader every other job-folder-
         # touching command uses (design #744 §4) — a job folder is never
@@ -2969,8 +3051,7 @@ def main(argv: list[str] | None = None) -> int:
                     worker=args.worker,
                 )
             except (RemoteCLIError, LEDGER.LedgerError, JOBFOLDER.JobFolderError) as exc:
-                print(f"error: {exc}", file=sys.stderr)
-                return 1
+                return _refused(exc)
 
             # Same four keys as ever; only the hand-naming goes.
             # `default=str` rather than one named `Path` key, because
@@ -2995,8 +3076,7 @@ def main(argv: list[str] | None = None) -> int:
         try:
             result = cmd_readiness(job_dir=args.job_dir, worker=args.worker)
         except (RemoteCLIError, JOBFOLDER.JobFolderError) as exc:
-            print(f"error: {exc}", file=sys.stderr)
-            return 1
+            return _refused(exc)
 
         print(json.dumps(result, sort_keys=True))
         return 0
