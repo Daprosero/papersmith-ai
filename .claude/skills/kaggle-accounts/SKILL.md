@@ -13,6 +13,37 @@ is *for*. The work worth automating is not moving a file; it is answering **does
 this account actually authenticate**, which is a question only Kaggle can answer
 and one that stops being true over time.
 
+## The objective flow
+
+**Why this skill was invoked, and where it has to arrive.** Declared here and in
+`OBJECTIVE_FLOW`, held equal by a test. `list` answers *which accounts are
+there*; this answers *what is this for*, which a listing never implies — an
+account is in the store because somebody put it there, not because it works.
+
+**Purpose:** have every credential this project holds proven against the service
+that decides — not stored, not once-working, currently proven.
+
+| Stage | Establishes | Behind you when |
+| --- | --- | --- |
+| `taken-in` | What the user handed over is in the store, one row at a time, so a bad row never costs the rows around it | the inbox gave up everything it held and was consumed, or kept because rows are still in it |
+| `proven` | Each stored account was asked of the service, under whichever of the two token schemes it actually uses | every account carries a verdict from this run |
+| `decided` | What happens to the ones that stopped working, which is the user's call and never a side effect of asking | this is the arrival; it is behind nobody |
+
+**Arrival:** every account carrying a current verdict, and the failures answered for rather than merely reported.
+
+**Arrival is every account carrying a CURRENT verdict, not a command that ran.**
+A stored credential is a claim and only the service settles it — and a verdict
+decays, since tokens are rotated and expired, so "it authenticated once" is not
+arrival either. A session that runs `validate`, sees a failure reported and
+stops has not arrived: a dead credential is reported and never removed here,
+deliberately, because removing it is the user's other option and not a side
+effect of asking whether it still works.
+
+**Two stops are a person's:** consenting to validate at all, because it writes —
+it stores credentials and consumes the inbox — and deciding what happens to an
+account that stopped working.
+
+
 ## What this skill has not written down
 
 **Its own operations are not documented as a closed set.** The CLI accepts five

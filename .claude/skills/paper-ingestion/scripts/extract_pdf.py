@@ -44,6 +44,7 @@ Exit codes: 0 success (or nothing to do), 1 at least one paper failed,
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import shutil
@@ -450,6 +451,49 @@ def ingest_loose(converter, loose_pdf: Path, strip_refs: bool) -> Path:
     return folder / f"{loose_pdf.stem}.md"
 
 
+#: WHY THIS SKILL WAS INVOKED, AND WHERE IT HAS TO ARRIVE.
+#:
+#: Declared, invariant, and independent of what is on disk. A listing of what
+#: has been ingested answers *where am I*; this answers *what is this for*,
+#: which no listing implies. A session that hits an error, an interruption or a
+#: gap consults it, locates itself, resolves what blocks, and rejoins.
+#:
+#: **Arrival is an artefact somebody can read and cite, never a PDF that was
+#: processed.** The distinction is this skill's whole reason to exist: a PDF is
+#: already on disk and already unusable as evidence -- its equations are
+#: pictures, its tables are ink, and nothing downstream can quote it. What is
+#: being produced is the form in which the paper can be read, argued with and
+#: cited.
+OBJECTIVE_FLOW = {
+    "purpose": (
+        "turn a paper into the form it can actually be used in -- equations as "
+        "LaTeX, tables as tables, figures as files -- not a PDF that was "
+        "processed"),
+    "stages": [
+        {"stage": "filed",
+         "establishes": "the PDF sits inside a topic folder of its own, which "
+                        "is what makes it a paper rather than a download",
+         "behindWhen": "it is no longer reported among the unfiled"},
+        {"stage": "extracted",
+         "establishes": "the Markdown exists beside it, with its figures "
+                        "written as files rather than left inside the page",
+         "behindWhen": "the paper folder holds the document and its images"},
+        {"stage": "readable",
+         "establishes": "the equations are LaTeX and the tables are Markdown, "
+                        "so a later reader can quote a formula rather than "
+                        "describe a picture of one",
+         "behindWhen": "this is the arrival; it is behind nobody"},
+    ],
+    "arrival": (
+        "a document a person can read and a later session can cite, which a "
+        "PDF is not"),
+    # Nothing here is a person's decision: ingestion asks nobody. Said
+    # explicitly and left empty rather than omitted, so a reader learns the
+    # answer is none rather than meeting a missing key and guessing.
+    "humanStops": [],
+}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Per-paper-folder PDF -> Markdown ingestion (Marker).")
     parser.add_argument(
@@ -495,6 +539,10 @@ def main() -> int:
             unfiled = unfiled_pdfs(cfg)
     except ConfigError as exc:
         print(f"Configuration error: {exc}", file=sys.stderr)
+        # The north, on the one path a refusal reaches a reader. A blocked
+        # session is exactly the one that has lost the purpose, and this is
+        # the cheapest place to hand it back.
+        print(json.dumps({"objective": OBJECTIVE_FLOW}, indent=2), file=sys.stderr)
         return 2
 
     if not targets:

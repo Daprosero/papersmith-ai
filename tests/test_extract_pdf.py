@@ -26,6 +26,48 @@ sys.modules[SPEC.name] = EXTRACTOR
 SPEC.loader.exec_module(EXTRACTOR)
 
 
+
+class ObjectiveFlowTests(unittest.TestCase):
+    """The north: why this skill was invoked and where it has to arrive."""
+
+    SKILL_MD = (Path(EXTRACTOR.__file__).resolve().parent.parent / "SKILL.md")
+    STAGES = ["filed", "extracted", "readable"]
+
+    def test_the_one_refusal_path_carries_it(self) -> None:
+        """A blocked session is exactly the one that has lost the purpose, and
+        this skill has a single place a refusal reaches a reader -- so there is
+        no excuse for it to arrive without the north."""
+        source = Path(EXTRACTOR.__file__).read_text(encoding="utf-8")
+        self.assertEqual(source.count('print(f"Configuration error:'), 1,
+                         "a second refusal path appeared and carries nothing")
+        self.assertIn('"objective": OBJECTIVE_FLOW', source)
+
+    def test_it_is_declared_ordered_and_closes_every_stage(self) -> None:
+        flow = EXTRACTOR.OBJECTIVE_FLOW
+        self.assertEqual([s["stage"] for s in flow["stages"]], self.STAGES)
+        for stage in flow["stages"]:
+            self.assertTrue(stage["establishes"] and stage["behindWhen"])
+
+    def test_arrival_is_a_readable_artefact_and_not_a_processed_pdf(self) -> None:
+        """This skill's whole reason to exist: a PDF is already on disk and
+        already unusable as evidence."""
+        self.assertIn("cite", EXTRACTOR.OBJECTIVE_FLOW["arrival"])
+
+    def test_the_empty_human_stops_list_is_present_rather_than_omitted(self) -> None:
+        """Ingestion asks nobody, and the list says so by being empty. A reader
+        meeting a missing key would have to guess whether that meant none or
+        meant nobody wrote it down."""
+        self.assertIn("humanStops", EXTRACTOR.OBJECTIVE_FLOW)
+        self.assertEqual(EXTRACTOR.OBJECTIVE_FLOW["humanStops"], [])
+
+    def test_the_doctrine_states_the_same_stages(self) -> None:
+        skill = self.SKILL_MD.read_text(encoding="utf-8")
+        start = skill.index("## The objective flow")
+        table = skill[start:skill.index("**Arrival:**", start)]
+        rows = [line for line in table.splitlines() if line.startswith("| `")]
+        self.assertEqual([line.split("`")[1] for line in rows], self.STAGES)
+
+
 class StripReferencesTests(unittest.TestCase):
     def test_cuts_from_a_references_heading_to_the_end(self) -> None:
         text = "# Paper\n\nBody text.\n\n## References\n\n[1] Foo et al.\n[2] Bar.\n"

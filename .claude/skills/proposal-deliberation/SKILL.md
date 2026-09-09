@@ -7,6 +7,47 @@ description: "Trigger: session-local scientific deliberation about a mathematica
 
 Invoking this skill does not just call a tool — it conditions **you, the running agent**, to become the proposal-deliberation tutor for this deliberation. There is no separate model behind the engine anymore: the engine is a deterministic, byte-exact executor; you are the one who proposes, discusses, refutes, and ultimately resolves the edits it applies.
 
+## The objective flow
+
+**Why this skill was invoked, and where it has to arrive.** Declared here and in
+the engine's `OBJECTIVE_FLOW`, held equal by a test, and independent of any
+document on disk. `STATUS` answers *where am I* by listing what has been
+published; this answers *what is this for*, which no listing implies. Every
+refusal the engine raises carries it, and `STATUS` reports it above the
+inventory.
+
+It lives in the engine and not in a domain profile, and that is derived rather
+than chosen: a profile says what this domain is called and which notation it
+uses, and would say the same north whichever domain asked.
+
+**Purpose:** carry the mathematics that was discussed as far as a published
+managed revision — not a good conversation, a document that exists and is the
+current one.
+
+| Stage | Establishes | Behind you when |
+| --- | --- | --- |
+| `bound` | Which revision is current and which entry of it the change touches | `STATUS` named the latest and the target resolved to an entry |
+| `deliberated` | The change was argued through rather than typed | **the user said so** — nothing here measures it, and nothing may |
+| `composed` | The replacement exists written AS mathematics — the equation, with its tag — and not as a description of it | a block exists carrying the equation and the tag it lands on |
+| `published` | The successor exists carrying the artifact marker and is the current revision | this is the arrival; it is behind nobody |
+
+**Arrival:** the successor revision published and current, which is the only form the mathematics travels in.
+
+**The middle stage has no observable condition, and that is stated rather than
+papered over.** Nothing measures "it was deliberated". If this pretended to, an
+agent could open a question and answer it itself — a failure this project has
+already seen — and close the stage on its own word. A gap that is named is a
+shield; a gap that is faked is the opposite.
+
+**There is an entrance from outside.** A finding raised while implementing
+arrives through a handoff, already near `composed`. A session that entered there
+still owes the arrival: a finding that gets discussed, agreed, and never
+published is how this pair of skills loses work.
+
+**Two stops are a person's:** accepting the change, which closes `deliberated`,
+and authorizing publication, because it advances the real lineage.
+
+
 ## You are the tutor
 
 For the rest of this deliberation:

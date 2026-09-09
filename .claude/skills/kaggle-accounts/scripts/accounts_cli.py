@@ -833,6 +833,51 @@ def cmd_remove(args: argparse.Namespace) -> int:
     return 0
 
 
+#: WHY THIS SKILL WAS INVOKED, AND WHERE IT HAS TO ARRIVE.
+#:
+#: Declared, invariant, and independent of what the store holds. `list` answers
+#: *which accounts are there*; this answers *what is this for*, which a listing
+#: never implies -- an account is in the store because somebody put it there,
+#: not because it works.
+#:
+#: **Arrival is every account carrying a CURRENT verdict, not a command that
+#: ran.** That is the whole of it: a stored credential is a claim, and the only
+#: thing that settles it is the service. And a verdict decays -- tokens are
+#: rotated and expired -- so "it authenticated once" is not the arrival either.
+#: A session that runs `validate`, sees a failure reported, and stops has not
+#: arrived: a dead credential is reported and never removed here, deliberately,
+#: because removing it is the user's other option and not a side effect of
+#: asking whether it still works.
+OBJECTIVE_FLOW = {
+    "purpose": (
+        "have every credential this project holds proven against the service "
+        "that decides -- not stored, not once-working, currently proven"),
+    "stages": [
+        {"stage": "taken-in",
+         "establishes": "what the user handed over is in the store, one row at "
+                        "a time, so a bad row never costs the rows around it",
+         "behindWhen": "the inbox gave up everything it held and was consumed, "
+                       "or kept because rows are still in it"},
+        {"stage": "proven",
+         "establishes": "each stored account was asked of the service, under "
+                        "whichever of the two token schemes it actually uses",
+         "behindWhen": "every account carries a verdict from this run"},
+        {"stage": "decided",
+         "establishes": "what happens to the ones that stopped working, which "
+                        "is the user's call and never a side effect of asking",
+         "behindWhen": "this is the arrival; it is behind nobody"},
+    ],
+    "arrival": (
+        "every account carrying a current verdict, and the failures answered "
+        "for rather than merely reported"),
+    "humanStops": [
+        "consenting to validate at all, because it writes: it stores "
+        "credentials and consumes the inbox",
+        "deciding what happens to an account that stopped working",
+    ],
+}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Manage the Kaggle credentials this project uses.")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -878,6 +923,8 @@ def main() -> int:
         return args.func(args)
     except (UsageError, StoreError) as exc:
         print(f"error: {exc}", file=sys.stderr)
+        # The north, on the one path a refusal reaches a reader.
+        print(json.dumps({"objective": OBJECTIVE_FLOW}, indent=2), file=sys.stderr)
         return 2
 
 

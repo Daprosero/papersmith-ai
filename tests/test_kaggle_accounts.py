@@ -47,6 +47,46 @@ def write_credential(folder: Path, name: str, **fields: object) -> Path:
     return path
 
 
+
+class ObjectiveFlowTests(unittest.TestCase):
+    """The north: why this skill was invoked and where it has to arrive."""
+
+    STAGES = ["taken-in", "proven", "decided"]
+
+    def test_the_one_refusal_path_carries_it(self) -> None:
+        source = Path(ACCOUNTS.__file__).read_text(encoding="utf-8")
+        self.assertEqual(
+            source.count('print(f"error: {exc}", file=sys.stderr)'), 1,
+            "a second refusal path appeared and carries nothing")
+        self.assertIn('"objective": OBJECTIVE_FLOW', source)
+
+    def test_it_is_declared_ordered_and_closes_every_stage(self) -> None:
+        flow = ACCOUNTS.OBJECTIVE_FLOW
+        self.assertEqual([s["stage"] for s in flow["stages"]], self.STAGES)
+        for stage in flow["stages"]:
+            self.assertTrue(stage["establishes"] and stage["behindWhen"])
+
+    def test_arrival_is_a_current_verdict_and_not_a_command_that_ran(self) -> None:
+        """A stored credential is a claim and only the service settles it --
+        and a verdict decays, so "it authenticated once" is not arrival."""
+        self.assertIn("current verdict", ACCOUNTS.OBJECTIVE_FLOW["arrival"])
+
+    def test_deciding_what_happens_to_a_failure_is_a_persons_stop(self) -> None:
+        """A dead credential is reported and never removed here, deliberately.
+        A session that runs validate, sees a failure and stops has not
+        arrived -- and the north is what says so."""
+        stops = " ".join(ACCOUNTS.OBJECTIVE_FLOW["humanStops"])
+        self.assertIn("stopped working", stops)
+        self.assertIn("consent", stops.lower())
+
+    def test_the_doctrine_states_the_same_stages(self) -> None:
+        skill = SKILL_MD.read_text(encoding="utf-8")
+        start = skill.index("## The objective flow")
+        table = skill[start:skill.index("**Arrival:**", start)]
+        rows = [line for line in table.splitlines() if line.startswith("| `")]
+        self.assertEqual([line.split("`")[1] for line in rows], self.STAGES)
+
+
 class ReadCredentialsTests(unittest.TestCase):
     def test_reads_username_and_key_from_a_kaggle_json(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
