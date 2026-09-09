@@ -31451,8 +31451,8 @@ class ObjectiveFlowTests(unittest.TestCase):
         flow = impl.OBJECTIVE_FLOW
         self.assertTrue(flow["purpose"] and flow["arrival"])
         self.assertEqual([s["stage"] for s in flow["stages"]],
-                         ["fidelity", "audit", "declaration", "rehearsal",
-                          "full-scale"])
+                         ["standing", "fidelity", "audit", "declaration",
+                          "rehearsal", "full-scale"])
         for stage in flow["stages"]:
             self.assertTrue(stage["establishes"], stage["stage"])
             self.assertTrue(stage["behindWhen"], stage["stage"])
@@ -31462,7 +31462,15 @@ class ObjectiveFlowTests(unittest.TestCase):
         authorizing a launch are decisions a person owes; an agent that reads
         them as blockers either stalls on them or takes them, and the second
         is how quota gets spent by somebody who was not asked."""
-        self.assertTrue(impl.OBJECTIVE_FLOW["humanStops"])
+        stops = " ".join(impl.OBJECTIVE_FLOW["humanStops"])
+        # Two of them stand in the FIRST stage, and a session starting from
+        # nothing meets them before anything else. Naming only the two at the
+        # end left an agent that began from an empty repository walking into
+        # approvals its own north never mentioned.
+        self.assertIn("authorizing that code be written", stops)
+        self.assertIn("approving the map", stops)
+        self.assertIn("publishing the commit", stops)
+        self.assertIn("authorizing a launch", stops)
 
     def test_it_carries_no_target_vocabulary(self) -> None:
         """It travels with the skill and describes no repository."""

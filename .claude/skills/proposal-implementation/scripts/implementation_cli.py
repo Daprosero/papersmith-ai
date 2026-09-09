@@ -9337,6 +9337,16 @@ OBJECTIVE_FLOW = {
         "carry the agreed formulation as far as complete runs that can be "
         "reported -- not a green verification, not a passing rehearsal"),
     "stages": [
+        {"stage": "standing",
+         "establishes": "a repository to write the mathematics into: isolated "
+                        "under `implementations/` with an interpreter of its "
+                        "own, laid out the way this skill expects, the kit's "
+                        "destinations materialized, and the map from "
+                        "mathematical object to module approved",
+         "behindWhen": "`structure` reports no scaffold gaps and the benchmark "
+                       "declaration carries the revision and premises the map "
+                       "was approved with -- which is what `materialize "
+                       "--stage objects` refuses without"},
         {"stage": "fidelity",
          "establishes": "the code says what the bound revision says, and every "
                         "claim it makes carries an invariant with a test",
@@ -9370,6 +9380,10 @@ OBJECTIVE_FLOW = {
     # launch are decisions a person owes, and an agent that treats them as
     # blockers to resolve will either stall on them or take them.
     "humanStops": [
+        "authorizing that code be written at all, which nothing below the gate "
+        "may start without",
+        "approving the map from mathematical object to module, and the "
+        "revision and premises recorded beside it",
         "publishing the commit a worker would clone",
         "authorizing a launch, which is hours of somebody's quota",
     ],

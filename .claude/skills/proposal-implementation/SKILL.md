@@ -89,6 +89,7 @@ reported — not a green verification, not a passing rehearsal.
 
 | Stage | Establishes | Behind you when |
 | --- | --- | --- |
+| `standing` | A repository to write the mathematics into: isolated under `implementations/` with an interpreter of its own, laid out the way this skill expects, the kit's destinations materialized, and the map from mathematical object to module approved | `structure` reports no scaffold gaps and the benchmark declaration carries the revision and premises the map was approved with — which is what `materialize --stage objects` refuses without |
 | `fidelity` | The code says what the bound revision says, and every claim carries an invariant with a test | `fidelity` is clean and the target's own suite is green under its own interpreter |
 | `audit` | What the formulation gets wrong, established over the declared sweep, each remedy ruled admissible before it is measured and validated after | `audit` is no longer `incomplete` |
 | `declaration` | What the experiment compares, over which statistical unit, by which metric, and what it produces | the benchmark declaration is answered rather than sitting at its scaffolded empty value |
@@ -97,10 +98,20 @@ reported — not a green verification, not a passing rehearsal.
 
 **Arrival:** complete runs at the declared scale, local or remote as each step declares, with the record they leave.
 
-**Two stops are a person's, not defects to repair:** publishing the commit a
-worker would clone, and authorizing a launch. An agent that reads either as a
-blocker will stall on it or take it, and the second is how quota gets spent by
-somebody who was not asked.
+**Four stops are a person's, not defects to repair.** Two of them stand in the
+first stage and a session that starts from nothing meets them before anything
+else: **authorizing that code be written at all**, which nothing below that gate
+may start without, and **approving the map** from mathematical object to module
+with the revision and premises recorded beside it. The other two stand at the
+end: **publishing the commit** a worker would clone, and **authorizing a
+launch**. An agent that reads any of them as a blocker will stall on it or take
+it, and the last is how quota gets spent by somebody who was not asked.
+
+That the first two exist is what makes this north cover a repository with
+nothing in it. Its stages used to begin at `fidelity` — "the code says what the
+revision says" — which presumes code, so a session invoked on a bare repository
+read a north whose first stage assumed something that did not exist yet. A north
+has to read the same on an empty repository as on one mid-campaign.
 
 The conditions above are written to be READ, not computed. A stage derived from
 products would make the purpose depend on the products, which is the one
