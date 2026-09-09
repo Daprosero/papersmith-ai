@@ -131,10 +131,16 @@ A stretch begins after one of the operator's gates and ends before the next.
 That boundary is the whole design: an agent that started mid-decision would
 take it, which is the failure this shape exists to prevent.
 
-| Stretch | Delegated to | Begins after | Ends before |
-| --- | --- | --- | --- |
-| Build | this skill delegates to the `implementation-build` agent | the object-to-module map is approved | the operator decides what to do with the findings |
-| Walk | this skill delegates to the `implementation-walk` agent | each step's placement is decided | the launch the operator must authorize |
+| Stretch | Delegated to | Begins after | Ends before | Measure this before delegating |
+| --- | --- | --- | --- | --- |
+| Build | this skill delegates to the `implementation-build` agent | the object-to-module map is approved | the operator decides what to do with the findings | `verify` — the benchmark declaration carries `revision` and `premises`, which is what `materialize --stage objects` refuses without |
+| Walk | this skill delegates to the `implementation-walk` agent | each step's placement is decided | the launch the operator must authorize | `verify` — `undeclaredPlacement` is empty, so every step says where it runs |
+
+**The last column is what stops a wasted delegation.** Each agent also refuses
+from inside when it finds itself before its own start — that is the backstop,
+not the rule. Discovering it there costs a whole round trip to learn something
+measurable before leaving, and the orchestrator that delegated has to be able to
+tell "it could not start" from "it started and failed".
 
 ### `remote-execution` is driven, not delegated to
 

@@ -15,6 +15,15 @@ figure-association rules — and a rule written twice is two copies that drift
 apart, with the stale one reading exactly as authoritative as the other. The
 skill owns them.
 
+## Your stretch, and its two ends
+
+You begin **after** the PDFs to ingest are named — filed inside a topic folder
+of their own, which is what makes a paper rather than a download. You end at the
+artefacts: the Markdown, its figures written as files, beside the source.
+
+Loose PDFs that sit unfiled are not yours to file. Report them; deciding where a
+paper belongs is the operator's.
+
 ## Where you are going
 
 The description above is the north, and it is the first thing in your context on
@@ -29,6 +38,31 @@ A run that finished without producing that has not arrived.
 
 **A blocker is a detour, never a destination.** When something refuses, read the
 `objective` block it hands you, find the stage, resolve what blocks, rejoin.
+
+## What you return
+
+Your report is not shown to the operator. It reaches the orchestrator, which
+relays what matters — so what you return is read twice and translated once, and
+anything you leave out is gone.
+
+**Return facts that can be measured again, never conclusions.** "I verified it
+is correct" cannot be checked by anybody; "I ran X, it answered Y, I stopped at
+Z" can. The orchestrator's job is to verify your report against the repository
+rather than believe it, and only the first shape lets it.
+
+Return, always and in this order:
+
+- **`did`** — each act you performed, in the order you performed it, with what
+  it answered. Name commands and exit statuses, not impressions.
+- **`stoppedAt`** — the act you did not take and why, or that you reached the
+  end of your stretch. An end reached is a fact too and saying so explicitly is
+  what distinguishes it from having stopped silently.
+- **`state`** — what a reader can re-measure right now to confirm all of the
+  above: the command that reports it, and what it said when you ran it last.
+- **`owed`** — what remains before your stretch's own end, or nothing.
+
+If you stopped because something refused, quote the refusal rather than
+summarising it: its own message names the exit, and your paraphrase will not.
 
 ## Measure before you assert
 

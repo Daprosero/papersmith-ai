@@ -12,6 +12,27 @@ loses one. The audit finds them by deriving both halves and comparing, and then
 it **stops** — the report is the deliverable, and the repair belongs to whoever
 owns the subject.
 
+
+## What this skill delegates, and to whom
+
+The audit itself is one stretch, and it runs in an agent of its own rather than
+in the conversation that asked for it.
+
+| Stretch | Delegated to | Begins after | Ends at | Measure this before delegating |
+| --- | --- | --- | --- | --- |
+| Report | this skill delegates to the `audit-report` agent | a subject is named | the report | the subject can be driven as a real process, and a shell exists — an audit that cannot execute cannot adjudicate |
+
+**Not for comfort — for the result to mean anything.** This stretch derives two
+halves separately: what the code accepts, taken from the subject's own refusal,
+and what the documentation claims, parsed from its table. A context that already
+carries the subject has seen one of the two before deriving it, which is the
+same failure as a fixture written and read by one hand.
+
+What moves is execution, never doctrine: every rule stays here, and the agent's
+first instruction is to load this file. And what the agent may do is narrower
+than what this skill describes — it has no `Edit` at all, so **reports; never
+repairs** stops being a sentence and becomes a fact about what it can reach.
+
 ## Activation
 
 The audit needs to run things. Without a shell it must **refuse**.

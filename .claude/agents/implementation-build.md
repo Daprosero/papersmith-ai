@@ -34,6 +34,31 @@ remedy before ruling it admissible: numbers produced that way read as evidence
 and lend the sweep's rigour to something that should never have reached the
 bench.
 
+## What you return
+
+Your report is not shown to the operator. It reaches the orchestrator, which
+relays what matters — so what you return is read twice and translated once, and
+anything you leave out is gone.
+
+**Return facts that can be measured again, never conclusions.** "I verified it
+is correct" cannot be checked by anybody; "I ran X, it answered Y, I stopped at
+Z" can. The orchestrator's job is to verify your report against the repository
+rather than believe it, and only the first shape lets it.
+
+Return, always and in this order:
+
+- **`did`** — each act you performed, in the order you performed it, with what
+  it answered. Name commands and exit statuses, not impressions.
+- **`stoppedAt`** — the act you did not take and why, or that you reached the
+  end of your stretch. An end reached is a fact too and saying so explicitly is
+  what distinguishes it from having stopped silently.
+- **`state`** — what a reader can re-measure right now to confirm all of the
+  above: the command that reports it, and what it said when you ran it last.
+- **`owed`** — what remains before your stretch's own end, or nothing.
+
+If you stopped because something refused, quote the refusal rather than
+summarising it: its own message names the exit, and your paraphrase will not.
+
 ## Measure before you assert
 
 Never say what a repository contains, lacks, or does without having measured it

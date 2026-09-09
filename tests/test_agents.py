@@ -134,11 +134,86 @@ class AgentBindingTests(unittest.TestCase):
             self.assertTrue((AGENTS / f"{agent}.md").is_file(),
                             f"{skill} delegates to `{agent}`, which does not exist")
 
+    def test_every_agent_is_invoked_by_a_skill(self) -> None:
+        """The half the first version of this file did not check, and two
+        agents were written without it: it asked only that SOME skill delegate,
+        which a single delegation satisfies while every other agent sits
+        unreachable. An agent nobody invokes is a file, not a boundary -- the
+        exact defect that had one deleted earlier the same day.
+        """
+        invoked = set()
+        for skill in sorted(SKILLS.iterdir()):
+            doc = skill / "SKILL.md"
+            if doc.is_file():
+                invoked.update(re.findall(r"delegates to the `([\w-]+)` agent",
+                                          doc.read_text(encoding="utf-8")))
+        orphans = sorted(path.stem for path in self.agents()
+                         if path.stem not in invoked)
+        self.assertEqual(orphans, [],
+                         "these agents exist and no skill delegates to them, "
+                         "so nothing reaches them")
+
     def test_every_agent_states_its_tools(self) -> None:
         """An agent that declares none inherits everything, which is the
         capability restriction silently not applied."""
         for path in self.agents():
             self.assertTrue(frontmatter(path).get("tools"), path.name)
+
+    def test_every_agent_names_both_ends_of_its_stretch(self) -> None:
+        """An agent whose stretch has no ends is not a stretch, it is a job
+        with a title. Two of these were written before the criterion existed
+        and had neither."""
+        for path in self.agents():
+            body = path.read_text(encoding="utf-8")
+            # Whitespace-tolerant on purpose: these files are hard-wrapped,
+            # so "You\nend" is the same sentence as "You end" and a regex that
+            # could not cross a line break failed one of them for its wrapping.
+            flat = " ".join(body.split())
+            self.assertIn("You begin", flat,
+                          f"{path.name} never says where its stretch begins")
+            self.assertRegex(flat, r"[Yy]ou end",
+                             f"{path.name} never says where its stretch ends")
+
+    def test_every_agent_declares_what_it_returns(self) -> None:
+        """A subagent's report is not shown to the operator: it reaches the
+        orchestrator, which relays what matters. So it is read twice and
+        translated once, and anything the agent leaves out is gone. Without a
+        declared shape the orchestrator receives whatever occurred to it."""
+        for path in self.agents():
+            body = path.read_text(encoding="utf-8")
+            self.assertIn("## What you return", body, path.name)
+            for field in ("`did`", "`stoppedAt`", "`state`", "`owed`"):
+                self.assertIn(field, body,
+                              f"{path.name} omits {field} from what it returns")
+
+    def test_what_is_returned_is_measurable_and_not_a_conclusion(self) -> None:
+        """The property that makes a report checkable rather than believable.
+        "I verified it is correct" cannot be checked by anybody; "I ran X, it
+        answered Y, I stopped at Z" can -- and the orchestrator's job is to
+        verify against the repository rather than believe."""
+        for path in self.agents():
+            body = path.read_text(encoding="utf-8")
+            self.assertIn("never conclusions", body, path.name)
+            self.assertIn("measured again", body, path.name)
+
+    def test_every_delegated_stretch_names_what_to_measure_first(self) -> None:
+        """A precondition read before delegating, not discovered inside.
+
+        Each agent also refuses from within when it finds itself before its own
+        start, and that is the backstop rather than the rule: discovering it
+        there costs a whole round trip to learn something that was measurable
+        before leaving.
+        """
+        delegating = [skill for skill in sorted(SKILLS.iterdir())
+                      if (skill / "SKILL.md").is_file()
+                      and "delegates to the `" in (skill / "SKILL.md").read_text(
+                          encoding="utf-8")]
+        self.assertTrue(delegating)
+        for skill in delegating:
+            doc = (skill / "SKILL.md").read_text(encoding="utf-8")
+            self.assertIn("Measure this before delegating", doc,
+                          f"{skill.name} delegates a stretch and names no "
+                          f"precondition to read first")
 
     def test_a_description_carries_the_arrival_its_skill_declares(self) -> None:
         """The seal. If the north moves and the description does not, the agent

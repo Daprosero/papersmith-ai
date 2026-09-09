@@ -54,9 +54,9 @@ and authorizing publication, because it advances the real lineage.
 One stretch of this flow is mechanical from end to end, and it is precisely the
 one that used to get lost.
 
-| Stretch | Delegated to | Begins after | Ends at |
-| --- | --- | --- | --- |
-| Publish | this skill delegates to the `deliberation-publish` agent | the operator accepted the change | the successor published and current |
+| Stretch | Delegated to | Begins after | Ends at | Measure this before delegating |
+| --- | --- | --- | --- | --- |
+| Publish | this skill delegates to the `deliberation-publish` agent | the operator accepted the change | the successor published and current | the acceptance itself — the one precondition here that no command reports, because nothing measures `deliberated`. The orchestrator holds it or the stretch does not begin |
 
 **The deliberation itself is never delegated**, and the north above says why:
 nothing measures it, so an agent that could close that stage would be approving

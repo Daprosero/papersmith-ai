@@ -40,6 +40,20 @@ absent: ingestion asks nobody, and a reader meeting a missing key would have to
 guess whether that meant none or meant nobody wrote it down.
 
 
+
+## What this skill delegates, and to whom
+
+Extraction is one stretch and it runs in an agent of its own. What stays in the
+conversation is the part that needs a person: which loose PDFs are unfiled, and
+what the report says afterwards.
+
+| Stretch | Delegated to | Begins after | Ends at | Measure this before delegating |
+| --- | --- | --- | --- | --- |
+| Extract | this skill delegates to the `paper-ingestion` agent | the PDFs to ingest are named | the artefacts a person can read and cite | each named PDF sits inside a topic folder of its own; a loose one is the operator's to file and not this stretch's to guess at |
+
+What moves is execution, never doctrine: every rule stays here, and the agent's
+first instruction is to load this file.
+
 ## Activation Contract
 
 Accept an optional loose PDF path, or discover the source roots from
