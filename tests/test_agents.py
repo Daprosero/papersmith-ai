@@ -29,6 +29,12 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 AGENTS = ROOT / ".claude" / "agents"
+# OpenCode mirror of the same agent roster (frontmatter in OpenCode format:
+# `description` + `mode: subagent` + `permission:`, filename is the name).
+# `.claude/agents` stays canonical for Claude Code; `.opencode/agents` is what
+# OpenCode discovers. The seals below hold over the union so neither roster
+# drifts from the skills that delegate to it.
+OPENCODE_AGENTS = ROOT / ".opencode" / "agents"
 SKILLS = ROOT / ".claude" / "skills"
 
 # Skills that declare no north at all -- neither a Python `OBJECTIVE_FLOW`
@@ -298,7 +304,7 @@ def bound_skill(path: Path) -> str:
     weaker filename guess.
     """
     body = path.read_text(encoding="utf-8")
-    named = re.findall(r"\.claude/skills/([\w-]+)/SKILL\.md", body)
+    named = re.findall(r"(?:\.claude|\.opencode)/skills/([\w-]+)/SKILL\.md", body)
     assert named, f"{path.name} names no skill to load"
     return named[0]
 
@@ -306,14 +312,30 @@ def bound_skill(path: Path) -> str:
 class AgentBindingTests(unittest.TestCase):
 
     def agents(self):
-        return sorted(AGENTS.glob("*.md")) if AGENTS.is_dir() else []
+        found: list[Path] = []
+        for base in (AGENTS, OPENCODE_AGENTS):
+            if base.is_dir():
+                found.extend(sorted(base.glob("*.md")))
+        return sorted(found)
+
+    def agent_dirs(self):
+        return [b for b in (AGENTS, OPENCODE_AGENTS) if b.is_dir()]
 
     def test_there_is_at_least_one_agent(self) -> None:
         self.assertTrue(self.agents(), "no agent definitions to hold")
 
     def test_every_agent_names_its_own_file(self) -> None:
         for path in self.agents():
-            self.assertEqual(frontmatter(path).get("name"), path.stem, path.name)
+            declared = frontmatter(path).get("name")
+            if declared is None:
+                # OpenCode format: the filename IS the name, no `name:` key.
+                # Only valid under `.opencode/agents`; a nameless Claude
+                # agent would be a malformed header, not a format.
+                self.assertTrue(
+                    OPENCODE_AGENTS in path.parents,
+                    f"{path.name} declares no `name:` outside `.opencode/agents`")
+                continue
+            self.assertEqual(declared, path.stem, path.name)
 
     def test_every_agent_names_a_skill_that_exists(self) -> None:
         """By its PATH in the body, never by its filename.
@@ -326,7 +348,7 @@ class AgentBindingTests(unittest.TestCase):
         """
         for path in self.agents():
             body = path.read_text(encoding="utf-8")
-            named = re.findall(r"\.claude/skills/([\w-]+)/SKILL\.md", body)
+            named = re.findall(r"(?:\.claude|\.opencode)/skills/([\w-]+)/SKILL\.md", body)
             self.assertTrue(named, f"{path.name} names no skill to load")
             for skill in named:
                 self.assertTrue((SKILLS / skill / "SKILL.md").is_file(),
@@ -347,8 +369,11 @@ class AgentBindingTests(unittest.TestCase):
                 named.add((skill.name, agent))
         self.assertTrue(named, "no skill delegates a stretch to any agent")
         for skill, agent in sorted(named):
-            self.assertTrue((AGENTS / f"{agent}.md").is_file(),
-                            f"{skill} delegates to `{agent}`, which does not exist")
+            self.assertTrue(
+                any((base / f"{agent}.md").is_file()
+                    for base in self.agent_dirs()),
+                f"{skill} delegates to `{agent}`, which exists in neither "
+                f".claude/agents nor .opencode/agents")
 
     def test_every_agent_is_invoked_by_a_skill(self) -> None:
         """The half the first version of this file did not check, and two
@@ -371,9 +396,22 @@ class AgentBindingTests(unittest.TestCase):
 
     def test_every_agent_states_its_tools(self) -> None:
         """An agent that declares none inherits everything, which is the
-        capability restriction silently not applied."""
+        capability restriction silently not applied.
+
+        Claude format declares `tools: ...`; OpenCode format declares a
+        `permission:` block instead (same restriction, other syntax)."""
         for path in self.agents():
-            self.assertTrue(frontmatter(path).get("tools"), path.name)
+            body = path.read_text(encoding="utf-8")
+            declares_tools = bool(frontmatter(path).get("tools"))
+            declares_permission = "\npermission:" in body
+            self.assertTrue(declares_tools or declares_permission, path.name)
+            if OPENCODE_AGENTS in path.parents:
+                self.assertTrue(declares_permission,
+                                f"{path.name} is an OpenCode agent without a "
+                                f"`permission:` block")
+                self.assertIn("\nmode: subagent", body,
+                              f"{path.name} is an OpenCode stretch agent "
+                              f"without `mode: subagent`")
 
     def test_every_agent_names_both_ends_of_its_stretch(self) -> None:
         """An agent whose stretch has no ends is not a stretch, it is a job
@@ -737,14 +775,19 @@ class AgentBindingTests(unittest.TestCase):
             f"{len(declared_rules)}: {declared_rules} -- this check would "
             f"otherwise be vacuous")
 
-        agent = AGENTS / "experimental-validation.md"
-        self.assertTrue(agent.is_file(), f"{agent} does not exist")
-        body = agent.read_text(encoding="utf-8")
-        unclassified = [rule_id for rule_id in declared_rules
-                        if f"`{rule_id}`" not in body]
-        self.assertEqual(
-            unclassified, [],
-            f"{agent.name} never mentions {unclassified} by its exact "
-            f"backtick-quoted id -- classify each one, either among the "
-            f"rules that confirm the `validated` stage closed, or in an "
-            f"explicit sentence naming it as not this stretch's concern")
+        candidates = [base / "experimental-validation.md"
+                      for base in self.agent_dirs()]
+        agents = [a for a in candidates if a.is_file()]
+        self.assertTrue(agents,
+                        "experimental-validation.md exists in neither "
+                        ".claude/agents nor .opencode/agents")
+        for agent in agents:
+            body = agent.read_text(encoding="utf-8")
+            unclassified = [rule_id for rule_id in declared_rules
+                            if f"`{rule_id}`" not in body]
+            self.assertEqual(
+                unclassified, [],
+                f"{agent} never mentions {unclassified} by its exact "
+                f"backtick-quoted id -- classify each one, either among the "
+                f"rules that confirm the `validated` stage closed, or in an "
+                f"explicit sentence naming it as not this stretch's concern")

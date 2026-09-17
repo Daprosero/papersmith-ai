@@ -1298,5 +1298,47 @@ class EndToEndCompileTests(unittest.TestCase):
         self.assertEqual(ctx.exception.code, "DIAGRAM_PLOTS_DATA")
 
 
+class DiagramVisualPassTests(unittest.TestCase):
+    """The visual pass (compile -> PNG -> look -> polish): `diagram-author`
+    earns its vision model instead of merely naming one. The pass lives
+    entirely agent-side -- no CLI flag, no SKILL.md change -- inside the
+    same repair budget, and the eye never overrules a mechanical check.
+    These locks hold the load-bearing sentences in BOTH agent mirrors so
+    neither runtime drifts."""
+
+    COPIES = (
+        FORGE_ROOT / ".claude" / "agents" / "diagram-author.md",
+        FORGE_ROOT / ".opencode" / "agents" / "diagram-author.md",
+    )
+
+    def _section(self, path):
+        text = path.read_text(encoding="utf-8")
+        start = text.find("## The visual pass")
+        end = text.find("## Measure before you assert")
+        self.assertNotEqual(start, -1, f"{path} names no visual pass")
+        self.assertTrue(0 < start < end, f"{path}: visual pass misplaced")
+        return text[start:end]
+
+    def test_both_mirrors_carry_the_same_visual_pass(self) -> None:
+        for path in self.COPIES:
+            self.assertTrue(path.is_file(), f"{path} does not exist")
+        sections = [self._section(path) for path in self.COPIES]
+        self.assertEqual(sections[0], sections[1],
+                         "agent mirrors drifted on the visual pass")
+
+    def test_visual_pass_toolchain_and_refusals(self) -> None:
+        section = self._section(self.COPIES[0])
+        for fragment in ("pdftoppm", ".preview",
+                         "PNG_TOOLCHAIN_ABSENT", "PNG_UNREADABLE"):
+            self.assertIn(fragment, section,
+                          f"visual pass never names {fragment}")
+
+    def test_eye_never_overrules_the_mechanical_gate(self) -> None:
+        section = self._section(self.COPIES[0])
+        self.assertIn("overrules nothing", section)
+        self.assertIn("REPAIR_BUDGET_SPENT", section)
+        self.assertIn("FRESH export", section)
+
+
 if __name__ == "__main__":
     unittest.main()

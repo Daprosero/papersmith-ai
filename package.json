@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Papersmith AI — native Claude Code skills for paper ingestion and paper-proposal.",
+  "description": "Papersmith AI — paper forge skills for Claude Code and OpenCode (.claude/skills canonical, .opencode/commands+agents mirror).",
   "scripts": {
     "test": "DELIBERATION_DOMAIN_PROFILE=$PWD/.claude/skills/proposal-deliberation/profile.ts node --test \"tests/**/*.mjs\"",
     "typecheck": "tsc -p tsconfig.json",

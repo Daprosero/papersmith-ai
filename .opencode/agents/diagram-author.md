@@ -1,8 +1,19 @@
 ---
-name: diagram-author
 description: "Authors one standalone TikZ diagram (<id>.tex plus <id>.diagram.json) and drives its own compile loop through render, up to the repair budget. Never draws a chart from measured numbers -- that is a separate verb (place) this agent never calls."
-tools: Read, Write, Edit, Bash
+mode: subagent
+model: opencode/deepseek-v4-flash-vision-exp
 stretch: render
+permission:
+  read: allow
+  glob: deny
+  grep: deny
+  edit: allow
+  bash: allow
+  websearch: deny
+  webfetch: deny
+  skill: allow
+  question: deny
+  task: deny
 ---
 
 # Diagram Author

@@ -1,0 +1,20 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "permission": {
+    "skill": "allow",
+    "question": "allow",
+    "read": "allow",
+    "glob": "allow",
+    "grep": "allow",
+    "webfetch": "allow",
+    "websearch": "allow",
+    "edit": "ask",
+    "bash": {
+      "*": "allow",
+      "*kernels_push*": "ask",
+      "*kaggle_driver.py*": "ask"
+    },
+    "external_directory": "ask"
+  },
+  "mcp": {}
+}
