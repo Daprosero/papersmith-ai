@@ -32,7 +32,7 @@ import uuid
 from pathlib import Path
 
 FORGE_ROOT = Path(__file__).resolve().parents[1]
-SKILL_SCRIPTS = FORGE_ROOT / ".claude" / "skills" / "paper-writing" / "scripts"
+SKILL_SCRIPTS = FORGE_ROOT / "skills" / "paper-writing" / "scripts"
 SECTIONS_DIR = FORGE_ROOT / "sections"
 sys.path.insert(0, str(SKILL_SCRIPTS))
 import paper_contract  # noqa: E402
@@ -41,7 +41,7 @@ import paper_figure  # noqa: E402
 import paper_obligation  # noqa: E402
 import paper_cli  # noqa: E402
 
-sys.path.insert(0, str(FORGE_ROOT / ".claude" / "skills" / "_core" / "implementation"))
+sys.path.insert(0, str(FORGE_ROOT / "skills" / "_core" / "implementation"))
 from impl_refusals import Refused  # noqa: E402
 
 sys.path.insert(0, str(FORGE_ROOT / "tests"))
@@ -270,6 +270,30 @@ class ManifestCrossTests(unittest.TestCase):
             with self.assertRaises(Refused) as ctx:
                 paper_figure.read_manifest(paths)
         self.assertEqual(ctx.exception.code, "DIAGRAM_SOURCE_ABSENT")
+
+    def test_a_figure_id_that_is_not_a_single_path_segment_refuses(self) -> None:
+        # A figure id is a name, never a path: a traversing or degenerate id
+        # must refuse before anything interpolates out of `Figures/` or
+        # `.paper-writing/figures/`, reusing `DIAGRAM_SOURCE_ABSENT` (the
+        # code this module already uses for "cannot address a diagram
+        # source") rather than inventing a new one.
+        with tempfile.TemporaryDirectory() as tmp:
+            paper_dir = Path(tmp) / "paper"
+            for bad in ("../../x", "a/b", "a\\b", "a\x00b", ".", "..", ""):
+                with self.assertRaises(Refused) as ctx:
+                    paper_figure.figure_paths(paper_dir, bad)
+                self.assertEqual(
+                    ctx.exception.code, "DIAGRAM_SOURCE_ABSENT", msg=f"bad id: {bad!r}",
+                )
+
+    def test_a_single_segment_figure_id_still_resolves(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paper_dir = Path(tmp) / "paper"
+            paths = paper_figure.figure_paths(paper_dir, "diag-1")
+        self.assertEqual(paths["tex"], paper_dir / "Figures" / "diag-1.tex")
+        self.assertEqual(
+            paths["scratch"], paper_dir / ".paper-writing" / "figures" / "diag-1",
+        )
 
     def test_a_declared_label_absent_from_source_refuses_manifest_source_mismatch(self) -> None:
         with self.assertRaises(Refused) as ctx:
@@ -1010,7 +1034,7 @@ class CLIWiringTests(unittest.TestCase):
         self.assertEqual(payload["code"], "MANDATORY_DIAGRAM_ABSENT")
 
 
-_SKILL_MD = FORGE_ROOT / ".claude" / "skills" / "paper-writing" / "SKILL.md"
+_SKILL_MD = FORGE_ROOT / "skills" / "paper-writing" / "SKILL.md"
 _DIAGRAM_AUTHOR_MD = FORGE_ROOT / ".claude" / "agents" / "diagram-author.md"
 
 #: Declared, not discovered -- the ONE render flag this suite itself

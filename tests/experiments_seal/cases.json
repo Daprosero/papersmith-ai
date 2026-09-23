@@ -48,7 +48,7 @@
 
   {"id": "defect", "command": "defect", "fixture": "A", "proposals": true,
    "argv": ["--target", "<TARGET>", "--name", "Trial", "--session", "s1",
-            "--file", "<FORGE>/.claude/skills/_core/implementation/impl_refusals.py",
+            "--file", "<FORGE>/skills/_core/implementation/impl_refusals.py",
             "--detail", "found an issue"]},
 
   {"id": "walk", "command": "walk", "fixture": "A", "proposals": true,

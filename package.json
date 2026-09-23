@@ -5,9 +5,16 @@
   "type": "module",
   "description": "Papersmith AI — native Claude Code skills for paper ingestion and paper-proposal.",
   "scripts": {
-    "test": "DELIBERATION_DOMAIN_PROFILE=$PWD/.claude/skills/proposal-deliberation/profile.ts node --test \"tests/**/*.mjs\"",
-    "typecheck": "tsc -p tsconfig.json",
-    "proposal-deliberation": "node .claude/skills/proposal-deliberation/cli.mjs"
+    "test": "DELIBERATION_DOMAIN_PROFILE=$PWD/skills/proposal-deliberation/profile.ts node --test \"tests/**/*.mjs\"",
+    "test:node": "DELIBERATION_DOMAIN_PROFILE=$PWD/skills/proposal-deliberation/profile.ts node --test \"tests/**/*.mjs\"",
+    "test:py": "pytest",
+    "test:all": "npm run test:node && npm run test:py",
+    "setup": "npm install && python scripts/setup_env.py install && bash scripts/setup-harnesses.sh",
+    "proposal-deliberation": "node skills/proposal-deliberation/cli.mjs",
+    "setup:harnesses": "bash scripts/setup-harnesses.sh",
+    "setup:env": "python scripts/setup_env.py install",
+    "clean:env": "python scripts/setup_env.py clean",
+    "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {
     "jiti": "^2.4.2",

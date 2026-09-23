@@ -29,7 +29,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 AGENTS = ROOT / ".claude" / "agents"
-SKILLS = ROOT / ".claude" / "skills"
+SKILLS = ROOT / "skills"
 
 # Skills that declare no north at all -- neither a Python `OBJECTIVE_FLOW`
 # nor a TypeScript `profile.ts` `objective`. Pinned by name, not discovered,
@@ -298,7 +298,7 @@ def bound_skill(path: Path) -> str:
     weaker filename guess.
     """
     body = path.read_text(encoding="utf-8")
-    named = re.findall(r"\.claude/skills/([\w-]+)/SKILL\.md", body)
+    named = re.findall(r"skills/([\w-]+)/SKILL\.md", body)
     assert named, f"{path.name} names no skill to load"
     return named[0]
 
@@ -326,7 +326,7 @@ class AgentBindingTests(unittest.TestCase):
         """
         for path in self.agents():
             body = path.read_text(encoding="utf-8")
-            named = re.findall(r"\.claude/skills/([\w-]+)/SKILL\.md", body)
+            named = re.findall(r"skills/([\w-]+)/SKILL\.md", body)
             self.assertTrue(named, f"{path.name} names no skill to load")
             for skill in named:
                 self.assertTrue((SKILLS / skill / "SKILL.md").is_file(),

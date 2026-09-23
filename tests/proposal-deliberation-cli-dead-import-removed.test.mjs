@@ -7,7 +7,7 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
 
-const cliPath = path.resolve('.claude/skills/_core/deliberation/engine/cli.mjs');
+const cliPath = path.resolve('skills/_core/deliberation/engine/cli.mjs');
 
 test('cli.mjs no longer imports or references pathToFileURL', async () => {
 	const source = await readFile(cliPath, 'utf8');

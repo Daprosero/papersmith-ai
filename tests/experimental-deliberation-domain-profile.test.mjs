@@ -1,7 +1,7 @@
 // This skill's own domain profile, exercised through the shared core that reads it.
 //
 // Every scenario here spawns a FRESH Node process with `DELIBERATION_DOMAIN_PROFILE`
-// pointed at `.claude/skills/experimental-deliberation/profile.ts`. The whole suite
+// pointed at `skills/experimental-deliberation/profile.ts`. The whole suite
 // run is fixed to ONE profile by `package.json`'s `test` script, and
 // `domain-profile.ts` reads the variable once, at module-import time, so a second
 // `jiti.import()` in this process would silently answer for the other domain --
@@ -17,10 +17,10 @@ import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
 const repoRoot = process.cwd();
-const engineDir = path.join(repoRoot, '.claude/skills/_core/deliberation/engine');
-const skillDir = path.join(repoRoot, '.claude/skills/experimental-deliberation');
+const engineDir = path.join(repoRoot, 'skills/_core/deliberation/engine');
+const skillDir = path.join(repoRoot, 'skills/experimental-deliberation');
 const profilePath = path.join(skillDir, 'profile.ts');
-const piRoot = '/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent';
+const piRoot = path.resolve('.');
 
 // Exactly the top-level keys `domain-profile.ts` refuses a profile for omitting (finding
 // M6 fixed this to actually match the comment below: `vocabulary.*` used to be listed here

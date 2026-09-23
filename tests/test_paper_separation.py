@@ -17,7 +17,7 @@ import unittest
 from pathlib import Path
 
 FORGE_ROOT = Path(__file__).resolve().parent.parent
-SKILL_SCRIPTS = FORGE_ROOT / ".claude" / "skills" / "paper-writing" / "scripts"
+SKILL_SCRIPTS = FORGE_ROOT / "skills" / "paper-writing" / "scripts"
 sys.path.insert(0, str(SKILL_SCRIPTS))
 import paper_guidance  # noqa: E402
 import paper_separation  # noqa: E402

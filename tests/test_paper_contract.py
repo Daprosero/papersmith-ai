@@ -26,7 +26,7 @@ import uuid
 from pathlib import Path
 
 FORGE_ROOT = Path(__file__).resolve().parents[1]
-SKILL_SCRIPTS = FORGE_ROOT / ".claude" / "skills" / "paper-writing" / "scripts"
+SKILL_SCRIPTS = FORGE_ROOT / "skills" / "paper-writing" / "scripts"
 SECTIONS_DIR = FORGE_ROOT / "sections"
 sys.path.insert(0, str(SKILL_SCRIPTS))
 import paper_vocabulary  # noqa: E402
@@ -35,7 +35,7 @@ import paper_graph  # noqa: E402
 import paper_readiness  # noqa: E402
 import paper_cli  # noqa: E402
 
-sys.path.insert(0, str(FORGE_ROOT / ".claude" / "skills" / "_core" / "implementation"))
+sys.path.insert(0, str(FORGE_ROOT / "skills" / "_core" / "implementation"))
 from impl_refusals import Refused  # noqa: E402
 
 # The forge's vocabulary floor, defined in one place beside the suites --
@@ -2884,11 +2884,11 @@ class VocabularyLeakTests(unittest.TestCase):
     keywords.md`'s own prose uses it ("the work does not transfer beyond
     it") -- that sentence lives in `sections/`, which `shipped_documents()`
     never reaches, but nothing newly written under
-    `.claude/skills/paper-writing/` may quote it (design.md, `What
+    `skills/paper-writing/` may quote it (design.md, `What
     Breaks`)."""
 
     def test_no_shipped_paper_writing_document_leaks_the_forge_vocabulary_floor(self) -> None:
-        skill_root = FORGE_ROOT / ".claude" / "skills" / "paper-writing"
+        skill_root = FORGE_ROOT / "skills" / "paper-writing"
         documents = forge_vocabulary.shipped_documents(skill_root)
         self.assertGreater(len(documents), 0, "no shipped documents found under paper-writing -- scan is broken")
 

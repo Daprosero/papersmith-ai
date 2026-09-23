@@ -15,8 +15,8 @@ import { pathToFileURL } from 'node:url';
 
 const execFileAsync = promisify(execFile);
 const repoRoot = process.cwd();
-const engineDir = path.join(repoRoot, '.claude/skills/_core/deliberation/engine');
-const piRoot = '/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent';
+const engineDir = path.join(repoRoot, 'skills/_core/deliberation/engine');
+const piRoot = path.resolve('.');
 const MARKER = '<!-- proposal-workspace:artifact:v1 -->\n';
 
 test('4.2.1 proposal-deliberation declares no sourceAuthority: SOURCE_AUTHORITY_CONFLICT is never raised, regardless of candidate content', async () => {

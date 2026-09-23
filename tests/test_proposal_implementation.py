@@ -32,18 +32,17 @@ FORGE = Path(__file__).resolve().parents[1]
 #: The published launcher (meaning 1: what a reader runs, what
 #: `CLI_INVOCATION` names) and, unchanged, the skill root's own anchor
 #: (meaning 3: `CLI.parent.parent`, below) -- this path never moved.
-CLI = FORGE / ".claude/skills/proposal-implementation/scripts/implementation_cli.py"
+CLI = FORGE / "skills/proposal-implementation/scripts/implementation_cli.py"
 #: The engine source (meaning 2: what source-reading guards parse, and what
 #: `impl` resolves to below) -- separate from `CLI` since the launcher
 #: deliberately exposes none of the engine's own attributes (design.md D1,
 #: `tests/test_implementation_profile.py
 #: ::LauncherExposesNoEngineAttributeTests`).
-ENGINE = FORGE / ".claude/skills/_core/implementation/engine/implementation_engine.py"
-os.environ.setdefault(
-    "IMPLEMENTATION_DOMAIN_PROFILE",
-    str(FORGE / ".claude/skills/proposal-implementation/impl_profile.py"))
+ENGINE = FORGE / "skills/_core/implementation/engine/implementation_engine.py"
 sys.path.insert(0, str(ENGINE.parent))
-import implementation_engine as impl  # noqa: E402  (path set above)
+from domain_profile import seeded_profile  # noqa: E402  (path set above)
+with seeded_profile(FORGE / "skills/proposal-implementation/impl_profile.py"):
+    import implementation_engine as impl  # noqa: E402  (path set above)
 # `implementation_engine`'s own import of `impl_layout` etc. already put
 # `_core/implementation` on `sys.path`; this reaches the same module the
 # engine reads its position grammar through, never a second copy.
@@ -65,7 +64,7 @@ from forge_vocabulary import (  # noqa: E402  (path set above)
 # `FACT_SOURCE_ROOT`/`guidance/` registry already name every root a paper
 # in progress is read from -- reused here rather than re-spelled, so this
 # guard never carries a second, independent copy of that mapping.
-sys.path.insert(0, str(FORGE / ".claude" / "skills" / "paper-writing" / "scripts"))
+sys.path.insert(0, str(FORGE / "skills" / "paper-writing" / "scripts"))
 import paper_declarations  # noqa: E402  (path set above)
 import paper_guidance  # noqa: E402  (path set above)
 
@@ -82,7 +81,7 @@ KIT = SKILL_ROOT / "assets" / "kit"
 #: that has ever drifted in this forge drifted. Reached by path, exactly the
 #: way `implementation_cli.py` already reaches that skill's `ledger.py`.
 OWNED_REPOSITORY_CELL = (
-    FORGE / ".claude/skills/remote-execution/assets/notebook_repo_root.py"
+    FORGE / "skills/remote-execution/assets/notebook_repo_root.py"
 )
 PYPROJECT_TEMPLATE = SKILL_ROOT / "assets" / "pyproject.template.toml"
 
@@ -1505,7 +1504,7 @@ import importlib.util  # noqa: E402
 
 _digest_spec = importlib.util.spec_from_file_location(
     "report_digest",
-    FORGE / ".claude/skills/proposal-implementation/assets/kit/nb/report_digest.py",
+    FORGE / "skills/proposal-implementation/assets/kit/nb/report_digest.py",
 )
 report_digest = importlib.util.module_from_spec(_digest_spec)
 _digest_spec.loader.exec_module(report_digest)
@@ -1652,7 +1651,7 @@ class ReportDigestHereRelocationTests(unittest.TestCase):
             package_dir.mkdir(parents=True)
             placed = package_dir / "report_digest.py"
             shutil.copy(
-                FORGE / (".claude/skills/proposal-implementation/assets/kit"
+                FORGE / ("skills/proposal-implementation/assets/kit"
                          "/nb/report_digest.py"),
                 placed)
             spec = importlib.util.spec_from_file_location(
@@ -8344,6 +8343,25 @@ FORGE_FLOOR_SURFACE_ADMISSIONS: dict[str, dict[str, str]] = {
                     "in the paragraph about a probe whose budget a real "
                     "transfer exceeded; ordinary English, named by no target",
     },
+    "remote-execution/assets/colab/executor.py": {
+        "ceiling": "ordinary English for the execution bound this file sets "
+                   "for one notebook — the word the sentence needs to say "
+                   "which bound is not the CLI's helper budget, named by no "
+                   "target",
+    },
+    "remote-execution/scripts/adapters/colab.py": {
+        "kaggle": "one sentence naming the sibling adapter whose "
+                  "`sys.modules`-reuse technique this module follows — a "
+                  "file path, the same way the push hook's own admission "
+                  "names a path, not a loan from any research project",
+        "t4": "the accelerator variant this adapter requests by name; the "
+              "file is the one the doctrine designates to know what the "
+              "service offers, and the variant table cannot name the "
+              "machines without naming them",
+        "transfer": "ordinary English for the per-file upload/download size "
+                    "class throughout the timeout section and the fetch "
+                    "docstring; git's word, named by no target",
+    },
     "remote-execution/scripts/adapters/kaggle.py": {
         "kaggle": "the one file in this forge its own doctrine designates as "
                   "allowed to name a service, which is the seam that keeps "
@@ -8907,7 +8925,7 @@ class MaterializeBenchmarkDeclarationTests(unittest.TestCase):
     is what reports it missing.
     """
 
-    KIT = FORGE / ".claude/skills/proposal-implementation/assets/kit"
+    KIT = FORGE / "skills/proposal-implementation/assets/kit"
 
     @classmethod
     def setUpClass(cls):
@@ -9524,9 +9542,9 @@ class SearchDeclarationShapeTests(unittest.TestCase):
     template, so the first target to copy the example it was handed hit it.
     """
 
-    KIT_DECLARATION = (FORGE / ".claude/skills/proposal-implementation"
+    KIT_DECLARATION = (FORGE / "skills/proposal-implementation"
                        / "assets/kit/src_benchmark/__init__.py")
-    DOCTRINE = FORGE / ".claude/skills/proposal-implementation/SKILL.md"
+    DOCTRINE = FORGE / "skills/proposal-implementation/SKILL.md"
 
     MAPPING_SEARCH = {
         "what": "which free scalar this chooses",
@@ -11617,7 +11635,7 @@ class HarnessPlacementTests(unittest.TestCase):
     under `src/<Package>_Benchmark/`.
     """
 
-    SKILL = FORGE / ".claude/skills/proposal-implementation"
+    SKILL = FORGE / "skills/proposal-implementation"
     KIT = SKILL / "assets/kit"
     NAME = "Example-Method"
     PACKAGE = "Example_Method"
@@ -11920,7 +11938,7 @@ class FidelityUndeclaredTests(unittest.TestCase):
     the nested block already uses, so the two say the same thing.
     """
 
-    KIT_DECLARATION = (FORGE / ".claude/skills/proposal-implementation"
+    KIT_DECLARATION = (FORGE / "skills/proposal-implementation"
                        / "assets/kit/src_benchmark/__init__.py")
 
     DECLARED = (
@@ -12076,11 +12094,11 @@ class RevisionDiscoveryMarkerTests(unittest.TestCase):
     was, which is what keeps every hand-authored family working.
     """
 
-    STORE = (FORGE / ".claude/skills/_core/deliberation"
+    STORE = (FORGE / "skills/_core/deliberation"
              / "engine/revision-lifecycle-store.ts")
     #: The marker's declaration, on the side that declares it. The store reads it
     #: from here now, so this is where the two languages meet.
-    PROFILE = FORGE / ".claude/skills/proposal-deliberation/profile.ts"
+    PROFILE = FORGE / "skills/proposal-deliberation/profile.ts"
 
     DECLARATION = (
         "__benchmark__ = {\n"
@@ -12168,12 +12186,12 @@ class RevisionDiscoveryMarkerTests(unittest.TestCase):
         why nobody would trace it back here.
 
         The roster is DERIVED, never listed: every `profile.ts` under
-        `.claude/skills/` that declares a single-line `marker` joins this check by
+        `skills/` that declares a single-line `marker` joins this check by
         existing, so a third domain added tomorrow is covered without anyone
         remembering to extend a literal.
         """
         declarantes = {}
-        for profile in sorted((FORGE / ".claude/skills").glob("*/profile.ts")):
+        for profile in sorted((FORGE / "skills").glob("*/profile.ts")):
             found = re.search(r'^\s*marker:\s*"((?:[^"\\]|\\.)*)"\s*,?\s*$',
                               profile.read_text(encoding="utf-8"), re.MULTILINE)
             if found:
@@ -12658,6 +12676,8 @@ class MaterializeScriptStaysTestOnlyTests(unittest.TestCase):
     """
 
     SCRIPTS = SKILL_ROOT / "scripts"
+    #: The diagrams live in the single manual. README.es.md was retired into
+    #: README.md (2026-09-17), so this guard follows the manual.
     README = FORGE / "README.md"
 
     MERMAID_RE = re.compile(r"^```mermaid\n(.*?)^```", re.DOTALL | re.MULTILINE)
@@ -14353,7 +14373,7 @@ class ForgeVocabularyDerivedGuardTests(unittest.TestCase):
     target's own capitalisation is not structurally different from one that
     matches the lexicon's lowercased spelling. And rule B's own scan, which
     used to stop at
-    `.claude/skills/`, now reaches every OTHER test module's own commentary —
+    `skills/`, now reaches every OTHER test module's own commentary —
     comments and docstrings, never an ordinary string literal — because a
     name that leaks into a fixture's own prose is exactly the shape the one
     measured instance took.
@@ -14364,7 +14384,7 @@ class ForgeVocabularyDerivedGuardTests(unittest.TestCase):
 
     # One definition of the guarded surface, borrowed rather than restated: a
     # second spelling of "what the forge ships" is how the two go out of step.
-    # Shared with rule A and rule C, both scoped to `.claude/skills/` alone --
+    # Shared with rule A and rule C, both scoped to `skills/` alone --
     # `rule_b_documents`, below, widens ON TOP of this for rule B specifically,
     # rather than widening what A and C see too.
     guarded_documents = ReportFirstSectionProseTests.guarded_documents
@@ -14611,13 +14631,20 @@ class ForgeVocabularyDerivedGuardTests(unittest.TestCase):
         return words, seen_root
 
     def derived_denylist(self, root=None, forge_root=None):
-        """Rule B's denylist, or a skip when nobody has a target.
+        """Rule B's denylist, or a skip when there is no vocabulary to
+        derive.
 
         Silence is the right answer for a clone with no `implementations/`
         repository AND no live paper-writing product root, but it has to
         be an announced silence: a guard that passes because it had
         nothing to look at reads exactly like a guard that looked and
-        found nothing. `forge_root` scopes `paper_product_root_words`
+        found nothing. It is also the right answer when the roots present
+        derive no words at all -- a `document-rooted` prose root with no
+        revisions marker, or an evidence folder containing no ingested
+        papers yet, announce nothing but the empty set -- so the skip
+        fires whenever the union of derived words is empty, not only when
+        neither `implementations/` nor a live root is present. `forge_root`
+        scopes `paper_product_root_words`
         independently of `root` (which scopes `implementations/` alone),
         so a scratch `implementations/`-shaped fixture can still be
         proven in isolation from this checkout's own real `proposals/`/
@@ -14626,11 +14653,12 @@ class ForgeVocabularyDerivedGuardTests(unittest.TestCase):
         words, targets = self.target_words(root)
         paper_words, paper_root_seen = self.paper_product_root_words(forge_root)
         words = words | paper_words
-        if not targets and not paper_root_seen:
+        if (not targets and not paper_root_seen) or not words:
             self.skipTest(
-                "no repository under implementations/ and no live root "
-                "under proposals/, experiments/ or guidance/, so rule B "
-                "has no vocabulary to derive and this is silence rather "
+                "no repository under implementations/, no live root "
+                "under proposals/, experiments/ or guidance/, or the "
+                "roots present derived no words at all, so rule B has "
+                "no vocabulary to derive and this is silence rather "
                 "than a pass")
         # The floor comes out here, and this is the one place the two rules
         # are told apart. Rule C scans `FORGE_VOCABULARY_FLOOR` over the same
@@ -14652,7 +14680,7 @@ class ForgeVocabularyDerivedGuardTests(unittest.TestCase):
         exists to catch unreachable by it.
 
         The two roots are independent on purpose. Production widens both
-        from the real forge (`root=None` reads `.claude/skills/`,
+        from the real forge (`root=None` reads `skills/`,
         `tests_root=None` reads this file's own directory) with nothing
         further to pass. A scratch-root test that only overrides `root`
         (the shape every rule A/B test already had) stays exactly as scoped
@@ -16555,7 +16583,7 @@ class JobNotebookPilotJoinTests(unittest.TestCase):
         than asserted here, so the day it stops this class says why instead of
         going quietly green on a state nothing can produce.
         """
-        jobfolder = FORGE / ".claude/skills/remote-execution/scripts/jobfolder.py"
+        jobfolder = FORGE / "skills/remote-execution/scripts/jobfolder.py"
         source = jobfolder.read_text(encoding="utf-8")
         tree = ast.parse(source)
         kinds = None
@@ -19362,7 +19390,7 @@ class AbsentFileDigestTests(unittest.TestCase):
     def _forge(self):
         root = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, root, ignore_errors=True)
-        (root / ".claude" / "skills" / "some-skill").mkdir(parents=True)
+        (root / "skills" / "some-skill").mkdir(parents=True)
         return root
 
     def _write(self, forge_root, rel, data):
@@ -19381,19 +19409,19 @@ class AbsentFileDigestTests(unittest.TestCase):
 
     def test_current_file_digest_hashes_a_regular_file(self):
         forge_root = self._forge()
-        path = self._write(forge_root, ".claude/skills/some-skill/mod.py", b"x = 1\n")
+        path = self._write(forge_root, "skills/some-skill/mod.py", b"x = 1\n")
         self.assertEqual(impl_position.current_file_digest(path),
                          impl_position.digest_bytes(b"x = 1\n"))
 
     def test_current_file_digest_returns_the_sentinel_for_an_absent_path(self):
         forge_root = self._forge()
-        never = forge_root / ".claude" / "skills" / "some-skill" / "never.py"
+        never = forge_root / "skills" / "some-skill" / "never.py"
         self.assertEqual(impl_position.current_file_digest(never),
                          impl_position.ABSENT_FILE_DIGEST)
 
     def test_current_file_digest_returns_the_sentinel_for_a_directory(self):
         forge_root = self._forge()
-        directory = forge_root / ".claude" / "skills" / "some-skill"
+        directory = forge_root / "skills" / "some-skill"
         self.assertEqual(impl_position.current_file_digest(directory),
                          impl_position.ABSENT_FILE_DIGEST)
 
@@ -19407,7 +19435,7 @@ class AbsentFileDigestTests(unittest.TestCase):
 
     def test_open_defects_open_while_the_recorded_digest_still_matches(self):
         forge_root = self._forge()
-        path = self._write(forge_root, ".claude/skills/some-skill/mod.py", b"x = 1\n")
+        path = self._write(forge_root, "skills/some-skill/mod.py", b"x = 1\n")
         rel = str(path.relative_to(forge_root))
         digest = impl_position.digest_bytes(b"x = 1\n")
         events = [{"kind": "defect", "file": rel, "fileSha256": digest}]
@@ -19415,7 +19443,7 @@ class AbsentFileDigestTests(unittest.TestCase):
 
     def test_open_defects_clears_the_moment_the_bytes_change(self):
         forge_root = self._forge()
-        path = self._write(forge_root, ".claude/skills/some-skill/mod.py", b"x = 1\n")
+        path = self._write(forge_root, "skills/some-skill/mod.py", b"x = 1\n")
         rel = str(path.relative_to(forge_root))
         stale_digest = impl_position.digest_bytes(b"x = 1\n")
         path.write_bytes(b"x = 2\n")
@@ -19424,14 +19452,14 @@ class AbsentFileDigestTests(unittest.TestCase):
 
     def test_open_defects_missing_filesha256_key_fails_closed_open(self):
         forge_root = self._forge()
-        path = self._write(forge_root, ".claude/skills/some-skill/mod.py", b"x = 1\n")
+        path = self._write(forge_root, "skills/some-skill/mod.py", b"x = 1\n")
         rel = str(path.relative_to(forge_root))
         events = [{"kind": "defect", "file": rel}]  # no fileSha256 key at all
         self.assertEqual(impl_position.open_defects(events, forge_root), events)
 
     def test_open_defects_latest_wins_per_file(self):
         forge_root = self._forge()
-        path = self._write(forge_root, ".claude/skills/some-skill/mod.py", b"x = 1\n")
+        path = self._write(forge_root, "skills/some-skill/mod.py", b"x = 1\n")
         rel = str(path.relative_to(forge_root))
         current_digest = impl_position.digest_bytes(b"x = 1\n")  # matches the file's live bytes
         stale_digest = impl_position.digest_bytes(b"x = 0\n")    # never matches them
@@ -19454,7 +19482,7 @@ class AbsentFileDigestTests(unittest.TestCase):
         exhibit the property the refusal exists to keep unreachable.
         """
         forge_root = self._forge()
-        never = forge_root / ".claude" / "skills" / "some-skill" / "never.py"
+        never = forge_root / "skills" / "some-skill" / "never.py"
         rel = str(never.relative_to(forge_root))
         events = [{"kind": "defect", "file": rel,
                   "fileSha256": impl_position.ABSENT_FILE_DIGEST}]
@@ -19463,7 +19491,7 @@ class AbsentFileDigestTests(unittest.TestCase):
     def test_open_defects_rejects_a_stored_file_that_escapes_the_skills_tree(self):
         """Design decision 4: the containment invariant is re-verified for
         free on the read side. A hand-written ledger line naming a path
-        outside `.claude/skills/` cannot point the checker anywhere else."""
+        outside `skills/` cannot point the checker anywhere else."""
         forge_root = self._forge()
         events = [{"kind": "defect", "file": "../outside.txt",
                   "fileSha256": "deadbeef"}]
@@ -19741,7 +19769,7 @@ class KitScaffoldLevelsDeclarationJoinTests(unittest.TestCase):
     caller uses.
     """
 
-    KIT_INIT = (FORGE / ".claude/skills/proposal-implementation"
+    KIT_INIT = (FORGE / "skills/proposal-implementation"
                 / "assets/kit/src_benchmark/__init__.py")
 
     def test_the_shipped_scaffold_s_annotated_levels_literal_is_readable(self):
@@ -19814,7 +19842,7 @@ class KitScaffoldLevelsDeclarationJoinTests(unittest.TestCase):
         is not exercised by the PR10 defect today; confirmed directly against
         the shipped file rather than assumed, not left as a guess.
         """
-        kit_benchmark = (FORGE / ".claude/skills/proposal-implementation"
+        kit_benchmark = (FORGE / "skills/proposal-implementation"
                           / "assets/kit/nb/benchmark.py")
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
@@ -21199,7 +21227,7 @@ class DefectCommandTests(unittest.TestCase):
         return box
 
     def _forge_file(self, data=b"placeholder = True\n"):
-        path = (FORGE / ".claude" / "skills" / "proposal-implementation" / "scripts"
+        path = (FORGE / "skills" / "proposal-implementation" / "scripts"
                / f"_defect_fixture_{os.getpid()}_{id(self)}.py")
         path.write_bytes(data)
         self.addCleanup(path.unlink, missing_ok=True)
@@ -21229,7 +21257,7 @@ class DefectCommandTests(unittest.TestCase):
         self.assertEqual(events[0]["fileSha256"], expected_digest)
         self.assertEqual(events[0]["session"], "s1")
         self.assertEqual(events[0]["detail"], "smoke does not import")
-        self.assertTrue(events[0]["file"].startswith(".claude/skills/"))
+        self.assertTrue(events[0]["file"].startswith("skills/"))
 
     def test_repeat_declaration_with_no_detail_omits_the_key_rather_than_writing_null(self):
         box = self._box()
@@ -21256,7 +21284,7 @@ class DefectCommandTests(unittest.TestCase):
         """The bypass, closed (design decision 1): a declaration against an
         already-absent path is refused, never recorded with the sentinel."""
         box = self._box()
-        never = (FORGE / ".claude" / "skills" / "proposal-implementation" / "scripts"
+        never = (FORGE / "skills" / "proposal-implementation" / "scripts"
                 / f"_defect_never_{os.getpid()}_{id(self)}.py")
         self.assertFalse(never.exists())
         proc = self.run_cli("defect", "--target", str(box), "--name", "Method",
@@ -21355,7 +21383,7 @@ class OpenDefectLadderTests(unittest.TestCase):
         return box
 
     def _forge_file(self, data=b"placeholder = True\n"):
-        path = (FORGE / ".claude" / "skills" / "proposal-implementation" / "scripts"
+        path = (FORGE / "skills" / "proposal-implementation" / "scripts"
                / f"_open_defect_ladder_fixture_{os.getpid()}_{id(self)}_{len(self._fixtures)}.py")
         path.write_bytes(data)
         self.addCleanup(path.unlink, missing_ok=True)
@@ -21671,7 +21699,7 @@ class DiagnosticsAnsweringWhileDefectOpenTests(unittest.TestCase):
         return box
 
     def _forge_file(self, data=b"placeholder = True\n"):
-        path = (FORGE / ".claude" / "skills" / "proposal-implementation" / "scripts"
+        path = (FORGE / "skills" / "proposal-implementation" / "scripts"
                / f"_open_defect_diag_fixture_{os.getpid()}_{id(self)}_{len(self._fixtures)}.py")
         path.write_bytes(data)
         self.addCleanup(path.unlink, missing_ok=True)
@@ -21787,7 +21815,7 @@ class HandoffSurfacesOpenDefectsTests(unittest.TestCase):
         return box
 
     def _forge_file(self, data=b"placeholder = True\n"):
-        path = (FORGE / ".claude" / "skills" / "proposal-implementation" / "scripts"
+        path = (FORGE / "skills" / "proposal-implementation" / "scripts"
                / f"_handoff_defects_fixture_{os.getpid()}_{id(self)}.py")
         path.write_bytes(data)
         self.addCleanup(path.unlink, missing_ok=True)
@@ -21820,7 +21848,7 @@ class HandoffSurfacesOpenDefectsTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stdout)
         open_defects = json.loads(proc.stdout)["openDefects"]
         self.assertEqual(len(open_defects), 1)
-        self.assertTrue(open_defects[0]["file"].startswith(".claude/skills/"))
+        self.assertTrue(open_defects[0]["file"].startswith("skills/"))
         self.assertEqual(open_defects[0]["session"], "s7")
         self.assertEqual(open_defects[0]["detail"], "smoke does not import")
 
@@ -21886,7 +21914,7 @@ class CrashCaptureTests(unittest.TestCase):
 
         Post-move (Cut 1): `main()` executes from the ENGINE's own file
         (`_core/implementation/engine/implementation_engine.py`), which is
-        still under `FORGE_ROOT/.claude/skills` and so still qualifies as
+        still under `FORGE_ROOT/skills` and so still qualifies as
         the "last forge frame" -- the recorded file and digest name the
         engine, never the launcher, which never appears on this traceback
         at all (in-process `impl.main(...)` never runs the launcher).
@@ -22026,7 +22054,7 @@ class CommandRosterTests(unittest.TestCase):
                        # belongs with the verbs that change the target rather
                        # than with the ones that only report.
                        "walk",
-                       "materialize"}
+                       "materialize", "adopt"}
         dispatched = set(impl.COMMANDS)
         self.assertEqual(
             dispatched, self.DOCUMENTED_ELSEWHERE | write_verbs,
@@ -22062,7 +22090,7 @@ class CommandRosterClosureTests(unittest.TestCase):
     dispatch table fails until it has a row, and a row no command backs fails
     too.
 
-    `test_the_roster_derivation_finds_the_measured_nineteen` is the guard on
+    `test_the_roster_derivation_finds_the_measured_twenty_one` is the guard on
     the scraper rather than on the roster, for the reason
     `GatingRefusalRosterTests` states about its own count: a walk that silently
     matches nothing makes the second direction pass over an empty set, and a
@@ -22102,12 +22130,12 @@ class CommandRosterClosureTests(unittest.TestCase):
                 for header in (self.WRITE_TABLE_HEADER, self.REST_TABLE_HEADER)
                 for row in self._table(header)]
 
-    def test_the_roster_derivation_finds_the_measured_twenty(self):
+    def test_the_roster_derivation_finds_the_measured_twenty_one(self):
         """Sanity on the walk, not on the roster. A command added to or removed
         from the CLI should move this number; a broken header, a renamed column
         or a table that stopped parsing should not be able to leave it green."""
         rostered = self.rostered_commands()
-        self.assertEqual(len(rostered), 20)
+        self.assertEqual(len(rostered), 21)
         self.assertEqual(
             sorted(rostered), sorted(set(rostered)),
             "a command is rostered twice; two rows for one command is two "
@@ -22795,7 +22823,7 @@ class DiscussCommandTests(unittest.TestCase):
                          "code, DISCUSS_DECISION_NOT_A_TOKEN, never offer's")
         offer_source = " ".join(inspect.getsource(impl.cmd_offer).split())
         self.assertIn(
-            "no code path under `.claude/skills/**/*.py` ever reads a "
+            "no code path under `skills/**/*.py` ever reads a "
             "`kind: \"offer\"` event's fields back into a later decision",
             offer_source)
 
@@ -26517,7 +26545,7 @@ class OfferCommandTests(unittest.TestCase):
 
         self.assertIn("write-only history", normalized)
         self.assertIn(
-            'no code path under `.claude/skills/**/*.py` ever reads a '
+            'no code path under `skills/**/*.py` ever reads a '
             '`kind: "offer"` event\'s fields back into any later decision',
             normalized)
 
@@ -26824,7 +26852,7 @@ class OfferCommandTests(unittest.TestCase):
         indirect route to the shared honesty rule is a fact about the
         source, not merely a docstring's claim.
         """
-        core_source = (FORGE / ".claude/skills/_core/implementation"
+        core_source = (FORGE / "skills/_core/implementation"
                       / "impl_availability.py").read_text(encoding="utf-8")
         tree = ast.parse(core_source)
         calls_position_honest = False
@@ -28682,7 +28710,7 @@ class StepCommandTests(unittest.TestCase):
         (`.get("kind") in {"step"}`, say) fails this test at the caller
         assertion even where the regex above cannot see it."""
         pattern = re.compile(r'kind[\'"]?\s*\)?\s*==\s*[\'"]step[\'"]')
-        remote_source = (FORGE / ".claude" / "skills" / "remote-execution"
+        remote_source = (FORGE / "skills" / "remote-execution"
                          / "scripts" / "remote_cli.py").read_text(encoding="utf-8")
         self.assertIsNone(pattern.search(remote_source))
         position_source = Path(impl_position.__file__).read_text(encoding="utf-8")
@@ -29183,7 +29211,7 @@ class AnnotatedDeclarationReaderTests(unittest.TestCase):
         readers are not, and widening the repair to them would be repairing
         something that was never broken.
         """
-        hook = (FORGE / ".claude/skills/remote-execution/scripts/hooks"
+        hook = (FORGE / "skills/remote-execution/scripts/hooks"
                 / "refuse_offpath_push.py")
         text = hook.read_text(encoding="utf-8")
         self.assertIn("getattr", text)
@@ -29951,15 +29979,19 @@ class NoTestClassShadowsAnotherTests(unittest.TestCase):
         import pathlib
         for path in sorted(pathlib.Path(__file__).parent.glob("test_*.py")):
             tree = ast.parse(path.read_text(encoding="utf-8"))
+            # `unittest discover` and pytest both collect module ATTRIBUTES, so
+            # a repeated top-level name loses the earlier definition whether it
+            # is a class or a function. Scanning both keeps the guard honest for
+            # the function-style suites too.
             names = [node.name for node in tree.body
-                     if isinstance(node, ast.ClassDef)]
-            assert names, f"{path.name} parsed to no classes at all"
+                     if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))]
+            assert names, f"{path.name} parsed to no module-level definitions at all"
             duplicated = sorted({name for name in names
                                  if names.count(name) > 1})
             with self.subTest(file=path.name):
                 self.assertEqual(
                     duplicated, [],
-                    f"{path.name} defines these class names twice; the later "
+                    f"{path.name} defines these names twice; the later "
                     "definition silently replaces the earlier one and every "
                     "test the earlier one held stops running")
 
@@ -31946,7 +31978,7 @@ def raised_refusal_codes(source: Path, function: str) -> set[str]:
 #: The forge's shared implementation modules -- the far side of the file
 #: boundary `raised_refusal_codes` stops at, and where a third of the refusals
 #: a gating command can raise actually live.
-CORE_IMPLEMENTATION = FORGE / ".claude/skills/_core/implementation"
+CORE_IMPLEMENTATION = FORGE / "skills/_core/implementation"
 
 #: A refusal code as every one of them is spelled: screaming snake case, two
 #: segments or more. Used only to recognise a code-shaped string constant when
@@ -36049,7 +36081,7 @@ class SkillRootValueTests(unittest.TestCase):
     def test_skill_root_names_the_skill_not_the_engines_own_parent(self):
         self.assertEqual(
             impl.SKILL_ROOT,
-            FORGE / ".claude" / "skills" / "proposal-implementation")
+            FORGE / "skills" / "proposal-implementation")
         self.assertNotEqual(impl.SKILL_ROOT, ENGINE.parent)
 
     def test_a_wrong_skill_root_silently_breaks_every_kit_source_lookup(self):

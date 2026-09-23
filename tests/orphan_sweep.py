@@ -12,7 +12,7 @@ Two guards make this safe to run while other processes are using the same
 checkout, which is how this repository is actually worked:
 
 - **Untracked only.** Anything git tracks is left alone, whatever its name.
-  `.claude/skills/_core/` is 66 tracked files behind a leading underscore; a
+  `skills/_core/` is 66 tracked files behind a leading underscore; a
   name-pattern sweep without this guard would delete the shared core.
 - **Old only.** A sibling process's fixture is seconds or minutes old. The
   age floor distinguishes an orphan whose owner is dead from a directory
@@ -35,7 +35,7 @@ FORGE_ROOT = Path(__file__).resolve().parents[1]
 #: Directories only -- a root absent from disk is skipped, not an error.
 SWEEP_ROOTS: tuple[Path, ...] = (
     FORGE_ROOT / "implementations",
-    *(FORGE_ROOT / ".claude" / "skills").glob("*/scripts"),
+    *(FORGE_ROOT / "skills").glob("*/scripts"),
 )
 
 #: An orphan's owner is dead; a sibling's fixture is live. One hour is far
@@ -45,7 +45,7 @@ MIN_AGE_SECONDS = 3600
 
 def _is_untracked(path: Path) -> bool:
     """True when git knows nothing about `path`. Anything tracked is never
-    swept -- this is what keeps `.claude/skills/_core/` and every other
+    swept -- this is what keeps `skills/_core/` and every other
     legitimately underscore-prefixed tracked path out of reach."""
     result = subprocess.run(
         ["git", "ls-files", "--error-unmatch", "--", str(path)],

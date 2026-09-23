@@ -524,9 +524,13 @@ reverted engine — no in-place mutation to undo):
 ## Two Limits, Stated Plainly
 
 **This does not PREVENT mid-flow forge repair; it makes one detected and
-blocking.** Verified: `.claude/settings.json` carries one `PreToolUse` hook
-owned by another skill and no `permissions.deny` key at all. This design adds
-neither. An agent can still edit the forge mid-flow — and doing so now clears
+blocking.** Proposed-not-present: no `.claude/settings.json` is tracked in this
+tree (`git ls-files .claude/*` shows only `.claude/agents/paper-ingestion.md`),
+so no `PreToolUse` hook is wired and no `permissions.deny` key exists at all.
+The `refuse_offpath_push.py` script the proposal names is a push-surface
+tripwire owned by another skill — it refuses a `Bash` invocation naming a
+service push surface without routing through `remote_cli.py` — not a proposals
+deny. This design adds neither. An agent can still edit the forge mid-flow — and doing so now clears
 any defect recorded against that file, which is the mechanism working as
 specified, not a leak.
 

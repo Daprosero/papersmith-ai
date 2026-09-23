@@ -38,18 +38,16 @@ produced it -- not hand-typed.
 from __future__ import annotations
 
 import json
-import os
 import sys
 import unittest
 from pathlib import Path
 
 FORGE = Path(__file__).resolve().parents[1]
-ENGINE = FORGE / ".claude/skills/_core/implementation/engine/implementation_engine.py"
-os.environ.setdefault(
-    "IMPLEMENTATION_DOMAIN_PROFILE",
-    str(FORGE / ".claude/skills/proposal-implementation/impl_profile.py"))
+ENGINE = FORGE / "skills/_core/implementation/engine/implementation_engine.py"
 sys.path.insert(0, str(ENGINE.parent))
-import implementation_engine as impl  # noqa: E402  (path set above)
+from domain_profile import seeded_profile  # noqa: E402  (path set above)
+with seeded_profile(FORGE / "skills/proposal-implementation/impl_profile.py"):
+    import implementation_engine as impl  # noqa: E402  (path set above)
 
 FIXTURE_PATH = FORGE / "tests" / "fixtures" / "authorization" / "position.jsonl"
 

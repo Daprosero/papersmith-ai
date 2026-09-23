@@ -106,7 +106,7 @@ reason. This is a house convention discovered by execution, not a deviation from
 Run from an empty scratch directory with no project root anywhere above it:
 
 ```
-$ node .../proposal-deliberation/engine/cli.mjs '{"operation":"__AUDIT_NONCE__","instruction":"probe"}'
+$ node .../proposal-deliberation/cli.mjs '{"operation":"__AUDIT_NONCE__","instruction":"probe"}'
 EXIT=1
 --- stdout ---
 {

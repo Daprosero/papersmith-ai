@@ -30,15 +30,16 @@ _FORGE = Path(__file__).resolve().parents[2]
 #: invoked path (meaning 1), read back out of the engine's own profile-
 #: derived `CLI_PATH`. Import route only; argv still derives from
 #: `impl.CLI_INVOCATION`, unedited.
-_ENGINE_DIR = (_FORGE / ".claude" / "skills" / "_core" / "implementation"
+_ENGINE_DIR = (_FORGE / "skills" / "_core" / "implementation"
               / "engine")
-os.environ.setdefault(
-    "IMPLEMENTATION_DOMAIN_PROFILE",
-    str(_FORGE / ".claude" / "skills" / "proposal-implementation"
-       / "impl_profile.py"))
 if str(_ENGINE_DIR) not in sys.path:
     sys.path.insert(0, str(_ENGINE_DIR))
-import implementation_engine as impl  # noqa: E402  (path set above)
+
+from domain_profile import seeded_profile  # noqa: E402  (tests/ on path)
+
+with seeded_profile(_FORGE / "skills" / "proposal-implementation"
+                    / "impl_profile.py"):
+    import implementation_engine as impl  # noqa: E402  (path set above)
 
 from . import corpus as seal_corpus
 from . import normalize as seal_normalize
@@ -53,6 +54,11 @@ TIMEOUT_SECONDS = 120
 ALLOWED_ENV_KEYS = frozenset({
     "PATH", "HOME", "PYTHONHASHSEED", "PYTHONDONTWRITEBYTECODE", "LC_ALL",
     "TZ", "NO_COLOR", "COLUMNS", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM",
+    # The pinned identity the corpus itself commits under -- allow-listed so
+    # `build_env` can hand it to the child without tripping its own assert
+    # (the `apply` case's `git commit` must not vary by operator machine).
+    "GIT_AUTHOR_NAME", "GIT_COMMITTER_NAME", "GIT_AUTHOR_EMAIL",
+    "GIT_COMMITTER_EMAIL", "GIT_AUTHOR_DATE", "GIT_COMMITTER_DATE",
     "IMPLEMENTATION_PROPOSALS",
     # Cut 3 (`a-revision-is-two-documents`, design.md M5): the bare
     # `IMPLEMENTATION_PROPOSALS` keeps overriding document 0 only -- one
@@ -122,6 +128,18 @@ def build_env(case: dict, roots: "seal_corpus.Roots") -> dict:
         "COLUMNS": "80",
         "GIT_CONFIG_GLOBAL": "/dev/null",
         "GIT_CONFIG_SYSTEM": "/dev/null",
+        # The corpus commits under a pinned identity; a child `git commit`
+        # must too. Measured live: with only the empty git config above, the
+        # `apply` case's own `git commit` fell back to operator auto-detection
+        # and baked `carlos@archlinux.(none)` (or CI's `runner@...`) into the
+        # sealed bytes -- an environment-dependent digest that passed locally
+        # and failed on every other machine.
+        "GIT_AUTHOR_NAME": seal_corpus._GIT_IDENTITY_NAME,
+        "GIT_COMMITTER_NAME": seal_corpus._GIT_IDENTITY_NAME,
+        "GIT_AUTHOR_EMAIL": seal_corpus._GIT_IDENTITY_EMAIL,
+        "GIT_COMMITTER_EMAIL": seal_corpus._GIT_IDENTITY_EMAIL,
+        "GIT_AUTHOR_DATE": seal_corpus._GIT_AUTHOR_DATE,
+        "GIT_COMMITTER_DATE": seal_corpus._GIT_AUTHOR_DATE,
     }
     if case.get("proposals"):
         env["IMPLEMENTATION_PROPOSALS"] = str(roots.proposals)

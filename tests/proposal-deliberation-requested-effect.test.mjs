@@ -13,8 +13,8 @@ import test from 'node:test';
 import { pathToFileURL } from 'node:url';
 
 const repoRoot = process.cwd();
-const engineDir = path.join(repoRoot, '.claude/skills/_core/deliberation/engine');
-const piRoot = '/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent';
+const engineDir = path.join(repoRoot, 'skills/_core/deliberation/engine');
+const piRoot = path.resolve('.');
 
 test('4.3.1 intent-resolver.ts contains neither the sparse nor the dispers string literal as a core-level unconditional term', async () => {
 	const source = await readFile(path.join(engineDir, 'intent-resolver.ts'), 'utf8');

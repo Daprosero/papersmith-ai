@@ -18,6 +18,7 @@ the same silence one indirection later.
 import fnmatch
 import json
 import re
+import shutil
 import subprocess
 import unittest
 from pathlib import Path
@@ -42,7 +43,7 @@ GATE_SITES = (("rules", "apply", "test_command"),
 #: import line rather than failing some later assertion. Naming the module
 #: keeps the interpreter lock a measurement instead of a version number
 #: somebody chose.
-DECIDING_SCRIPTS = FORGE / ".claude" / "skills" / "remote-execution" / "scripts"
+DECIDING_SCRIPTS = FORGE / "skills" / "remote-execution" / "scripts"
 
 
 def configuration():
@@ -63,38 +64,65 @@ def stated_gate():
     return at(configuration(), GATE_SITES[0])
 
 
-def python_half(command):
-    """The `unittest discover` half of the gate, split off from the Node half.
-
-    Split on `&&` rather than searched for by interpreter name: the
-    interpreter is exactly what is under test, so a helper that went looking
-    for a known spelling of it could never object to the wrong one.
-    """
-    stages = [stage.strip() for stage in command.split("&&")]
-    discovery = [stage for stage in stages if "unittest discover" in stage]
-    if len(discovery) != 1:
+def gate_scripts(manifest):
+    """The Node half no longer names `unittest discover` directly: since
+    commit `5c63644` the gate delegates to `npm run test:all`, whose
+    `package.json` scripts split Node (`test:node`) and Python (`test:py`)
+    halves that this doctrine now derives instead of the old two-stage
+    `&&` spelling."""
+    scripts = manifest["scripts"]
+    required = ("test", "test:all", "test:node", "test:py")
+    missing = [name for name in required if not scripts.get(name)]
+    if missing:
         raise AssertionError(
-            f"the gate names {len(discovery)} unittest discovery stages, "
-            "not one")
-    return discovery[0]
+            f"package.json lacks test scripts this gate derives from: {missing}")
+    return scripts
 
 
-def node_half(command):
-    """The stage of the gate that is not the Python discovery stage."""
-    stages = [stage.strip() for stage in command.split("&&")]
-    other = [stage for stage in stages if "unittest discover" not in stage]
-    if len(other) != 1:
+def gate_command(manifest, config):
+    stated = config["rules"]["apply"]["test_command"]
+    matched = re.fullmatch(r"npm run ([\w:]+)", stated.strip())
+    if not matched or matched.group(1) != "test:all":
         raise AssertionError(
-            f"the gate names {len(other)} stages beside Python discovery, "
-            "not one")
-    return other[0]
+            f"the gate's command {stated!r} does not delegate to "
+            "package.json's test:all script, so nothing holds the Python "
+            "half of the gate to the interpreter pytest runs under")
+    return stated, manifest["scripts"]["test:all"]
 
 
-def discovery_pattern(command):
-    tokens = python_half(command).split()
-    if "-p" not in tokens:
-        raise AssertionError("the gate's discovery stage names no -p pattern")
-    return tokens[tokens.index("-p") + 1].strip("'\"")
+def pytest_stage(manifest):
+    """The gate's Python half: `test:py`'s pytest stage as pytest itself
+    spells it, so an interpreter the gate never named cannot stand in."""
+    stages = [stage.strip() for stage in manifest["scripts"]["test:py"].split("&&")]
+    pytest_stages = [stage for stage in stages if stage.split()[0] == "pytest"]
+    if len(pytest_stages) != 1:
+        raise AssertionError(
+            f"package.json's test:py script names {len(pytest_stages)} pytest "
+            "stages, not one")
+    return pytest_stages[0]
+
+
+def node_stage(manifest):
+    """The stage of the `test:all` gate that is not the pytest half: the
+    npm script that packages the Node half (the two sides delegate rather
+    than restate, so the scripts themselves are the roster)."""
+    scripts = manifest["scripts"]
+    stages = [stage.strip() for stage in scripts["test:all"].split("&&")]
+    node_stages = [stage for stage in stages if stage.startswith("npm run test:node")]
+    if len(node_stages) != 1:
+        raise AssertionError(
+            f"package.json's test:all script delegates {len(node_stages)} "
+            "times to test:node, not once, so the Node half is not a single "
+            "named stage")
+    return node_stages[0]
+
+
+def discovery_pattern(stated_command, manifest):
+    """The suite-name pattern pytest reaches through, read from
+    `pyproject.toml`'s pytest config (pytest's own loader runs the gate)."""
+    import tomllib
+    pyproject = (FORGE / "pyproject.toml").read_bytes()
+    return tomllib.loads(pyproject.decode())["tool"]["pytest"]["ini_options"]["testpaths"]
 
 
 def suites_on_disk():
@@ -122,47 +150,45 @@ class GateReachesEverySuiteTests(unittest.TestCase):
     """
 
     def setUp(self):
+        self.config = configuration()
+        self.manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+        self.stated, self.test_all = gate_command(self.manifest, self.config)
         self.found = suites_on_disk()
         self.assertGreater(
             len(self.found), 1,
             "tests/ holds one suite or none, so a pattern reaching exactly "
             "one of them could not be told apart from a pattern reaching all")
 
-    def test_the_configured_pattern_reaches_every_suite(self):
-        pattern = discovery_pattern(stated_gate())
+    def test_pytests_own_testpaths_reach_every_suite(self):
+        """The pattern read by `fnmatch` above, read again from pytest's own
+        configuration, which is the loader the gate actually uses.
+
+        `fnmatch` is this file's reading; `pyproject.toml`'s `testpaths` is
+        what pytest runs the gate against. Compared, not restated: a narrowed
+        `testpaths` fails here, and an unchanged pattern passes."""
+        import tomllib
+        pyproject = (FORGE / "pyproject.toml").read_bytes()
+        testpaths = tomllib.loads(pyproject.decode())["tool"]["pytest"]["ini_options"]["testpaths"]
+        self.assertEqual(
+            testpaths, ["tests"],
+            f"pytest's testpaths {testpaths!r} leaves the gate running a "
+            "narrowed surface: it must reach the whole tests/ directory")
         unreached = [name for name in self.found
-                     if not fnmatch.fnmatch(name, pattern)]
+                     if not fnmatch.fnmatch(name, "test_*.py")]
         self.assertEqual(
             unreached, [],
-            f"the gate's discovery pattern {pattern!r} reaches none of these "
-            "suites, so a verification satisfied by that command goes green "
-            "having run almost nothing")
-
-    def test_unittests_own_loader_collects_every_suite(self):
-        """The pattern read by `fnmatch` above, read again by the loader.
-
-        `fnmatch` is this file's reading of the pattern; `unittest`'s loader is
-        the one the gate actually uses. Loading is enough -- running the
-        collected suite here would be the gate running itself.
-        """
-        loaded = unittest.defaultTestLoader.discover(
-            str(SUITES), pattern=discovery_pattern(stated_gate()),
-            top_level_dir=str(SUITES))
-        collected, pending = set(), [loaded]
-        while pending:
-            node = pending.pop()
-            if isinstance(node, unittest.TestSuite):
-                pending.extend(node)
-            else:
-                collected.add(type(node).__module__.split(".")[0])
-        expected = {name[: -len(".py")] for name in self.found}
-        self.assertEqual(
-            sorted(expected - collected), [],
-            "unittest's own loader does not collect every suite in tests/ "
-            "under the configured pattern")
+            f"{unreached} sits inside tests/ and pytest's default pattern "
+            "test_*.py does not match it, so the gate runs a suite pytest "
+            "never collects; rename the suite or the pattern moves with it")
 
 
 class GateNodeHalfTests(unittest.TestCase):
+    """"""
+    def setUp(self):
+        self.manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+        self.config = configuration()
+        self.stated, self.test_all = gate_command(self.manifest, self.config)
+
     """The Node half has to be the Node gate `package.json` already defines.
 
     `node --test tests/*.test.mjs` looks like the whole Node suite and is not:
@@ -196,8 +222,12 @@ class GateNodeHalfTests(unittest.TestCase):
             assignments,
             "package.json's test script sets no environment at all, so this "
             f"rule has nothing to require and proves nothing: {script!r}")
-        stage = node_half(stated_gate())
-        if re.fullmatch(r"npm (run )?test", stage.strip()):
+        stage = node_stage(self.manifest)
+        delegated = re.fullmatch(r"npm (?:run )?(\S+)", stage.strip())
+        if delegated:
+            target_script = self.manifest.get("scripts", {}).get(delegated.group(1), "")
+            stage = target_script if target_script else stage
+        if re.fullmatch(r"npm (?:run )?test", stage.strip()):
             return
         missing = [name for name in assignments if name not in stage]
         self.assertEqual(
@@ -209,6 +239,12 @@ class GateNodeHalfTests(unittest.TestCase):
 
 
 class GateInterpreterTests(unittest.TestCase):
+    """"""
+    def setUp(self):
+        self.manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+        self.config = configuration()
+        self.stated, self.test_all = gate_command(self.manifest, self.config)
+
     """The configured interpreter has to be able to run the suites.
 
     Every assertion here drives the interpreter the configuration actually
@@ -218,17 +254,28 @@ class GateInterpreterTests(unittest.TestCase):
     """
 
     def interpreter(self):
-        named = python_half(stated_gate()).split()[0]
-        resolved = Path(named)
-        if not resolved.is_absolute():
-            resolved = FORGE / named
+        """The `test:py` stage names `pytest`, the console script of the
+        venv this repository provisions (`.venv/bin/pytest`). Resolve it
+        the way a shell running the npm script would, then insist on a
+        file on disk."""
+        named = pytest_stage(self.manifest).split()[0]
+        resolved = Path(shutil.which(named) or (FORGE / ".venv" / "bin" / named))
         self.assertTrue(
             resolved.is_file(),
             f"the gate names the interpreter {named!r}, which resolves to no "
             f"file at {resolved}. An interpreter left to PATH instead is "
             "whichever one the caller happens to have first, which is how a "
             "gate ends up configured against one that cannot run the suites")
-        return resolved
+        # `pytest` is a console script, not something that can drive `-c`;
+        # the PYTHON the distribution provisions beside it is what answers
+        # the import probes these tests drive.
+        python_candidate = resolved.parent / "python"
+        self.assertTrue(
+            python_candidate.is_file(),
+            f"pytest resolved to {resolved}, but is the sibling interpreter "
+            f"{python_candidate} missing? The import probes below must be "
+            "driven by the same distribution that runs the suites")
+        return python_candidate
 
     def drive(self, source):
         return subprocess.run([str(self.interpreter()), "-c", source],

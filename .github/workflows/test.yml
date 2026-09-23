@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test-node:
+    name: Node.js Test Suite
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Use Node.js
+        uses: actions/setup-node@v4
+        with:
+          # Node >= 21 expands the quoted glob in `node --test "tests/**/*.mjs"`;
+          # on Node 20 the pattern is treated as a literal path and the stage
+          # dies with `Could not find 'tests/**/*.mjs'`.
+          node-version: 24.x
+          cache: "npm"
+      - run: npm ci
+      - run: npm test
+
+  test-python:
+    name: Python Test Suite
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          # The pytest half drives Node legs (the deliberate bridge, the
+          # `deliberate` e2e journey) and skill-audit probes resolve the
+          # repo's root node_modules; without both the bridge refuses with
+          # "workspace node dependencies are missing".
+          node-version: 24.x
+          cache: "npm"
+      - name: Create the development venv
+        # `.venv/bin/python -m pytest` is the documented runner, and the
+        # skill-audit self-guarded-facts probe executes `.venv/bin/python`
+        # directly -- a system-python-only install leaves that probe
+        # unprobeable and cascades KeyErrors through the audit suite.
+        run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install --upgrade pip
+          .venv/bin/python -m pip install -r requirements.txt
+          .venv/bin/python -m pip install pytest pytest-asyncio pytest-mock faker anyio
+          .venv/bin/python -m pip install -e .
+      - name: Install node dependencies
+        run: npm ci
+      - name: Run pytest
+        run: .venv/bin/python -m pytest

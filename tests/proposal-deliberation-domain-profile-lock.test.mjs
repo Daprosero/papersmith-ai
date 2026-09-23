@@ -3,13 +3,13 @@ import { readFile, readdir } from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
 
-const coreDir = path.resolve('.claude/skills/_core/deliberation/engine');
-const skillsDir = path.resolve('.claude/skills');
+const coreDir = path.resolve('skills/_core/deliberation/engine');
+const skillsDir = path.resolve('skills');
 const suiteDir = path.resolve('tests');
 
 // The lock no longer reads one hardcoded profile path (Phase 3, change 11, "a
 // north a second domain can hold"): it globs every `*/profile.ts` under
-// `.claude/skills/`, so a domain added later is held to the same rule without
+// `skills/`, so a domain added later is held to the same rule without
 // this file being edited to know about it.
 async function discoverProfiles() {
 	const entries = await readdir(skillsDir, { withFileTypes: true });
@@ -102,7 +102,7 @@ function selfNamespaceNames(profile) {
 }
 
 test('at least two profiles are discovered, or every check below would pass vacuously', () => {
-	assert.ok(profiles.length >= 2, `expected at least 2 profiles under .claude/skills/*/profile.ts, found ${profiles.length}`);
+	assert.ok(profiles.length >= 2, `expected at least 2 profiles under skills/*/profile.ts, found ${profiles.length}`);
 	for (const profile of profiles) {
 		assert.equal(profile.declared.length, 4, `expected 4 declared values in ${profile.skillName}, found ${profile.declared.length}`);
 		assert.ok(profile.names.length > 0, `${profile.skillName} declares no domain name, so the lock below would pass vacuously`);

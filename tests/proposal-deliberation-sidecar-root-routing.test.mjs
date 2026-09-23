@@ -16,8 +16,8 @@ import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
 const repoRoot = process.cwd();
-const engineDir = path.join(repoRoot, '.claude/skills/_core/deliberation/engine');
-const piRoot = '/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent';
+const engineDir = path.join(repoRoot, 'skills/_core/deliberation/engine');
+const piRoot = path.resolve('.');
 
 const CUSTOM_PROFILE = `import type { DeliberationDomainProfile } from "${path.join(engineDir, 'domain-profile.js')}";
 export const profile: DeliberationDomainProfile = {
