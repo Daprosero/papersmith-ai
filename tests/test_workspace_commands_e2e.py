@@ -109,7 +109,6 @@ class GeneratedWorkspaceTests(unittest.TestCase):
             ".antigravity/rules.md",
             "README.md",
             "package.json",
-            ".mcp.json",
             "skills/paper-writing/SKILL.md",
             "skills/proposal-deliberation/cli.mjs",
             "scripts/setup_env.py",

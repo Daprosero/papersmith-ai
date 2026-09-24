@@ -132,12 +132,15 @@ def _write_workspace_seed(root: Path, *, name: str, title: str, topic: str,
         "topic_yaml": json.dumps(topic, ensure_ascii=False),
         "default_target_yaml": json.dumps(target, ensure_ascii=False),
         "name_json": json.dumps(name, ensure_ascii=False),
-        "workspace_root_json": json.dumps(str(root), ensure_ascii=False),
     }
     _write_text(root, "papersmith.yaml", render_package_template("papersmith.yaml.tpl", context))
     _write_text(root, "README.md", render_package_template("readme.md.tpl", context))
+    # No ``.mcp.json``: success criterion #6 (tests/test_mcp_no_mcp_json.py) is
+    # that the framework never generates, reads or overwrites one. A workspace
+    # that wants the server wired asks for the snippet instead --
+    # ``papersmith mcp print-config --workspace <path>`` prints it and writes
+    # nothing -- and the operator pastes it wherever their harness reads it.
     _write_text(root, "package.json", render_package_template("package.json.tpl", context))
-    _write_text(root, ".mcp.json", render_package_template("mcp.json.tpl", context))
 
 
 def _run_npm_install(root: Path) -> str | None:

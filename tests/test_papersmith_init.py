@@ -57,7 +57,6 @@ class InitTests(unittest.TestCase):
             "kaggle-inbox",
             "papersmith.yaml",
             "package.json",
-            ".mcp.json",
             "README.md",
             "CLAUDE.md",
             "OPENCODE.md",

@@ -295,7 +295,6 @@ mi-paper/
 ├── CLAUDE.md / OPENCODE.md / PI.md / .antigravity/rules.md   # routing de harnesses
 ├── papersmith.yaml              # configuración del workspace (la tuya, editable)
 ├── package.json                 # dependencias Node del workspace (jiti, typebox), la tuya, editable
-├── .mcp.json                    # cómo un cliente MCP alcanza `papersmith mcp serve` en este workspace
 ├── requirements.txt
 ├── scripts/setup_env.py         # provisión del runtime de ingestión
 └── README.md                    # descripción breve del workspace
@@ -341,7 +340,7 @@ mano).
 
 El contrato de preservación de `papersmith upgrade` es explícito: nunca toca
 `guidance/`, `proposals/`, `paper/`, `experiments/`, `implementations/`,
-`kaggle-inbox/`, `papersmith.yaml`, `package.json`, `.mcp.json`, `README.md`
+`kaggle-inbox/`, `papersmith.yaml`, `package.json`, `README.md`
 ni los archivos `.env*`. Todo lo demás es andamiaje del framework y `upgrade`
 lo sincroniza —con `--force` si hace falta— dejando tus artefactos intactos.
 
@@ -2757,7 +2756,7 @@ papersmith upgrade ~/papers/sparse-ae
 
 Sólo toca archivos gestionados por el framework — jamás `guidance/`,
 `proposals/`, `paper/`, `experiments/`, `implementations/`, `kaggle-inbox/`,
-`papersmith.yaml`, `package.json`, `.mcp.json`, `README.md` ni los `.env*`.
+`papersmith.yaml`, `package.json`, `README.md` ni los `.env*`.
 Contra un checkout del kit sin reinstalar:
 `PAPERSMITH_KIT_ROOT=/ruta/al/papersmith-ai papersmith upgrade <dir>`.
 

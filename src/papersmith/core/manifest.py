@@ -67,7 +67,6 @@ PRESERVE_PATTERNS = (
     "kaggle-inbox/**",
     "papersmith.yaml",
     "package.json",
-    ".mcp.json",
     "README.md",
     ".env*",
 )

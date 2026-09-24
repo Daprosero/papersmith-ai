@@ -138,7 +138,6 @@ class KitTests(unittest.TestCase):
             ("kaggle-inbox/job1/out.json", True),
             ("papersmith.yaml", True),
             ("package.json", True),
-            (".mcp.json", True),
             ("README.md", True),
             (".env", True),
             (".env.local", True),
