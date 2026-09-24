@@ -958,15 +958,45 @@ class ProducesFactsSchemaTests(unittest.TestCase):
 #: corrected in place (MANTENIMIENTO pattern 3), never a meaning change to
 #: any quote an entry depends on. `04` and `10` are untouched and keep
 #: their prior digest.
+#:
+#: `06`'s digest is re-captured once more: the introduction stopped
+#: taking `formulation` as an external input. The formulation reaches
+#: the introduction already transposed, through the three written
+#: `materials-and-methods` blocks, so `block-4a`'s middle source line
+#: was retargeted from "the mathematical formulation" to the methods
+#: section, `block-4b`'s own `formulation` row was dropped as carried
+#: by the `contributions` it already requires, the now-false
+#: `### External inputs` row for the formulation was removed, and
+#: `block-4a` gained the `### Internal chain` row its new produced-fact
+#: requirement owes `mm-proposal`. Measured cause: `proposals/
+#: research-concept-r21.md` carries exactly five claimable sections and
+#: the two methods blocks already claim all five, so `score_cut` can
+#: never settle a cut that also hands one to an introduction block --
+#: `SECTION_BINDING_ABSENT` on 4a/4b had no legal exit. `01`'s own
+#: mismatch is NOT re-captured here: it predates this change and
+#: belongs to an edit this author did not make.
+#:
+#: `04` y `08` re-capturados: los tres consumidores de `formulation` que
+#: quedaban -- `lim-proposal-items`, `abstract.slot-3`, `abstract.slot-4` --
+#: pasaron a requerir `contributions`, por la misma causa medida que movio
+#: a `introduction.block-4a`/`4b`: las cinco secciones reclamables de
+#: `research-concept-r21.md` ya estan repartidas enteras entre los dos
+#: bloques de Metodos, asi que `score_cut` no puede asentar ningun corte
+#: nuevo y `bind` refusaba `BINDING_UNARGUED` para siempre. La formulacion
+#: llega a ambas secciones ya transpuesta, por los bloques escritos de
+#: Metodos. En cada archivo: la fila de insumos externos ya falsa se quito,
+#: se autoro la frase que respalda la cita, y se agrego la arista mas su
+#: fila de `### Internal chain` (`04` estrena tabla; antes decia "None").
+#: `01` sigue sin re-capturar: es una edicion del operador sin commitear.
 PRE_MIGRATION_BODY_DIGESTS: dict[str, str] = {
     "01-materials-and-methods.md": "f8ac80bce7a17abb57f99b7be10345beebe1435763f7c5ac9158dda23261aca4"[:64],
     "02-experimental-setup.md": "bfd655f577c8f61802fc4c3d5280f5ada15b9342e11c6b941e75455c0d381960"[:64],
     "03-results-and-discussion.md": "5d32f19e4636fa5be6773fadee31d19019c02d06f312ebcfc8a0058a841795df"[:64],
-    "04-limitations.md": "78f18ca0dd137e5377c423210566555bd20bfd9eb20eb9bf5a38f1aa195bbe76"[:64],
+    "04-limitations.md": "4048e92f81c6203aaa04c066696b90ac3219a3435ce636e7b9840c09a715e490"[:64],
     "05-related-work.md": "7d2f87474f7c357bdb99971e49784f0f6415887f988f00d2a7b3b0b4679098a6"[:64],
-    "06-introduction.md": "704bbc8c238d7e7a06746c9ac06dd8006a3d69679e7b32b9a9edec593a1fb35d"[:64],
+    "06-introduction.md": "07d434d32c04a32d2aefe27158b38a69dc9ad9b761ea16653f681c89f70aa648"[:64],
     "07-conclusions.md": "27defb96c3dcd6e136b90c2ce614f8eb2b51376afdb69b4f0345426d847ec1d5"[:64],
-    "08-abstract.md": "fc454229068a7bef3c91a5645a195c0f385bdfcc280d8562e42464684c7d6acc"[:64],
+    "08-abstract.md": "ccce12b364248dbf3794cca2efb9eb0d5f04b90d16335a6b434312f5903f0ac9"[:64],
     "09-title-and-keywords.md": "c1f8f8401d08f5e2832cfc17cc9eeabb9b27d1f269ef2d6ad2e4d2b34583687c"[:64],
     "10-back-matter.md": "b1cd44fe7c00d8eca92d979be5780a97a6cd815faba9ab3890442f2286316cbb"[:64],
 }
@@ -1708,13 +1738,20 @@ class InputPartitionTests(unittest.TestCase):
             "resolve to a node whose parts straddle block 2",
         )
 
-        # 4a carries only the formulation; the results complete 4b's list,
-        # never 4a's prose. Getting this backwards would hold the whole
-        # presenting paragraph hostage to a measurement it never needed.
-        self.assertEqual(corpus.blocks["introduction.block-4a"].requires_facts, ("formulation",))
+        # 4a carries only the contributions the methods section produces;
+        # the results complete 4b's list, never 4a's prose. Getting this
+        # backwards would hold the whole presenting paragraph hostage to a
+        # measurement it never needed. Neither block requires `formulation`
+        # any more: the formulation reaches the introduction already
+        # transposed, through `materials-and-methods.mm-proposal`, so
+        # requiring the document-rooted fact here demanded a source-section
+        # binding against a proposals/ revision whose claimable sections the
+        # two methods blocks already hold in full -- a cut no further
+        # assignment can settle, and therefore a gate with no legal exit.
+        self.assertEqual(corpus.blocks["introduction.block-4a"].requires_facts, ("contributions",))
         self.assertEqual(
             corpus.blocks["introduction.block-4b"].requires_facts,
-            ("formulation", "results", "contributions"),
+            ("results", "contributions"),
         )
 
     def test_the_internal_chain_of_the_introduction_is_acyclic(self) -> None:
@@ -1723,16 +1760,20 @@ class InputPartitionTests(unittest.TestCase):
         (`contributions`' sole producer, moved from `introduction.block-4b`)
         and `block-4b` gained its own fifth row depending on that same
         producer (`_verify_producer_chain_rows`'s own row-presence
-        requirement). Five normalized chain rows whose SUBJECT starts with
-        `introduction.` now form 4b -> mm-proposal, 4b -> 2 -> mm-proposal,
-        4a -> 2, 4a -> 4b, and 3 -> 2 -- still a DAG, still the regression
-        for the cycle the collapsed `block-4` produced."""
+        requirement). Re-measured again when `block-4a` stopped requiring
+        the document-rooted `formulation` and started requiring the
+        `contributions` that same producer emits: 4a owes that producer its
+        own row too, so there are now SIX normalized chain rows whose
+        SUBJECT starts with `introduction.` -- 4b -> mm-proposal,
+        4b -> 2 -> mm-proposal, 4a -> 2, 4a -> 4b, 4a -> mm-proposal and
+        3 -> 2 -- still a DAG, still the regression for the cycle the
+        collapsed `block-4` produced."""
         _header, body = paper_contract.parse((SECTIONS_DIR / "06-introduction.md").read_bytes())
         text = body.decode("utf-8")
         chain = text.split("### Internal chain", 1)[1].split("###", 1)[0]
 
         rows = [line for line in chain.splitlines() if line.startswith("| `introduction.")]
-        self.assertEqual(len(rows), 5, chain)
+        self.assertEqual(len(rows), 6, chain)
 
         def ends(row: str) -> tuple:
             subject, dependency = row.split("|")[1], row.split("|")[2]
@@ -1746,6 +1787,7 @@ class InputPartitionTests(unittest.TestCase):
                 ("introduction.block-3", "introduction.block-2"),
                 ("introduction.block-4a", "introduction.block-2"),
                 ("introduction.block-4a", "introduction.block-4b"),
+                ("introduction.block-4a", "materials-and-methods.mm-proposal"),
                 ("introduction.block-4b", "materials-and-methods.mm-proposal"),
             },
         )

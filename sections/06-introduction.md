@@ -99,10 +99,10 @@
       "id": "block-4a",
       "requires_facts": [
         {
-          "value": "formulation",
+          "value": "contributions",
           "source": {
             "file": "sections/06-introduction.md",
-            "quote": "the core idea comes from the mathematical formulation"
+            "quote": "the core idea comes from the methods section, where the proposal is defined and named"
           }
         }
       ],
@@ -122,19 +122,19 @@
             "file": "sections/06-introduction.md",
             "quote": "the announcement of the count comes from `introduction.block-4b`, in its partial form."
           }
+        },
+        {
+          "target": "materials-and-methods.mm-proposal",
+          "source": {
+            "file": "sections/06-introduction.md",
+            "quote": "the core idea comes from the methods section, where the proposal is defined and named"
+          }
         }
       ]
     },
     {
       "id": "block-4b",
       "requires_facts": [
-        {
-          "value": "formulation",
-          "source": {
-            "file": "sections/06-introduction.md",
-            "quote": "The mathematical formulation of the proposal"
-          }
-        },
         {
           "value": "results",
           "source": {
@@ -245,7 +245,6 @@ the design and completed from the measurement.
 | Input | Unblocks |
 |---|---|
 | The **dataset** — the condition, population, or process it contains | 1 |
-| The **mathematical formulation** of the proposal | 4b partial |
 | The **section skeleton** of the manuscript | 6 |
 | The **experimental design** — scenarios, comparisons, criteria, complementary analyses | 5 partial |
 | The **results** | 4b complete, 5 complete |
@@ -258,6 +257,7 @@ the design and completed from the measurement.
 | `introduction.block-3` — state of the art and gap, depending on the problem statement | `introduction.block-2` — the problem statement, general and specific, decomposed there |
 | `introduction.block-4a` — the presenting prose | `introduction.block-2` — the presentation and the purpose clause, mirroring its specific problems in the same order |
 | `introduction.block-4a` — the presenting prose | `introduction.block-4b` — the announcement of the count, stated before the list enumerates it |
+| `introduction.block-4a` — the presenting prose | `materials-and-methods.mm-proposal` — the section that defines and names the proposal, from which the core idea is drawn |
 | `introduction.block-4b` — the list of contributions, inherited rather than drafted | `materials-and-methods.mm-proposal` — the section that defines and names each contribution |
 
 ### Structural decisions
@@ -292,7 +292,7 @@ the design and completed from the measurement.
 
 - the **presentation and the purpose clause** come from block 2 — the clause mirrors
   its specific problems, in the same order;
-- the **core idea** comes from the mathematical formulation;
+- the **core idea** comes from the methods section, where the proposal is defined and named;
 - the **announcement of the count** comes from `introduction.block-4b`, in its partial form.
 
 ### What is writable before measuring

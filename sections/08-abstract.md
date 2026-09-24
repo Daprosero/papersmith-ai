@@ -67,10 +67,10 @@
       "id": "slot-3",
       "requires_facts": [
         {
-          "value": "formulation",
+          "value": "contributions",
           "source": {
             "file": "sections/08-abstract.md",
-            "quote": "The mathematical formulation"
+            "quote": "The mathematical formulation reaches the abstract already transposed, as the methods section's own enumerated contributions, never from the proposals document"
           }
         }
       ],
@@ -83,6 +83,13 @@
             "file": "sections/08-abstract.md",
             "quote": "The purpose clause mirrors the deficiencies of slot 2, in the same order."
           }
+        },
+        {
+          "target": "materials-and-methods.mm-proposal",
+          "source": {
+            "file": "sections/08-abstract.md",
+            "quote": "The mathematical formulation reaches the abstract already transposed, as the methods section's own enumerated contributions, never from the proposals document"
+          }
         }
       ]
     },
@@ -90,10 +97,10 @@
       "id": "slot-4",
       "requires_facts": [
         {
-          "value": "formulation",
+          "value": "contributions",
           "source": {
             "file": "sections/08-abstract.md",
-            "quote": "The mathematical formulation"
+            "quote": "The mathematical formulation reaches the abstract already transposed, as the methods section's own enumerated contributions, never from the proposals document"
           }
         },
         {
@@ -101,6 +108,15 @@
           "source": {
             "file": "sections/08-abstract.md",
             "quote": "The results"
+          }
+        }
+      ],
+      "after": [
+        {
+          "target": "materials-and-methods.mm-proposal",
+          "source": {
+            "file": "sections/08-abstract.md",
+            "quote": "The mathematical formulation reaches the abstract already transposed, as the methods section's own enumerated contributions, never from the proposals document"
           }
         }
       ],
@@ -207,7 +223,6 @@ introduction. Four of the seven are draftable before anything is measured.
 | Input | Unblocks |
 |---|---|
 | The **dataset** — the condition, population, or process it contains | `slot-1` |
-| The **mathematical formulation** | `slot-3`, `slot-4` |
 | The **experimental design** | `slot-5` |
 | The **results** | `slot-4` (the achieved-effect clause), `slot-6`, `slot-7` |
 
@@ -218,6 +233,10 @@ introduction. Four of the seven are draftable before anything is measured.
 | `abstract.slot-2` — Problem | `abstract.slot-4` — each component read backwards as the deficiency it resolves |
 | `abstract.slot-2` — Problem | `materials-and-methods.mm-proposal` — this block is derived from the contributions, read backwards |
 | `abstract.slot-3` — Proposal | `abstract.slot-2` — for the purpose clause |
+| `abstract.slot-3` — Proposal | `materials-and-methods.mm-proposal` — The mathematical formulation reaches the abstract already transposed, as the methods section's own enumerated contributions, never from the proposals document |
+| `abstract.slot-4` — Announcement and components | `materials-and-methods.mm-proposal` — The mathematical formulation reaches the abstract already transposed, as the methods section's own enumerated contributions, never from the proposals document |
+
+The mathematical formulation reaches the abstract already transposed, as the methods section's own enumerated contributions, never from the proposals document.
 
 The abstract is more blocked by measurement than the introduction: slots 6 and 7 need
 the results in full, slot 4 needs them for half of each item, and there is no

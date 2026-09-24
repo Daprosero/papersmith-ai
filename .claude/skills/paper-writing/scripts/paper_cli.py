@@ -2495,7 +2495,13 @@ def cmd_write(args: argparse.Namespace) -> dict:
         style_set = tuple(recorded)
 
     contract = paper_write.BlockContract(
-        block_id=args.block,
+        # The id `skeleton`/`open` actually wrote into `main.tex` is the
+        # QUALIFIED one (`<section>.<block>`, what `status` lists), and
+        # `block_id` is what reaches `paper_block.substitute` at the end of
+        # `write_block`. Passing `args.block` bare refused `BLOCK_ABSENT`
+        # against every block of a real manuscript -- the gate above already
+        # resolves `qualified_id`, so the substitution uses it too.
+        block_id=qualified_id,
         contract_prose=body.decode("utf-8"),
         contract_source=str(section_path),
         citations_regime=block["citations"],

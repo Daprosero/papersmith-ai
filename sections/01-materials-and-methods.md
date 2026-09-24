@@ -213,10 +213,20 @@ When the contribution is a system rather than a formulation, the combination is
 carried by the enumeration of stages and by the diagram. There the diagram is not a
 summary — it is the combination itself.
 
-**Immediately before the closing pointer, an ordered roster.** One LaTeX `\item` per
-contribution, naming it exactly as defined above, in the diagram's own order —
-nothing more per item. This is the structural mandate the section's own Components
-Check reads back against the diagram that follows it.
+**The contribution list must be readable as a list, in the diagram's own order.** Two
+structures satisfy that, and only one of them is ever needed:
+
+- **Each contribution is its own subsection.** The sectioning already is the ordered
+  list — its headings name the contributions, in order, and a reader meets them as
+  structure rather than as prose. Nothing further is required, and an `\item` roster
+  repeating those same headings a few lines later is redundancy, not a mandate.
+- **The contributions are run into the prose.** Then the list has no other form, and
+  one is written immediately before the closing pointer: one LaTeX `\item` per
+  contribution, naming it exactly as defined above, in the diagram's own order,
+  nothing more per item.
+
+Either way, what the section's own Components Check reads back against the diagram is
+that ordered list of names — whichever of the two carries it.
 
 **5. The closing: pointer and summary diagram.** Mandatory. The last prose sentence
 points to the figure by number and says what it summarizes; the figure follows
@@ -268,6 +278,20 @@ Four uses:
 - a normalized version of a declared quantity;
 - the disambiguation of two distinct quantities that would share a letter.
 
+## Extent counts prose, never mathematics
+
+Every word count in this contract measures the prose. A displayed equation, its
+label and its number are not prose and count toward no extent here.
+
+**A formulation whose mathematics is long is not thereby a formulation that must be
+cut.** The mathematics transfers as it stands; what the extent constrains is what is
+written around it — the notation that declares its symbols, the sentence that
+announces each expression, and the reading that follows it. When a subsection runs
+past its extent, the prose is what tightens, never the derivation.
+
+A section that drops steps of its own source's mathematics to fit a word budget has
+misread the budget. Nothing in this contract licenses that.
+
 ## Equations: display and number are two separate decisions
 
 **Display by readability.** An expression that cannot be read inline — multi-line,
@@ -283,6 +307,13 @@ expressions that no sentence in the paper ever mentions.
 
 **Referenced equations are named by number** across subsections and across sections.
 That cross-reference is what makes the notation chain verifiable.
+
+**A reference reaches back, it never reaches one line up.** The sentence following a
+displayed equation carries what follows from it — the consequence, the reading, the
+next step — in its own words. Opening that sentence by naming the equation the reader
+has just finished is redundancy, not a cross-reference. The same holds within a
+paragraph: one pointer per equation is enough, and a second one in the same paragraph
+says nothing the first did not.
 
 ## Ambiguity between the equation and the code
 
@@ -375,8 +406,9 @@ Nothing here waits for an experiment. But it does wait for the code to exist.
   not defined here.
 - Contributions in a different order than the introduction named them.
 - The summary diagram missing.
-- The ordered roster of contributions missing, or not placed immediately before the
-  closing pointer.
+- The contribution list readable in neither form — neither one subsection per
+  contribution nor an ordered roster immediately before the closing pointer — or a
+  roster written when the contributions are already subsections.
 - A dataset or a baseline appearing in the summary diagram.
 - A contribution defined under a different name than the property it delivers carries
   in the problem statement and the introduction.
@@ -391,6 +423,8 @@ Nothing here waits for an experiment. But it does wait for the code to exist.
 - An equation displayed and numbered that no sentence ever references, defines no
   contribution, and is not the general combination.
 - A mathematical subsection opening on an equation instead of on notation.
+- An equation referenced by number in the sentence immediately following its own
+  display, or referenced twice by number within one paragraph.
 - An ambiguous equation left with both readings open.
 - A batch size, learning rate, schedule, or hardware detail stated here.
 - A convergence argument moved to the experimental setup.

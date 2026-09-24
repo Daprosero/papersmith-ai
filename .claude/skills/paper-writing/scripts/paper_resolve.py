@@ -257,9 +257,21 @@ def _parse_openalex(raw: bytes) -> dict:
     # (`full-text-fetch`, "Reachability is measured, never assumed").
     open_access = obj.get("open_access") or {}
     full_text_url = open_access.get("oa_url") if open_access.get("is_oa") else None
+    # `authors`/`venue`: captured because a bibliography entry without them is
+    # unusable -- bibtex cannot even sort it ("to sort, need author or key"), and
+    # a reference list with no author names cannot be submitted anywhere. They are
+    # read off the response actually received, exactly like `full_text_url`, and
+    # default to an empty list / None when the record carries none.
+    authors = []
+    for authorship in obj.get("authorships") or []:
+        name = ((authorship.get("author") or {}).get("display_name") or "").strip()
+        if name:
+            authors.append(name)
+    source = ((obj.get("primary_location") or {}).get("source") or {})
+    venue = source.get("display_name")
     return {
         "title": obj.get("title"), "doi": obj.get("doi"), "year": obj.get("publication_year"),
-        "full_text_url": full_text_url,
+        "full_text_url": full_text_url, "authors": authors, "venue": venue,
     }
 
 
@@ -275,9 +287,16 @@ def _parse_crossref(raw: bytes) -> dict:
     # be exactly the assumption this module's whole design refuses to make;
     # a paper resolved through Crossref is always reported unobtainable by
     # this connector, never a coin flip on a link's own unverified label.
+    authors = []
+    for author in message.get("author") or []:
+        name = " ".join(part for part in (author.get("given"), author.get("family")) if part).strip()
+        if name:
+            authors.append(name)
+    containers = message.get("container-title") or []
     return {
         "title": titles[0] if titles else None, "doi": message.get("DOI"), "year": None,
-        "full_text_url": None,
+        "full_text_url": None, "authors": authors,
+        "venue": containers[0] if containers else None,
     }
 
 
@@ -299,7 +318,13 @@ def _parse_arxiv(raw: bytes) -> dict:
         if link.get("type") == "application/pdf":
             full_text_url = link.get("href")
             break
-    return {"title": title, "doi": None, "year": None, "full_text_url": full_text_url}
+    authors = []
+    for author in entry.findall("atom:author", namespace):
+        name_el = author.find("atom:name", namespace)
+        if name_el is not None and name_el.text:
+            authors.append(name_el.text.strip())
+    return {"title": title, "doi": None, "year": None, "full_text_url": full_text_url,
+            "authors": authors, "venue": "arXiv"}
 
 
 _ENDPOINT_BUILDERS = {
