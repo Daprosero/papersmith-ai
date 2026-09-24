@@ -312,11 +312,67 @@ def cmd_capacity(client: "KernelsApiClient") -> dict:
     this call does not report on, and `adapters/kaggle.py`'s own
     `list_active()` never claims otherwise either.
 
-    Prints one flat `{"kernels": [{"ref": ..., "status": ...}, ...]}`
-    object — `status` is the bare `KernelWorkerStatus` member name, the
-    exact same shape `cmd_poll` already prints, so `adapters/kaggle.py`
-    translates both through the one table it already owns rather than a
-    second one invented for this call.
+    MEASURED, not assumed, against the live service on 2026-09-24, across
+    all 9 accounts configured on this repository at the time: `list_kernels`
+    itself succeeded on every single one of the 9, and two distinct per-ref
+    failure shapes were what left 7 of the 9 looking unreachable before this
+    function grew the handling below.
+
+    - HTTP 404 from `get_kernel_session_status` — 17 refs across 6 accounts.
+      A 404 on that endpoint means no session exists for that kernel; that
+      reading rests on the ordinary meaning of a 404 on a session-status
+      resource, NOT on ever having observed a genuinely `queued` or
+      `running` kernel answer differently — no account had one at probe
+      time, every resolved status was `COMPLETE`, `ERROR` or
+      `CANCEL_ACKNOWLEDGED`. Say that plainly rather than overstate it.
+    - `ValueError` from the two-target unpack below (`ref.split("/", 1)`) —
+      one of those accounts enumerated an entry with `ref == ''`
+      and `title == '[Private Notebook]'`; `''.split("/", 1)` yields
+      `['']`, which cannot fill `user_name, kernel_slug` and raised before
+      any request was attempted.
+
+    A hypothesis TESTED AND REFUTED against that same measurement: the
+    per-kernel `current_version_number` field does NOT discriminate a
+    resolvable ref from an unresolvable one — every enumerated kernel
+    reported `0`, resolved and unresolved alike. Do not gate anything on
+    it, and do not cite it as evidence either way.
+
+    Before this fix, NEITHER shape was caught: a ref that could not even
+    be split raised before a request was sent, and a ref whose status
+    lookup answered non-200 raised from inside `client.get_kernel_session_
+    status`, and either one propagated straight out of this function, past
+    `main()`'s own generic `except Exception`, and turned a SUCCESSFUL
+    enumeration into a driver-level refusal — which `adapters/kaggle.py`'s
+    `_parse_capacity_result` then stamped `"(list_kernels failed
+    structurally)"`, blaming the enumeration for a downstream per-ref
+    failure it never had.
+
+    The fix: a ref is guarded BEFORE it is used at all — one containing no
+    `/` cannot address a status request and is recorded unresolved without
+    an attempt — and the status call itself is wrapped so ANY exception it
+    raises makes that ONE ref unresolved without interrupting the refs
+    around it. Reports `{"kernels": [{"ref": ..., "status": ...}, ...],
+    "unresolved": [{"ref": ..., "reason": ..., "detail": ...}, ...]}`.
+    `kernels` keeps exactly its pre-existing shape for every ref that
+    resolved — `status` is still the bare `KernelWorkerStatus` member name,
+    the same shape `cmd_poll` already prints, so `adapters/kaggle.py`
+    translates both through the one table it already owns. `reason` is one
+    of two machine-stable values: `"unaddressable_ref"` (the ref never
+    reached a request) or `"status_lookup_failed"` (the request was made
+    and failed); `detail` carries the HTTP status code when the exception
+    exposes one, so a reader does not have to parse the message text to
+    tell a 404 from a timeout. An unresolved ref is reported, never
+    dropped and never fabricated a status for — silently dropping it would
+    make `list_active()` undercount a kernel that might still be running
+    outside this function's view, and fabricating one would invent
+    evidence this call never obtained.
+
+    This function itself still raises, and rightly, when `list_kernels`
+    fails — an enumeration this driver could not perform at all is a
+    genuinely different failure than a per-ref lookup this driver
+    performed and lost, and `main()`'s existing exit-code handling for
+    THAT case (401/403 → `EXIT_UNAUTHORIZED`, anything else →
+    `EXIT_REFUSED`) is unchanged by this fix.
     """
     request = ApiListKernelsRequest()
     request.group = KernelsListViewType.PROFILE
@@ -324,13 +380,35 @@ def cmd_capacity(client: "KernelsApiClient") -> dict:
     request.page = 1
     response = client.list_kernels(request)
 
-    kernels = []
+    kernels: list[dict] = []
+    unresolved: list[dict] = []
     for kernel in response.kernels or []:
-        status_request = ApiGetKernelSessionStatusRequest()
-        status_request.user_name, status_request.kernel_slug = kernel.ref.split("/", 1)
-        status_response = client.get_kernel_session_status(status_request)
-        kernels.append({"ref": kernel.ref, "status": status_response.status.name})
-    return {"kernels": kernels}
+        ref = kernel.ref or ""
+        if "/" not in ref:
+            unresolved.append(
+                {
+                    "ref": ref,
+                    "reason": "unaddressable_ref",
+                    "detail": f"ref {ref!r} carries no '/' separator to "
+                    "split into user_name/kernel_slug",
+                }
+            )
+            continue
+
+        try:
+            status_request = ApiGetKernelSessionStatusRequest()
+            status_request.user_name, status_request.kernel_slug = ref.split("/", 1)
+            status_response = client.get_kernel_session_status(status_request)
+        except Exception as exc:  # any per-ref failure stays per-ref
+            http_response = getattr(exc, "response", None)
+            status_code = getattr(http_response, "status_code", None)
+            detail = f"HTTP {status_code}: {exc}" if status_code is not None else str(exc)
+            unresolved.append({"ref": ref, "reason": "status_lookup_failed", "detail": detail})
+            continue
+
+        kernels.append({"ref": ref, "status": status_response.status.name})
+
+    return {"kernels": kernels, "unresolved": unresolved}
 
 
 def cmd_fetch(client: "KernelsApiClient", submission_id: str, into: Path) -> dict:

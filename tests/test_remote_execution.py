@@ -6260,7 +6260,28 @@ class _SequentialResponseTransport(requests.adapters.BaseAdapter):
     single fixed payload cannot distinguish the first call from the rest.
     Reached-count discipline is unchanged: every call is recorded before
     this class even looks at which response it owes.
+
+    A position in the fixed list is ordinarily a `dict` -- the JSON body of
+    a 200 response, exactly as before this class grew the ability to inject
+    a failure. Passing an `Error` instance at a chosen position instead
+    answers that ONE call with a non-200 status and its own JSON body,
+    which is what proves `cmd_capacity`'s per-ref handling: a single 404 on
+    `get_kernel_session_status`, measured 2026-09-24 against the live
+    service on 17 refs across 6 real accounts, at a specific position in
+    the sequence with the calls before and after it still answering 200,
+    is the exact shape this class could not previously produce at all.
     """
+
+    class Error:
+        """One position's answer: a non-200 response standing in for a
+        real service refusal (a 404 on a session-status lookup, say),
+        without perturbing the plain 200 `dict` shape every existing
+        caller of this class already passes at every other position.
+        """
+
+        def __init__(self, status_code: int, body: dict | None = None) -> None:
+            self.status_code = status_code
+            self.body = body if body is not None else {"message": f"HTTP {status_code}"}
 
     def __init__(self, responses: list[dict]) -> None:
         super().__init__()
@@ -6271,9 +6292,13 @@ class _SequentialResponseTransport(requests.adapters.BaseAdapter):
         self.calls.append(request)
         payload = self._responses[len(self.calls) - 1]
         response = requests.Response()
-        response.status_code = 200
         response.headers["Content-Type"] = "application/json"
-        response._content = json.dumps(payload).encode("utf-8")
+        if isinstance(payload, _SequentialResponseTransport.Error):
+            response.status_code = payload.status_code
+            response._content = json.dumps(payload.body).encode("utf-8")
+        else:
+            response.status_code = 200
+            response._content = json.dumps(payload).encode("utf-8")
         response.request = request
         return response
 
@@ -7597,16 +7622,31 @@ class MultiWorkerFakeAdapter(ADAPTER.Adapter):
 
 
 def _write_fake_capacity_driver(
-    directory: Path, *, kernels: list[dict] | None = None, exit_code: int = 0
+    directory: Path,
+    *,
+    kernels: list[dict] | None = None,
+    unresolved: list[dict] | None = None,
+    exit_code: int = 0,
 ) -> Path:
     """A minimal stand-in for `kaggle_driver.py`'s own `capacity` op alone
     -- every other op this fixture is never asked to answer. Dispatches
     on nothing (there is exactly one op this fixture answers), matching
     `KaggleAdapter.list_active()`'s own single `capacity` argv.
+
+    `unresolved` defaults to `[]`, the same as `kernels` -- an existing
+    caller that never passes it keeps getting the pre-existing flat
+    `{"ok": True, "kernels": [...]}` shape it always got, with an empty
+    `unresolved` list alongside it that `list_active()`'s fail-closed guard
+    reads as "nothing was left unresolved", never as "nothing was even
+    enumerated".
     """
     directory.mkdir(parents=True, exist_ok=True)
     script = directory / "fake_kaggle_driver.py"
-    payload = {"ok": True, "kernels": kernels if kernels is not None else []}
+    payload = {
+        "ok": True,
+        "kernels": kernels if kernels is not None else [],
+        "unresolved": unresolved if unresolved is not None else [],
+    }
     lines = [
         "import json, sys",
         f"EXIT_CODE = {exit_code!r}",
@@ -8000,6 +8040,201 @@ class WorkerSelectionAndMeteringTests(unittest.TestCase):
                 {"ref": "acct-1/b", "status": "COMPLETE"},
             ],
         )
+
+    def test_driver_capacity_reports_one_404_unresolved_others_still_resolve(self) -> None:
+        """MEASURED, not assumed, against the live service on 2026-09-24:
+        `get_kernel_session_status` answered HTTP 404 for 17 refs across 6
+        of the 9 configured accounts, `list_kernels` itself having
+        succeeded on every single one of the 9. Before this test's own
+        fix, `cmd_capacity`'s per-ref loop had no exception handling at
+        all, so ONE 404 anywhere in the loop propagated straight out of
+        `cmd_capacity`, past `main()`'s own generic `except Exception`,
+        and turned a successful enumeration into a driver-level refusal --
+        which `adapters/kaggle.py`'s `_parse_capacity_result` then stamped
+        `"(list_kernels failed structurally)"`, misattributing a resolved
+        enumeration and one failed per-ref lookup as the enumeration itself
+        having failed.
+
+        Three refs, the middle one 404ing: the other two must still
+        resolve, `cmd_capacity` must return rather than raise, and the
+        404'd ref must be named in `unresolved` with a `reason` distinct
+        from an unaddressable ref (see the sibling test below) and a
+        `detail` carrying the HTTP status this driver actually observed.
+        """
+        driver = _load_kaggle_driver_module()
+        responses = [
+            {
+                "kernels": [
+                    {"ref": "acct-1/a", "slug": "a"},
+                    {"ref": "acct-1/b", "slug": "b"},
+                    {"ref": "acct-1/c", "slug": "c"},
+                ]
+            },
+            {"status": "QUEUED", "failureMessage": None},
+            _SequentialResponseTransport.Error(404, {"message": "session not found"}),
+            {"status": "COMPLETE", "failureMessage": None},
+        ]
+        client, recorder = _kaggle_http_client_with_sequential_recorder(FIXTURE_TOKEN, responses)
+        kernels_client = driver.KernelsApiClient(client)
+
+        result = driver.cmd_capacity(kernels_client)  # must not raise
+
+        self.assertEqual(len(recorder.calls), 4)
+        self.assertEqual(
+            result["kernels"],
+            [
+                {"ref": "acct-1/a", "status": "QUEUED"},
+                {"ref": "acct-1/c", "status": "COMPLETE"},
+            ],
+        )
+        self.assertEqual(len(result["unresolved"]), 1)
+        unresolved = result["unresolved"][0]
+        self.assertEqual(unresolved["ref"], "acct-1/b")
+        self.assertEqual(unresolved["reason"], "status_lookup_failed")
+        self.assertIn("404", unresolved["detail"])
+
+    def test_driver_capacity_reports_an_unaddressable_ref_without_a_request(self) -> None:
+        """MEASURED, not assumed, against the live service on 2026-09-24:
+        `andresalvarez`'s enumeration answered with one entry carrying
+        `ref == ''` and `title == '[Private Notebook]'`. Before this
+        test's own fix, `''.split("/", 1)` on that ref produced `['']`,
+        and the two-target unpack (`user_name, kernel_slug = ...`) raised
+        `ValueError: not enough values to unpack (expected 2, got 1)`
+        BEFORE any request was attempted for that ref -- and that
+        ValueError, exactly like the 404 case above, propagated out of
+        `cmd_capacity` and was reported to the operator as the service
+        being unreachable, when the enumeration had already succeeded.
+
+        The fix guards the ref BEFORE using it, so an unaddressable ref
+        never reaches `get_kernel_session_status` at all: only ONE
+        request total should be observed here (the `list_kernels` call
+        itself), never a second one for the empty ref.
+        """
+        driver = _load_kaggle_driver_module()
+        responses = [
+            {
+                "kernels": [
+                    {"ref": "", "title": "[Private Notebook]"},
+                    {"ref": "acct-1/b", "slug": "b"},
+                ]
+            },
+            {"status": "COMPLETE", "failureMessage": None},
+        ]
+        client, recorder = _kaggle_http_client_with_sequential_recorder(FIXTURE_TOKEN, responses)
+        kernels_client = driver.KernelsApiClient(client)
+
+        result = driver.cmd_capacity(kernels_client)  # must not raise
+
+        self.assertEqual(
+            len(recorder.calls), 2,
+            "a status request was attempted for a ref this driver could never "
+            "have addressed",
+        )
+        self.assertEqual(result["kernels"], [{"ref": "acct-1/b", "status": "COMPLETE"}])
+        self.assertEqual(len(result["unresolved"]), 1)
+        unresolved = result["unresolved"][0]
+        self.assertEqual(unresolved["ref"], "")
+        self.assertEqual(unresolved["reason"], "unaddressable_ref")
+
+    def test_parse_capacity_result_does_not_misattribute_partial_resolution(self) -> None:
+        """The adapter-level half of the same defect the two driver-level
+        tests above cover: `_parse_capacity_result` must only stamp
+        `"(list_kernels failed structurally)"` when the driver's own exit
+        genuinely says the enumeration failed (non-zero exit, or `ok` not
+        `True`) -- never for a successful enumeration that merely carries
+        one or more unresolved refs alongside its resolved ones.
+
+        This reproduces the exact wrapping `kaggle_driver.py`'s own
+        `main()` applies around `cmd_capacity`'s return value or raised
+        exception -- without spawning a real subprocess -- so it exercises
+        the REAL defect BEFORE this task's fix (the 404 propagates out of
+        `cmd_capacity`, `main()`'s generic `except Exception` turns it into
+        `{"ok": False, "error": ...}` at a non-zero exit, and
+        `_parse_capacity_result` then raises naming "structurally") and the
+        REAL fix AFTER it (the 404 is caught inside `cmd_capacity` itself,
+        `main()` sees a plain successful return, and `_parse_capacity_result`
+        must pass the `unresolved` list through untouched).
+        """
+        driver = _load_kaggle_driver_module()
+        responses = [
+            {
+                "kernels": [
+                    {"ref": "acct-1/a", "slug": "a"},
+                    {"ref": "acct-1/b", "slug": "b"},
+                ]
+            },
+            {"status": "QUEUED", "failureMessage": None},
+            _SequentialResponseTransport.Error(404, {"message": "session not found"}),
+        ]
+        client, recorder = _kaggle_http_client_with_sequential_recorder(FIXTURE_TOKEN, responses)
+        kernels_client = driver.KernelsApiClient(client)
+
+        try:
+            result = driver.cmd_capacity(kernels_client)
+            payload = {"ok": True, **result}
+            returncode = 0
+        except driver.requests.exceptions.HTTPError as exc:
+            status = exc.response.status_code if exc.response is not None else None
+            payload = {"ok": False, "error": str(exc)}
+            returncode = driver.EXIT_UNAUTHORIZED if status in (401, 403) else driver.EXIT_REFUSED
+        except Exception as exc:  # pragma: no cover - only the unfixed source takes this path
+            payload = {"ok": False, "error": str(exc)}
+            returncode = driver.EXIT_REFUSED
+
+        completed = subprocess.CompletedProcess(
+            args=["fake"], returncode=returncode, stdout=json.dumps(payload), stderr="",
+        )
+
+        parsed = KAGGLE.KaggleAdapter._parse_capacity_result(completed, worker="acct-1")
+
+        self.assertNotIn("structurally", json.dumps(parsed))
+        self.assertEqual([k["ref"] for k in parsed["kernels"]], ["acct-1/a"])
+        self.assertEqual(parsed["unresolved"][0]["ref"], "acct-1/b")
+        self.assertEqual(parsed["unresolved"][0]["reason"], "status_lookup_failed")
+
+    def test_list_active_raises_when_every_enumerated_ref_is_unresolved(self) -> None:
+        """The fail-closed guard: `list_kernels` enumerated at least one
+        ref, and NOT ONE of them resolved (every one 404'd, or was
+        unaddressable, or both) -- that is no usable state evidence at
+        all, and treating it as "zero active kernels" would look exactly
+        like a legitimately idle account. `KaggleAdapterError` here is
+        what lets `packer.plan()`'s existing degrade-to-ledger path answer
+        instead, the same way a structurally failed `list_kernels` already
+        does.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            driver = _write_fake_capacity_driver(
+                tmp_path / "driver",
+                kernels=[],
+                unresolved=[
+                    {"ref": "acct-1/a", "reason": "status_lookup_failed", "detail": "HTTP 404"},
+                ],
+            )
+            token_path = _write_fake_token(tmp_path / "creds")
+            handle = KAGGLE.CredentialHandle(worker_id="acct-1", token_path=token_path)
+            adapter = KAGGLE.KaggleAdapter(credentials={"acct-1": handle}, driver_script=driver)
+
+            with self.assertRaises(KAGGLE.KaggleAdapterError) as caught:
+                adapter.list_active("acct-1")
+            message = str(caught.exception)
+            self.assertIn("acct-1", message)
+
+    def test_list_active_does_not_raise_on_a_legitimately_idle_enumeration(self) -> None:
+        """The other half of the same guard's boundary: zero refs
+        enumerated at all (nothing in `kernels`, nothing in `unresolved`)
+        is what an actually idle account looks like, and must NOT trip
+        the fail-closed guard above -- a guard that fired here would make
+        every idle account indistinguishable from a broken one.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            driver = _write_fake_capacity_driver(tmp_path / "driver", kernels=[], unresolved=[])
+            token_path = _write_fake_token(tmp_path / "creds")
+            handle = KAGGLE.CredentialHandle(worker_id="acct-1", token_path=token_path)
+            adapter = KAGGLE.KaggleAdapter(credentials={"acct-1": handle}, driver_script=driver)
+
+            self.assertEqual(adapter.list_active("acct-1"), [])
 
 
 def _installed_kaggle_client_source() -> str | None:

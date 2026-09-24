@@ -1108,14 +1108,48 @@ class KaggleAdapter(ADAPTER.Adapter):
         (a structurally failed `list_kernels`, a timeout, an unreachable
         service) stays a generic `KaggleAdapterError` naming the remedy:
         retry, or let `packer.plan()`'s own ledger fallback answer instead.
+
+        Only a ref this call could actually confirm `queued` or `running`
+        for counts as active. `kaggle_driver.py::cmd_capacity` now reports
+        `unresolved` refs alongside `kernels` — a ref the service answered
+        404 for has no session at all, and a ref this driver could never
+        even address (see `unaddressable_ref` there) was never asked
+        about — neither shape is evidence of an in-flight job, so neither
+        is counted here.
+
+        FAIL-CLOSED GUARD: if `list_kernels` enumerated at least one ref
+        and this call could not confirm the state of ANY of them (every
+        one unresolved), that is not the same fact as an idle account with
+        nothing running — it is a live read this call could not obtain at
+        all, and reading it as "zero active" would silently hide exactly
+        the misattribution this fix exists to close. Raising
+        `KaggleAdapterError` here lets it degrade through `packer.plan()`
+        exactly the way a structurally failed `list_kernels` already does.
+        An enumeration answering zero refs entirely (nothing in `kernels`,
+        nothing in `unresolved`) is a genuinely idle account and must NOT
+        raise — the two cases are told apart by whether anything was
+        enumerated at all, never by whether this call likes the result.
         """
         handle = self._credential_for(worker)
         argv = [sys.executable, str(self._driver_script), "capacity"]
         result = self._run(argv, env=self._env_for(handle))
         payload = self._parse_capacity_result(result, worker=worker)
 
+        kernels = payload.get("kernels", [])
+        unresolved = payload.get("unresolved", [])
+        if not kernels and unresolved:
+            raise KaggleAdapterError(
+                f"capacity check for {worker!r} enumerated {len(unresolved)} "
+                "kernel ref(s) but resolved the state of none of them "
+                "(list_kernels succeeded; every per-ref status lookup either "
+                "failed or addressed an unaddressable ref) — this is not "
+                "evidence of an idle account, and packer.plan()'s own ledger "
+                "fold should answer instead of a live count built from zero "
+                "confirmed refs"
+            )
+
         active: list[str] = []
-        for kernel in payload.get("kernels", []):
+        for kernel in kernels:
             ref = kernel.get("ref")
             if not ref:
                 continue
@@ -1138,6 +1172,20 @@ class KaggleAdapter(ADAPTER.Adapter):
         refusal unchanged — widening THEIR contract the same way is no
         part of this task, and would change already-passing behavior no
         design decision here asks for.
+
+        The `"(list_kernels failed structurally)"` text below describes
+        exactly one fact: the DRIVER's own exit says the enumeration
+        itself did not complete (a non-zero exit, or a printed `ok` that
+        is not `True`). Since `kaggle_driver.py::cmd_capacity` now catches
+        every per-ref failure internally and still exits 0 with `ok: True`
+        whenever `list_kernels` itself succeeded, a payload that reaches
+        this point with `result.returncode == 0` and `payload["ok"] is
+        True` is, by construction, a successful enumeration — even when
+        its own `unresolved` list is non-empty. This function never
+        inspects `unresolved` and never raises over it; that list is
+        `list_active()`'s concern (see its own docstring for the
+        fail-closed guard that DOES read it), not a reason to misattribute
+        a downstream per-ref gap to the enumeration that produced it.
         """
         try:
             payload = json.loads(result.stdout)

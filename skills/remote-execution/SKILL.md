@@ -9,10 +9,15 @@ A submission to a remote worker is a fact once it happens, and this skill's
 job is to make sure that fact survives being written, to derive current
 state from the record rather than store it separately, and to decide how
 much work a worker is asked to take on at once without either side of that
-decision asserting the other's fact. Nothing here yet talks to a real
-service — that is a concrete adapter, still to come — but the CLI a user
-would invoke directly (`submit`, `status`, `poll`, `fetch`, `reconcile`) is
-in place today, exercised against a `FakeAdapter` only.
+decision asserting the other's fact. One concrete adapter ships today —
+`adapters/kaggle.py`, the only file here allowed to name a service, shelling
+out to `adapters/kaggle_driver.py`, the only one allowed to import the
+client — alongside the CLI a user would invoke directly (`submit`, `status`,
+`poll`, `fetch`, `reconcile`). This skill's own suite reaches neither: it
+exercises both the adapter and a `FakeAdapter` against fakes, never the
+network, so a defect that only a live account can produce is invisible to a
+green run here and has to be found by using it. One was, on 2026-09-24 —
+see the capacity op's bullet under "What this skill cannot see".
 
 ## The objective flow
 
@@ -63,21 +68,62 @@ run at once -- and `list_active`. Neither is a time budget. `distribute` plans
 in concurrency slots, so its answer is "how many can run simultaneously",
 never "how many hours remain this week".
 
-**A refusal inside the capacity op still misattributes the fault, and only
-the `reconcile` half of that is closed.** `reconcile` makes exactly one remote
-call, `adapter.list_active(worker)`, which reaches a zero-argument capacity op
-that issues one status request per ref the service enumerates -- with no
-per-ref exception handling. `reconcile` itself no longer dies on that: it
-degrades the way `packer.plan()` already did and reports `remote.status:
-"unavailable"` (see the `reconcile` bullet under Current Scope). What is still
-unwritten is the per-ref handling INSIDE the capacity op, in
-`adapters/kaggle.py`. One refusal anywhere in that loop is reported as the
-enumeration having failed structurally, when the enumeration succeeded and a
-downstream per-ref call did not, and it recommends a fallback a `reconcile`
-caller does not have -- so the message a degraded `reconcile` now passes
-through is still describing the wrong side of the problem. Reproducing that
-costs a service call, so the correct per-ref handling is named here and not
-yet written.
+**The capacity op's per-ref handling is written, and it lives in
+`kaggle_driver.py`, not `adapters/kaggle.py`.** `reconcile` makes exactly one
+remote call, `adapter.list_active(worker)`, which reaches a zero-argument
+capacity op (`kaggle_driver.py::cmd_capacity`) that enumerates this worker's
+kernels with one `list_kernels` call and then issues one status request per
+ref. `adapters/kaggle.py` never talks to the service directly; it only
+consumes that op's JSON result, so the loop this bullet is about was always
+INSIDE the driver, never inside the adapter.
+
+MEASURED, not assumed, against the live service on 2026-09-24, across all 9
+accounts configured on this repository at the time: `list_kernels` itself
+succeeded on every single one of the 9. Two distinct per-ref failure shapes
+explained 7 of the 9 looking unreachable before this was fixed:
+
+- HTTP 404 from `get_kernel_session_status` — 17 refs across 6 accounts
+  (per-account spreads ranging from 1-of-13 to 9-of-20; the accounts
+  themselves are deliberately not named here — this file ships in the kit
+  to other people's workspaces, and `AccountVocabularyLeakTests` refuses
+  any skill source that names a stored account of the machine it is read
+  on. The counts are the evidence; the identities are not). A 404 on that
+  endpoint
+  means no session exists for that kernel — a reading that rests on the
+  ordinary meaning of a 404 on a session-status resource, NOT on ever
+  having observed a genuinely `queued` or `running` kernel answer
+  differently: no account had one in flight at probe time, every resolved
+  status was `COMPLETE`, `ERROR` or `CANCEL_ACKNOWLEDGED`. Say that
+  plainly; do not overstate it into a claim this measurement never made.
+- `ValueError` from `ref.split("/", 1)` — one of the nine accounts enumerated
+  an entry with `ref == ''` and `title == '[Private Notebook]'`;
+  `''.split("/", 1)` yields `['']`, which cannot fill the two-target
+  unpack, and raised before any request was attempted. The 2 healthy
+  accounts simply had zero unresolved refs.
+
+A hypothesis TESTED AND REFUTED against that same measurement: the
+per-kernel `current_version_number` field does NOT discriminate a
+resolvable ref from an unresolvable one — every enumerated kernel reported
+`0`, resolved and unresolved alike. Do not gate anything on it and do not
+retry citing it as evidence either way.
+
+Before the fix, NEITHER shape was caught: `cmd_capacity` had no per-ref
+exception handling at all, so either one propagated straight out of it and
+turned a successful enumeration into a driver-level refusal, which
+`adapters/kaggle.py`'s `_parse_capacity_result` then stamped `"(list_kernels
+failed structurally)"` — the enumeration had succeeded, one downstream
+per-ref call had not, and the operator was told the service was
+unreachable. `cmd_capacity` now guards a ref before using it (one with no
+`/` is recorded unresolved without an attempt) and wraps the status call
+itself so any exception it raises makes that one ref unresolved without
+interrupting the refs around it, returning `{"kernels": [...], "unresolved":
+[{"ref", "reason", "detail"}, ...]}` and exiting 0 whenever `list_kernels`
+itself succeeded. `adapters/kaggle.py::list_active()` counts only a ref
+this confirmed `queued`/`running` as active — an unresolved ref is neither
+counted active nor silently dropped from the record — and raises when
+`list_kernels` enumerated at least one ref and none of them resolved (no
+usable state evidence at all), while an enumeration answering zero refs
+stays the legitimately idle account it is.
 
 **Any plan that reasons in weekly hours takes that number from the operator.**
 Ask; do not assume, and never read one out of this repository.
