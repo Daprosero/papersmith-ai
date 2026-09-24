@@ -46,16 +46,18 @@ class InitTests(unittest.TestCase):
             "skills/proposal-deliberation/cli.mjs",
             "skills/kaggle-accounts/store/.gitignore",
             "scripts/setup-harnesses.sh",
+            "sections/01-materials-and-methods.md",
             "guidance/paper-guide",
             "guidance/reference-papers",
-            "proposals/drafts",
-            "proposals/deliberated",
-            "proposals/receipts",
+            "guidance/data-paper",
+            "proposals",
+            "paper",
+            "experiments",
             "implementations",
             "kaggle-inbox",
-            "journal/README.md",
-            "DECISIONS.md",
             "papersmith.yaml",
+            "package.json",
+            ".mcp.json",
             "README.md",
             "CLAUDE.md",
             "OPENCODE.md",
@@ -65,6 +67,15 @@ class InitTests(unittest.TestCase):
             ".gitignore",
         ):
             assert (workspace / relpath).exists(), relpath
+
+        # The old nested proposals/ shape and the journal/DECISIONS.md pair are
+        # both gone: this repository's own layout is flat and keeps no journal.
+        assert not (workspace / "proposals/drafts").exists()
+        assert not (workspace / "proposals/deliberated").exists()
+        assert not (workspace / "proposals/receipts").exists()
+        assert not (workspace / "journal").exists()
+        assert not (workspace / "DECISIONS.md").exists()
+        assert (workspace / "proposals/.gitkeep").exists()
 
         # Credentials are never copied from the kit store.
         assert not (workspace / "skills/kaggle-accounts/store/accounts.json").exists()

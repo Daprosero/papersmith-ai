@@ -108,8 +108,8 @@ class GeneratedWorkspaceTests(unittest.TestCase):
             ".pi/gentle-ai/persona.json",
             ".antigravity/rules.md",
             "README.md",
-            "DECISIONS.md",
-            "journal/README.md",
+            "package.json",
+            ".mcp.json",
             "skills/paper-writing/SKILL.md",
             "skills/proposal-deliberation/cli.mjs",
             "scripts/setup_env.py",
@@ -141,7 +141,7 @@ class UpgradeCommandTests(unittest.TestCase):
         skill = workspace / "skills/paper-ingestion/SKILL.md"
         original = skill.read_bytes()
         skill.write_bytes(b"tampered by the test\n")
-        research = workspace / "journal/notes.md"
+        research = workspace / "guidance/paper-guide/notes.md"
         research.write_text("research stays\n", encoding="utf-8")
         rc, out, _ = capture(["upgrade", str(workspace)])
         self.assertEqual(rc, SUCCESS)
@@ -823,7 +823,7 @@ class DamagedWorkspaceTotalityTests(unittest.TestCase):
         if not hasattr(os, "mkfifo"):
             self.skipTest("mkfifo unavailable")
         workspace = make_workspace(new_tmp(self))
-        managed = workspace / "package.json"
+        managed = workspace / "requirements.txt"
         self.assertTrue(managed.is_file(), "fixture needs a kit-managed path")
         managed.unlink()
         os.mkfifo(managed)
@@ -834,7 +834,7 @@ class DamagedWorkspaceTotalityTests(unittest.TestCase):
 
         rc, out, _ = capture(["status", str(workspace), "--json"])
         self.assertEqual(rc, SUCCESS)
-        self.assertIn("package.json", json.loads(out)["framework"]["drifted_files"])
+        self.assertIn("requirements.txt", json.loads(out)["framework"]["drifted_files"])
 
     def test_recording_a_run_never_blocks_on_a_fifo_ledger(self) -> None:
         """Bookkeeping must not fail a run whose own outcome is already decided."""
@@ -872,25 +872,36 @@ class DamagedWorkspaceTotalityTests(unittest.TestCase):
         workspace does not have turns a self-clearing report into a permanent
         one: ``upgrade`` skips preserved paths on every run, so no command could
         ever clear it.
+
+        Nothing in the real ``KIT_ENTRIES`` overlaps a preserve pattern any
+        more (``guidance/paper-guide`` and ``package.json`` were the last two
+        members that did, and both were removed from ``KIT_ENTRIES`` on
+        purpose — see ``manifest.KIT_ENTRIES``'s own docstring). The invariant
+        this test guards is still real defensive code in
+        :func:`manifest.synchronized_paths`, so a single synthetic member is
+        patched in here to recreate the overlap without depending on the kit
+        happening to ship one.
         """
         workspace = make_workspace(new_tmp(self))
         kit_root = resolve_and_validate()
-        preserved = sorted(relpath for relpath in manifest_module.kit_files(kit_root)
-                           if manifest_module.is_preserved(relpath))
-        self.assertTrue(preserved, "the kit must ship a preserved path for this fixture")
-        victim = preserved[0]
-        (workspace / victim).unlink()
+        with mock.patch.object(manifest_module, "KIT_ENTRIES",
+                               manifest_module.KIT_ENTRIES + ("README.md",)):
+            preserved = sorted(relpath for relpath in manifest_module.kit_files(kit_root)
+                               if manifest_module.is_preserved(relpath))
+            self.assertTrue(preserved, "the patched kit entry must ship a preserved path")
+            victim = preserved[0]
+            (workspace / victim).unlink()
 
-        with self._recorded_warnings():
-            upgrade_module.upgrade(workspace)
+            with self._recorded_warnings():
+                upgrade_module.upgrade(workspace)
 
-        manifest_path = workspace / ".papersmith" / "manifest.json"
-        stored = json.loads(manifest_path.read_text(encoding="utf-8"))["files"]
-        self.assertNotEqual(stored.get(victim), "unsynchronized",
-                            "a user-owned path is not the framework's to demand")
-        rc, out, _ = capture(["status", str(workspace), "--json"])
-        self.assertEqual(rc, SUCCESS)
-        self.assertNotIn(victim, json.loads(out)["framework"]["drifted_files"])
+            manifest_path = workspace / ".papersmith" / "manifest.json"
+            stored = json.loads(manifest_path.read_text(encoding="utf-8"))["files"]
+            self.assertNotEqual(stored.get(victim), "unsynchronized",
+                                "a user-owned path is not the framework's to demand")
+            rc, out, _ = capture(["status", str(workspace), "--json"])
+            self.assertEqual(rc, SUCCESS)
+            self.assertNotIn(victim, json.loads(out)["framework"]["drifted_files"])
 
     def test_an_unreadable_kit_path_is_reported_not_fatal(self) -> None:
         """The kit fast path hashes the destination, and a mode-000 file raises.
@@ -902,18 +913,18 @@ class DamagedWorkspaceTotalityTests(unittest.TestCase):
         if hasattr(os, "geteuid") and os.geteuid() == 0:
             self.skipTest("root ignores file permission bits")
         workspace = make_workspace(new_tmp(self))
-        managed = workspace / "package.json"
+        managed = workspace / "requirements.txt"
         self.assertTrue(managed.is_file(), "fixture needs a kit-managed path")
         os.chmod(managed, 0o000)
         self.addCleanup(os.chmod, managed, 0o644)
 
         with self._recorded_warnings():
             result = upgrade_module.upgrade(workspace)
-        self.assertIn("package.json", result["unsynchronized"])
+        self.assertIn("requirements.txt", result["unsynchronized"])
 
         rc, out, _ = capture(["status", str(workspace), "--json"])
         self.assertEqual(rc, SUCCESS)
-        self.assertIn("package.json", json.loads(out)["framework"]["drifted_files"])
+        self.assertIn("requirements.txt", json.loads(out)["framework"]["drifted_files"])
 
 
     def test_an_already_deleted_orphan_clears_instead_of_stranding(self) -> None:

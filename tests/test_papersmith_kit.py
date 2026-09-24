@@ -38,6 +38,7 @@ def _make_checkout(tmp_path: Path) -> Path:
             "scripts/setup-harnesses.sh": "#!/usr/bin/env bash\n",
             "CLAUDE.md": "# claude\n",
             "guidance/paper-guide/venue.md": "# venue\n",
+            "sections/01-materials-and-methods.md": "# materials and methods\n",
             ".claude/agents/paper-ingestion.md": "# agent\n",
             "package.json": '{"version": "0.1.0"}\n',
             "requirements.txt": "kagglesdk==0.1.37\n",
@@ -114,29 +115,37 @@ class KitTests(unittest.TestCase):
         assert "skills/paper-ingestion/.hidden.md" not in files
         assert "scripts/setup_env.py" in files
         assert "scripts/setup-harnesses.sh" in files
-        assert "package.json" in files
         assert "requirements.txt" in files
-        assert "guidance/paper-guide/venue.md" in files
+        assert "sections/01-materials-and-methods.md" in files
         assert ".claude/agents/paper-ingestion.md" in files
         assert "CLAUDE.md" not in files  # rendered per workspace, not shipped raw
+        # ``guidance/paper-guide`` travels empty (see manifest.KIT_ENTRIES): its
+        # real content is third-party PDFs this repo's own .gitignore keeps out
+        # of git, and the kit must not bundle whatever a checkout has on disk.
+        assert "guidance/paper-guide/venue.md" not in files
+        # ``package.json`` is now seeded once per workspace from a template
+        # (init._write_workspace_seed), not copied verbatim from the kit.
+        assert "package.json" not in files
 
     def test_is_preserved(self) -> None:
         for relpath, preserved in [
             ("guidance/paper-guide/venue.md", True),
             ("guidance", True),
-            ("proposals/drafts/x.md", True),
+            ("proposals/x.md", True),
+            ("paper/main.tex", True),
+            ("experiments/v01.md", True),
             ("implementations/foo/src/a.py", True),
             ("kaggle-inbox/job1/out.json", True),
-            ("journal/2026-08.md", True),
-            ("DECISIONS.md", True),
             ("papersmith.yaml", True),
+            ("package.json", True),
+            (".mcp.json", True),
             ("README.md", True),
             (".env", True),
             (".env.local", True),
             ("skills/paper-ingestion/SKILL.md", False),
+            ("sections/01-materials-and-methods.md", False),
             ("CLAUDE.md", False),
             ("scripts/setup_env.py", False),
-            ("package.json", False),
             ("guidance2/x", False),
         ]:
             with self.subTest(relpath=relpath):

@@ -9,7 +9,6 @@ Generated from `.claude/` by `papersmith` {{version}}.
   `opencode` projections emit command files. Invoke a capability by name and read
   its `skills/<name>/SKILL.md` first.
 - Keep research artifacts under their declared workspace directories.
-- Preserve the append-only scientific record in `DECISIONS.md` and `journal/`.
 
 ## Research topic
 

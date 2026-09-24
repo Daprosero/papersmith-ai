@@ -202,10 +202,6 @@ def upgrade(workspace: str | Path = ".", *, tools: Sequence[str] | None = None,
         "removed": removed,
         "stranded": stranded,
         "unsynchronized": unsynchronized,
-        "warnings": [
-            "package.json changed; run npm install in the workspace"
-            if "package.json" in changed else ""
-        ],
     }
 
 
@@ -224,9 +220,6 @@ def run_cli(args) -> int:
     result = upgrade(args.directory, tools=tools, force=args.force)
     print(f"Upgraded papersmith workspace: {result['workspace']}")
     print(f"Framework version: {result['version']}; changed files: {len(result['changed_files'])}")
-    for warning in result["warnings"]:
-        if warning:
-            print(f"Warning: {warning}")
     for relpath in result["unsynchronized"]:
         print(f"Warning: could not write '{relpath}'; it stays reported as drift")
     return 0

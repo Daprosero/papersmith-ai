@@ -139,7 +139,7 @@ class UpgradeTests(unittest.TestCase):
         workspace = _workspace(tmp_path)
         result = upgrade_module.upgrade(workspace, force=True)
         assert "skills/paper-ingestion/SKILL.md" in result["changed_files"]
-        assert "package.json" in result["changed_files"]
+        assert "sections/01-materials-and-methods.md" in result["changed_files"]
 
     def test_cli_upgrade_routes_directory_and_flags(self) -> None:
         tmp_path = self.new_tmp()

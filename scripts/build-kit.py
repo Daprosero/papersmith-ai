@@ -2,8 +2,8 @@
 """Assemble the bundled kit at ``src/papersmith/_kit`` and its kit-manifest.
 
 Run from a papersmith-ai checkout. The kit is the snapshot of framework files
-(``skills/``, agent definitions, ``guidance/paper-guide/``, provisioning
-scripts, manifests) that ``papersmith init`` copies into new workspaces and
+(``skills/``, ``sections/``, agent definitions, provisioning scripts,
+manifests) that ``papersmith init`` copies into new workspaces and
 ``papersmith upgrade`` re-syncs. It is regenerated automatically by the build
 hook in ``setup.py``, so ``pipx install .`` always ships a fresh one.
 

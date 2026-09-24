@@ -38,6 +38,12 @@ def _write_text(root: Path, relpath: str, content: str) -> None:
 
 
 def _create_topology(root: Path) -> None:
+    # ``proposals/`` stays flat: this repository's own layout is
+    # `proposals/research-concept-rNN.md` with no subfolders (see
+    # `skills/proposal-deliberation/profile.ts`, which declares
+    # `directory: "proposals"` with no nested stage directories), and a fresh
+    # workspace must match it rather than diverge with a `drafts/deliberated/
+    # receipts` shape nothing reads.
     directories = (
         ".papersmith",
         ".claude/agents",
@@ -46,23 +52,30 @@ def _create_topology(root: Path) -> None:
         ".antigravity",
         "guidance/paper-guide",
         "guidance/reference-papers",
-        "proposals/drafts",
-        "proposals/deliberated",
-        "proposals/receipts",
+        "guidance/data-paper",
+        "proposals",
         "implementations",
         "kaggle-inbox",
-        "journal",
+        "paper",
+        "experiments",
     )
     for relpath in directories:
         (root / relpath).mkdir(parents=True, exist_ok=True)
+    # Every directory a fresh workspace must ship empty gets a `.gitkeep`, so
+    # the folder itself travels through Git while its contents — third-party
+    # PDFs, managed revisions, run products — stay on the machine that made
+    # them. `guidance/paper-guide` is listed even though the kit no longer
+    # bundles its own copy (see ``manifest.KIT_ENTRIES``): the workspace still
+    # needs the empty drop-zone.
     for relpath in (
+        "guidance/paper-guide/.gitkeep",
         "guidance/reference-papers/.gitkeep",
+        "guidance/data-paper/.gitkeep",
         "proposals/.gitkeep",
-        "proposals/drafts/.gitkeep",
-        "proposals/deliberated/.gitkeep",
-        "proposals/receipts/.gitkeep",
         "implementations/.gitkeep",
         "kaggle-inbox/.gitkeep",
+        "paper/.gitkeep",
+        "experiments/.gitkeep",
     ):
         path = root / relpath
         if not fs.exists(path):
@@ -118,11 +131,13 @@ def _write_workspace_seed(root: Path, *, name: str, title: str, topic: str,
         "title_yaml": json.dumps(title, ensure_ascii=False),
         "topic_yaml": json.dumps(topic, ensure_ascii=False),
         "default_target_yaml": json.dumps(target, ensure_ascii=False),
+        "name_json": json.dumps(name, ensure_ascii=False),
+        "workspace_root_json": json.dumps(str(root), ensure_ascii=False),
     }
     _write_text(root, "papersmith.yaml", render_package_template("papersmith.yaml.tpl", context))
     _write_text(root, "README.md", render_package_template("readme.md.tpl", context))
-    _write_text(root, "DECISIONS.md", render_package_template("decisions.md.tpl", context))
-    _write_text(root, "journal/README.md", render_package_template("journal-readme.md.tpl", context))
+    _write_text(root, "package.json", render_package_template("package.json.tpl", context))
+    _write_text(root, ".mcp.json", render_package_template("mcp.json.tpl", context))
 
 
 def _run_npm_install(root: Path) -> str | None:

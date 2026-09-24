@@ -282,20 +282,29 @@ mi-paper/
 ├── .claude/agents/              # los catorce subagentes (fuente única de verdad)
 ├── skills/                      # la copia del kit: las nueve skills + _core
 │   └── _core/                   #   los dos motores compartidos (deliberación, implementación)
+├── sections/                    # los diez contratos de sección (viajan CON contenido, como skills/)
 ├── guidance/
 │   ├── reference-papers/        # drop-zone: dejá acá los PDFs de referencia
-│   └── paper-guide/             # papers guía de método y estilo (opcional pero recomendado)
-├── proposals/{drafts,deliberated,receipts}/   # revisiones gestionadas y sus recibos
+│   ├── paper-guide/             # papers guía de método y estilo (opcional pero recomendado)
+│   └── data-paper/              # paper de datos (obligatorio para experimental-deliberation)
+├── proposals/                   # revisiones gestionadas, plano: research-concept-rNN.md
+├── paper/                       # el LaTeX del paper (paper-writing lo escribe acá)
+├── experiments/                 # el protocolo experimental gestionado
 ├── implementations/             # repos destino; cada uno con su propio git
 ├── kaggle-inbox/                # lo que vuelve de los workers remotos
-├── journal/                     # bitácora de investigación
 ├── CLAUDE.md / OPENCODE.md / PI.md / .antigravity/rules.md   # routing de harnesses
 ├── papersmith.yaml              # configuración del workspace (la tuya, editable)
-├── package.json                 # dependencias Node del kit (jiti, typebox)
+├── package.json                 # dependencias Node del workspace (jiti, typebox), la tuya, editable
+├── .mcp.json                    # cómo un cliente MCP alcanza `papersmith mcp serve` en este workspace
 ├── requirements.txt
 ├── scripts/setup_env.py         # provisión del runtime de ingestión
 └── README.md                    # descripción breve del workspace
 ```
+
+Cada carpeta de investigación (`guidance/*/`, `proposals/`, `paper/`, `experiments/`,
+`implementations/`) llega vacía, con su propio `.gitkeep`: el `.gitignore` del
+workspace aplica la misma regla que este repositorio se aplica a sí mismo —la
+carpeta se versiona, el contenido nunca.
 
 ### `papersmith.yaml` — la configuración que sí vas a tocar
 
@@ -331,10 +340,10 @@ mano).
 ### Qué se versiona y qué no
 
 El contrato de preservación de `papersmith upgrade` es explícito: nunca toca
-`guidance/`, `proposals/`, `implementations/`, `kaggle-inbox/`, `journal/`,
-`DECISIONS.md`, `papersmith.yaml`, `README.md` ni los archivos `.env*`. Todo lo
-demás es andamiaje del framework y `upgrade` lo sincroniza —con `--force` si
-hace falta— dejando tus artefactos intactos.
+`guidance/`, `proposals/`, `paper/`, `experiments/`, `implementations/`,
+`kaggle-inbox/`, `papersmith.yaml`, `package.json`, `.mcp.json`, `README.md`
+ni los archivos `.env*`. Todo lo demás es andamiaje del framework y `upgrade`
+lo sincroniza —con `--force` si hace falta— dejando tus artefactos intactos.
 
 En este repositorio la misma regla vale para Git: el andamiaje se versiona, el
 contenido no. Las carpetas de investigación viajan con su `.gitkeep` y nada
@@ -2730,10 +2739,10 @@ papersmith init ~/papers/sparse-ae \
 | `--remote {kaggle,local,slurm}` | Target de cómputo por defecto (por defecto: `kaggle`) |
 | `--no-npm` | Saltea el `npm install` best-effort (uso offline/hermético) |
 
-Crea `.papersmith/`, `guidance/reference-papers/`,
-`proposals/{drafts,deliberated,receipts}/`, `implementations/`, `kaggle-inbox/`,
-`journal/`, más la copia del kit y su manifest. La forma completa del árbol
-está en [El workspace por dentro](#el-workspace-por-dentro).
+Crea `.papersmith/`, `guidance/{paper-guide,reference-papers,data-paper}/`,
+`proposals/`, `paper/`, `experiments/`, `implementations/`, `kaggle-inbox/`,
+más la copia del kit y su manifest. La forma completa del árbol está en
+[El workspace por dentro](#el-workspace-por-dentro).
 
 ### `papersmith upgrade [<dir>]`
 
@@ -2747,9 +2756,10 @@ papersmith upgrade ~/papers/sparse-ae
 | `--force` | Fuerza la escritura de archivos del framework |
 
 Sólo toca archivos gestionados por el framework — jamás `guidance/`,
-`proposals/`, `implementations/`, `kaggle-inbox/`, `journal/`, `DECISIONS.md`,
-`papersmith.yaml`, `README.md` ni los `.env*`. Contra un checkout del kit sin
-reinstalar: `PAPERSMITH_KIT_ROOT=/ruta/al/papersmith-ai papersmith upgrade <dir>`.
+`proposals/`, `paper/`, `experiments/`, `implementations/`, `kaggle-inbox/`,
+`papersmith.yaml`, `package.json`, `.mcp.json`, `README.md` ni los `.env*`.
+Contra un checkout del kit sin reinstalar:
+`PAPERSMITH_KIT_ROOT=/ruta/al/papersmith-ai papersmith upgrade <dir>`.
 
 ### `papersmith status [<dir>]`
 

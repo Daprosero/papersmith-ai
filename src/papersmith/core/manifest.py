@@ -32,26 +32,42 @@ VERSION_MARKER = ".papersmith/version"
 # The kit's top-level entries a workspace copies at init and re-syncs on
 # upgrade. Everything else a workspace holds is either generated (rendered
 # entrypoint docs) or preserved research state.
+#
+# ``guidance/paper-guide`` is deliberately absent: its real content is
+# third-party reference PDFs, and this repository's own ``.gitignore``
+# (``guidance/*/*``) keeps them out of git on purpose. ``walk_kit_files``
+# walks the filesystem, not git, so listing that directory here would bundle
+# whatever a maintainer's checkout happens to hold into every shipped kit. The
+# folder still reaches a fresh workspace empty, via ``_create_topology``'s
+# ``.gitkeep``.
+#
+# ``sections`` travels WITH content: the ten ``sections/*.md`` files are
+# generic writing contracts, not this paper's own research, so a workspace
+# needs the same bytes this repository ships — like ``skills``, not like
+# ``guidance/paper-guide``.
 KIT_ENTRIES = (
     "skills",
-    "guidance/paper-guide",
+    "sections",
     ".claude/agents",
     "scripts/setup_env.py",
     "scripts/setup-harnesses.sh",
-    "package.json",
     "requirements.txt",
 )
 
-# Paths ``upgrade`` must never overwrite or delete. ``papersmith.yaml`` is
-# user-edited compute configuration; the rest is research the user produces.
+# Paths ``upgrade`` must never overwrite or delete. ``papersmith.yaml`` and
+# ``package.json`` are seeded once at init (see ``init._write_workspace_seed``)
+# and then belong to the user like ``README.md`` does; the rest is research
+# state the user produces under the topology ``init`` scaffolds.
 PRESERVE_PATTERNS = (
     "guidance/**",
     "proposals/**",
+    "paper/**",
+    "experiments/**",
     "implementations/**",
     "kaggle-inbox/**",
-    "journal/**",
-    "DECISIONS.md",
     "papersmith.yaml",
+    "package.json",
+    ".mcp.json",
     "README.md",
     ".env*",
 )
