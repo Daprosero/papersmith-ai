@@ -4626,8 +4626,8 @@ class RequirementCorpusEqualityGoldenTests(unittest.TestCase):
     _GOLDEN_FACTS = {
         "abstract.slot-1": ("dataset",),
         "abstract.slot-2": ("contributions",),
-        "abstract.slot-3": ("formulation",),
-        "abstract.slot-4": ("formulation", "results"),
+        "abstract.slot-3": ("contributions",),
+        "abstract.slot-4": ("contributions", "results"),
         "abstract.slot-5": ("experimental-design",),
         "abstract.slot-6": ("results",),
         "abstract.slot-7": ("results",),
@@ -4648,14 +4648,14 @@ class RequirementCorpusEqualityGoldenTests(unittest.TestCase):
         "introduction.block-1": ("dataset",),
         "introduction.block-2": ("contributions",),
         "introduction.block-3": ("problem-statement",),
-        "introduction.block-4a": ("formulation",),
-        "introduction.block-4b": ("formulation", "results", "contributions"),
+        "introduction.block-4a": ("contributions",),
+        "introduction.block-4b": ("results", "contributions"),
         "introduction.block-5": ("experimental-design", "results"),
         "introduction.block-6": ("skeleton",),
         "limitations.lim-closing": (),
         "limitations.lim-failure-mode": ("results",),
         "limitations.lim-opening-concession": ("results",),
-        "limitations.lim-proposal-items": ("formulation",),
+        "limitations.lim-proposal-items": ("contributions",),
         "limitations.lim-validation-items": ("experimental-design",),
         "materials-and-methods.mm-borrowed-machinery": ("formulation",),
         "materials-and-methods.mm-dataset": ("dataset",),
@@ -11699,7 +11699,9 @@ class SourceSectionVerbatimFalsifierTests(unittest.TestCase):
         self.guidance_dir = self.tmp_path / "guidance"
         self.paper_dir = self.tmp_path / "paper"
         paper_scaffold.scaffold(self.paper_dir)
-        (self.paper_dir / "main.tex").write_bytes(_marker_pair("only", b"Old body.\n"))
+        # The manuscript carries the QUALIFIED id (`<section>.<block>`), which is
+        # what `skeleton`/`open` write and what `cmd_write` now substitutes against.
+        (self.paper_dir / "main.tex").write_bytes(_marker_pair("a.only", b"Old body.\n"))
         self._section_text = (
             "This synthetic fixture section restates a long distinctive and entirely invented "
             "sentence describing a formulation transposed from its own bound source document "
@@ -11775,7 +11777,7 @@ class SourceSectionVerbatimFalsifierTests(unittest.TestCase):
         self.assertEqual(ctx.exception.code, "SOURCE_SECTION_VERBATIM")
         # `main.tex` never changes on a refused write.
         self.assertEqual(
-            (self.paper_dir / "main.tex").read_bytes(), _marker_pair("only", b"Old body.\n"),
+            (self.paper_dir / "main.tex").read_bytes(), _marker_pair("a.only", b"Old body.\n"),
         )
 
     def test_a_genuinely_restated_draft_under_threshold_still_writes(self) -> None:
@@ -15078,6 +15080,108 @@ class GroundingMutationProofTests(unittest.TestCase):
             self.assertEqual(len(matches), 1, f"{anchor!r} must occur exactly once")
             anchor_lines.add(matches[0])
         self.assertEqual(len(anchor_lines), len(anchors), "two anchors share the same source line")
+
+
+class WriteSubstitutesTheQualifiedBlockTests(unittest.TestCase):
+    """`write` must reach `substitute` against the id the manuscript
+    actually carries. `skeleton`/`open` write the QUALIFIED id
+    (`<section>.<block>`) into `main.tex` -- what `status` lists -- while
+    `cmd_write` built its `BlockContract` with the BARE `args.block`, so
+    `paper_block.substitute` looked for a block no real manuscript has and
+    refused `BLOCK_ABSENT` for every one of them.
+
+    RED-first: against the pre-fix `cmd_write` this class fails with
+    `Refused('BLOCK_ABSENT')` instead of writing. Every other `cmd_write`
+    test in this file stops at a GATE (a refusal, or a deliberately absent
+    draft file) and so never reached the substitution at all -- which is
+    exactly how the defect shipped.
+    """
+
+    def setUp(self) -> None:
+        self.test_root = (
+            FORGE_ROOT / "implementations"
+            / f".paper-writing-qualified-id-test-{os.getpid()}-{uuid.uuid4().hex[:8]}"
+        )
+        self.addCleanup(shutil.rmtree, self.test_root, ignore_errors=True)
+        self.paper_dir = self.test_root / "paper"
+        paper_scaffold.scaffold(self.paper_dir)
+        self.sections_dir = self.test_root / "sections"
+        self.sections_dir.mkdir(parents=True)
+
+        header = {
+            "section": "mm", "position": 1,
+            "mode": {"value": "transposition",
+                     "source": {"file": "sections/01-mm.md", "quote": "Prose."}},
+            "blocks": [
+                {"id": "only", "requires_facts": [], "requires_declarations": [],
+                 "citations": "none"},
+            ],
+        }
+        (self.sections_dir / "01-mm.md").write_text(
+            "---\n" + json.dumps(header) + "\n---\n\nProse.\n\n"
+            "### External inputs\n\nNone.\n\n### Internal chain\n\nNone.\n\n"
+            "## Disqualifiers\n\n- A symbol used without being declared.\n",
+            encoding="utf-8",
+        )
+
+        self.qualified_id = "mm.only"
+        paper_block.open_block(self.paper_dir, self.qualified_id, at_end=True)
+
+        self.sentence = "This paragraph closes the section."
+        (self.test_root / "draft.json").write_text(
+            json.dumps({"latex": self.sentence,
+                        "bindings": [{"sentence": self.sentence, "binding": "structural"}]}),
+            encoding="utf-8",
+        )
+        (self.test_root / "audit.json").write_text(
+            json.dumps({"verdicts": [
+                {"bullet": "A symbol used without being declared.", "verdict": "clear"},
+            ]}),
+            encoding="utf-8",
+        )
+
+        self.args = argparse.Namespace(
+            paper=str(self.paper_dir), sections=str(self.sections_dir),
+            section="mm", block="only",
+            draft=str(self.test_root / "draft.json"),
+            audit=str(self.test_root / "audit.json"),
+            evidence=None, style=None, guidance=None, transcript=None, grounding=None,
+        )
+
+    def test_write_substitutes_the_block_the_manuscript_carries(self) -> None:
+        result = paper_cli.cmd_write(self.args)
+
+        self.assertEqual(result["status"], "written")
+        self.assertEqual(result["block"], self.qualified_id)
+
+    def test_the_written_bytes_land_inside_that_qualified_block(self) -> None:
+        paper_cli.cmd_write(self.args)
+
+        tex = (self.paper_dir / "main.tex").read_text(encoding="utf-8")
+        self.assertIn(self.sentence, tex)
+        begin = tex.index(f"%% paper-writing block {self.qualified_id} begin")
+        end = tex.index(f"%% paper-writing block {self.qualified_id} end")
+        self.assertLess(begin, tex.index(self.sentence))
+        self.assertLess(tex.index(self.sentence), end)
+
+
+class WriteQualifiedIdMutationProofTests(unittest.TestCase):
+    """The qualified id must be load-bearing, not merely present: reverting
+    `cmd_write`'s `block_id` to the bare `args.block` must turn the write
+    path red again."""
+
+    def test_mutation_back_to_the_bare_block_id_fails_the_write(self) -> None:
+        proc = _run_against_mutant(
+            "        block_id=qualified_id,\n",
+            "        block_id=args.block,\n",
+            "tests.test_paper_writing.WriteSubstitutesTheQualifiedBlockTests"
+            ".test_write_substitutes_the_block_the_manuscript_carries",
+            source_path=SKILL_SCRIPTS / "paper_cli.py",
+        )
+        output = proc.stdout + proc.stderr
+        self.assertIn("MUTANT_IMPORTED_OK", output, output)
+        self.assertNotEqual(proc.returncode, 0, output)
+
 
 
 if __name__ == "__main__":

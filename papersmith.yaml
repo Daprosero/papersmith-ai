@@ -6,7 +6,7 @@ paper_ingestion:
   mode: fast
   # true -> drop the references/bibliography section at the end of each paper (no
   # information value, and it inflates token cost).
-  strip_references: true
+  strip_references: false
   # Each source root holds loose PDFs. Ingestion moves each PDF into its own
   # <stem>/ folder alongside its .md and figure images. A loose PDF = not yet
   # ingested; a PDF already inside its folder is skipped.

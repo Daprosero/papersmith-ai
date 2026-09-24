@@ -741,6 +741,41 @@ class BibProducerTests(unittest.TestCase):
         text = (self.paper_dir / "refs.bib").read_text(encoding="utf-8")
         self.assertLess(text.index("akey"), text.index("bkey"))
 
+    def test_provenance_never_reaches_the_rendered_page(self) -> None:
+        """A `note` field PRINTS, and this one carried a bare `_`.
+
+        RED-first, measured on a real 12-page build of this repository's own
+        manuscript: the `plain` style rendered all eight references as
+        "... resolver=openalex; metadata_digest=6f98...", and the bare `_`
+        of `metadata_digest` is a math-mode character, so the emitted `.bbl`
+        raised "Missing $ inserted" at every entry. The damage is not
+        cosmetic: the error cascade left the `.aux` with zero `\\newlabel`
+        and zero `\\bibcite`, so a single-pass compile resolved all 23
+        `\\ref` to `??` and all 10 `\\cite` to `[?]`.
+
+        Provenance still belongs in the file -- BibTeX ignores bytes between
+        entries, so a leading `%` line keeps it readable and off the page.
+        """
+        result = self._resolved_result("akey")
+        records = [_cite_record(
+            "akey", resolver="openalex", metadata_digest=result["metadata_digest"],
+            source_md=self._ingested_source_md("akey"),
+        )]
+
+        paper_bib.build_refs_bib(self.paper_dir, records, guidance_dir=self.guidance_dir)
+        text = (self.paper_dir / "refs.bib").read_text(encoding="utf-8")
+
+        self.assertNotIn("note = ", text)
+        self.assertIn(
+            f"% resolver=openalex; metadata_digest={result['metadata_digest']}", text,
+        )
+        for line in text.splitlines():
+            if line.startswith("%"):
+                continue
+            self.assertNotIn(
+                "_", line, f"a bare underscore reaches the typeset page: {line!r}",
+            )
+
     def test_build_refs_bib_rebuilds_whole_never_appends(self) -> None:
         refs_path = self.paper_dir / "refs.bib"
         refs_path.write_text("@misc{stale,\n  title = {Should Be Gone},\n}\n", encoding="utf-8")
@@ -1051,6 +1086,117 @@ class FullTextCLITests(unittest.TestCase):
             "--section", "results", "--metadata-digest", "cli-wall-digest", "--cite-key", "clidenied",
         ])
         self.assertEqual(exit_code, 2)
+
+
+class ResolvedMetadataCarriesAuthorsTests(unittest.TestCase):
+    """A bibliography entry with no author is one bibtex cannot even sort
+    ("Warning--to sort, need author or key") and no venue will accept.
+
+    RED-first: measured against a real `refs.bib` this repository built,
+    every one of its six entries was `@misc` with a title, a doi, a year and
+    a provenance note -- and no author, because the three parsers discarded
+    the authorships the connectors had already returned. The fix is in the
+    PARSERS, not in the entry writer: an entry producer cannot emit what was
+    never captured.
+    """
+
+    def test_openalex_captures_authorships_and_venue(self) -> None:
+        raw = json.dumps({
+            "title": "A Paper", "doi": "10.0/x", "publication_year": 2021,
+            "open_access": {"is_oa": False},
+            "authorships": [
+                {"author": {"display_name": "Ada Lovelace"}},
+                {"author": {"display_name": "Alan Turing"}},
+            ],
+            "primary_location": {"source": {"display_name": "Journal of Things"}},
+        }).encode("utf-8")
+
+        parsed = paper_resolve._parse_openalex(raw)
+
+        self.assertEqual(parsed["authors"], ["Ada Lovelace", "Alan Turing"])
+        self.assertEqual(parsed["venue"], "Journal of Things")
+
+    def test_openalex_with_no_authorships_reports_an_empty_list(self) -> None:
+        """Absent is absent: a record the connector returned without
+        authorships parses to `[]`, never to an invented name."""
+        raw = json.dumps({"title": "A Paper", "doi": "10.0/x", "publication_year": 2021}).encode("utf-8")
+
+        parsed = paper_resolve._parse_openalex(raw)
+
+        self.assertEqual(parsed["authors"], [])
+        self.assertIsNone(parsed["venue"])
+
+    def test_crossref_captures_given_and_family_names(self) -> None:
+        raw = json.dumps({"message": {
+            "title": ["A Paper"], "DOI": "10.0/x",
+            "author": [{"given": "Ada", "family": "Lovelace"}],
+            "container-title": ["Journal of Things"],
+        }}).encode("utf-8")
+
+        parsed = paper_resolve._parse_crossref(raw)
+
+        self.assertEqual(parsed["authors"], ["Ada Lovelace"])
+        self.assertEqual(parsed["venue"], "Journal of Things")
+
+    def test_arxiv_captures_entry_author_names(self) -> None:
+        raw = (
+            '<feed xmlns="http://www.w3.org/2005/Atom"><entry>'
+            "<title>A Paper</title>"
+            "<author><name>Ada Lovelace</name></author>"
+            "<author><name>Alan Turing</name></author>"
+            "</entry></feed>"
+        ).encode("utf-8")
+
+        parsed = paper_resolve._parse_arxiv(raw)
+
+        self.assertEqual(parsed["authors"], ["Ada Lovelace", "Alan Turing"])
+        self.assertEqual(parsed["venue"], "arXiv")
+
+    def test_the_entry_text_emits_author_and_journal(self) -> None:
+        text = paper_bib._entry_text({
+            "cite_key": "lovelace2021", "title": "A Paper", "doi": "10.0/x", "year": 2021,
+            "authors": ["Ada Lovelace", "Alan Turing"], "venue": "Journal of Things",
+            "resolver": "openalex", "metadata_digest": "abc",
+        })
+
+        self.assertIn("author = {Ada Lovelace and Alan Turing},", text)
+        self.assertIn("journal = {Journal of Things},", text)
+        # The entry proper is the first line BibTeX reads: provenance rides
+        # above it as a comment, which BibTeX skips along with every other
+        # byte between entries.
+        entry = [line for line in text.splitlines() if not line.startswith("%")]
+        self.assertEqual(entry[0], "@article{lovelace2021,")
+
+    def test_an_entry_with_no_venue_stays_misc_and_prints_no_journal(self) -> None:
+        """`plain` ignores `journal` on a `@misc`, so an uncaptured venue
+        must not silently turn the entry into an article with a blank one."""
+        text = paper_bib._entry_text({
+            "cite_key": "anon2021", "title": "A Paper", "doi": None, "year": 2021,
+            "authors": [], "venue": None, "resolver": "openalex", "metadata_digest": "abc",
+        })
+
+        entry = [line for line in text.splitlines() if not line.startswith("%")]
+        self.assertEqual(entry[0], "@misc{anon2021,")
+        self.assertNotIn("journal = ", text)
+        self.assertNotIn("author = ", text)
+
+
+class ResolvedAuthorsMutationProofTests(unittest.TestCase):
+    """The capture must be load-bearing, not merely present: dropping the
+    authorship walk from the OpenAlex parser must turn the capture test red."""
+
+    def test_mutation_dropping_the_authorship_walk_fails_the_capture(self) -> None:
+        proc = _run_against_mutant(
+            '    for authorship in obj.get("authorships") or []:\n',
+            "    for authorship in []:\n",
+            "tests.test_paper_evidence.ResolvedMetadataCarriesAuthorsTests"
+            ".test_openalex_captures_authorships_and_venue",
+            source_path=SKILL_SCRIPTS / "paper_resolve.py",
+        )
+        output = proc.stdout + proc.stderr
+        self.assertIn("MUTANT_IMPORTED_OK", output, output)
+        self.assertNotEqual(proc.returncode, 0, output)
+
 
 
 if __name__ == "__main__":

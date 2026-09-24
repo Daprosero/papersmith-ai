@@ -28,10 +28,19 @@
       "id": "lim-proposal-items",
       "requires_facts": [
         {
-          "value": "formulation",
+          "value": "contributions",
           "source": {
             "file": "sections/04-limitations.md",
-            "quote": "The mathematical section — its design decisions, one by one"
+            "quote": "The mathematical section reaches this block already transposed, as the methods section's own enumerated contributions -- its design decisions are read there, one by one, not from the proposals document"
+          }
+        }
+      ],
+      "after": [
+        {
+          "target": "materials-and-methods.mm-proposal",
+          "source": {
+            "file": "sections/04-limitations.md",
+            "quote": "The mathematical section reaches this block already transposed, as the methods section's own enumerated contributions -- its design decisions are read there, one by one, not from the proposals document"
           }
         }
       ],
@@ -208,19 +217,23 @@ corresponding future-work direction carries.
 
 | Input | Unblocks |
 |---|---|
-| The **mathematical section** — its design decisions, one by one | `lim-proposal-items` |
 | The **experimental design** — what was fixed instead of searched, what was tested at a single point | `lim-validation-items` |
 | The **results** — the worst reported cell, and the baseline's performance there | `lim-failure-mode` |
 | The **results** — the concrete achievement they do support | `lim-opening-concession` |
 
 ### Internal chain
 
-None — checked every block's `requires_facts` (`results`, `formulation`,
-`experimental-design`) and this file's own prose body for a reference to a
-sibling block's own text: each of the five ids (`lim-opening-concession`,
-`lim-proposal-items`, `lim-validation-items`, `lim-failure-mode`,
-`lim-closing`) draws only on the external facts named above; no sibling-block
-prose reference was found.
+| Block | Depends on |
+|---|---|
+| `limitations.lim-proposal-items` — the design decisions of the proposal, read one by one as what each one costs | `materials-and-methods.mm-proposal` — The mathematical section reaches this block already transposed, as the methods section's own enumerated contributions -- its design decisions are read there, one by one, not from the proposals document |
+
+Checked every other block's `requires_facts` (`results`, `experimental-design`)
+and this file's own prose body for a reference to a sibling block's own text:
+the remaining four ids (`lim-opening-concession`, `lim-validation-items`,
+`lim-failure-mode`, `lim-closing`) draw only on the external facts named above;
+no sibling-block prose reference was found for them.
+
+The mathematical section reaches this block already transposed, as the methods section's own enumerated contributions -- its design decisions are read there, one by one, not from the proposals document.
 
 ### Structural decisions
 

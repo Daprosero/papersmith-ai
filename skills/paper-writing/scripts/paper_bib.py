@@ -130,22 +130,47 @@ def entry_from_record(paper_dir: Path, record: dict, *, guidance_dir: Path) -> d
         "title": cached.get("title"),
         "doi": cached.get("doi"),
         "year": cached.get("year"),
+        # An entry with no author is one bibtex cannot even sort ("to sort,
+        # need author or key") and no venue will accept. Both are carried
+        # through from the cached blob when the connector captured them, and
+        # stay absent when it did not -- never invented here.
+        "authors": cached.get("authors") or [],
+        "venue": cached.get("venue"),
         "resolver": resolver,
         "metadata_digest": digest,
     }
 
 
 def _entry_text(entry: dict) -> str:
-    lines = [f"@misc{{{entry['cite_key']},"]
+    # `@article` only when a venue was actually captured: the `plain` style
+    # prints `journal` for an article and ignores it on a `@misc`, so an
+    # entry with no venue stays `@misc` rather than rendering as an article
+    # with a blank journal.
+    kind = "article" if entry.get("venue") else "misc"
+    lines = [f"@{kind}{{{entry['cite_key']},"]
+    if entry.get("authors"):
+        lines.append(f"  author = {{{' and '.join(entry['authors'])}}},")
     if entry.get("title"):
         lines.append(f"  title = {{{entry['title']}}},")
+    if entry.get("venue"):
+        lines.append(f"  journal = {{{entry['venue']}}},")
     if entry.get("doi"):
         lines.append(f"  doi = {{{entry['doi']}}},")
     if entry.get("year") is not None:
         lines.append(f"  year = {{{entry['year']}}},")
-    lines.append(f"  note = {{resolver={entry['resolver']}; metadata_digest={entry['metadata_digest']}}},")
     lines.append("}")
-    return "\n".join(lines) + "\n"
+    # Provenance rides ABOVE the entry as a BibTeX comment, never inside it as
+    # a `note` field. A `note` PRINTS: the `plain` style rendered every
+    # reference as "... resolver=openalex; metadata_digest=6f98..." in the
+    # compiled bibliography -- and the bare `_` of `metadata_digest` is a
+    # math-mode character, so the emitted `.bbl` raised "Missing $ inserted"
+    # and a single-pass compile then resolved every \ref to `??` and every
+    # \cite to `[?]`. BibTeX ignores bytes between entries, so a leading `%`
+    # line keeps the provenance readable in the file and out of the page.
+    # Nothing reads this back: `_BIB_ENTRY_RE` is the only reader of
+    # `refs.bib` and it matches cite keys alone.
+    comment = f"% resolver={entry['resolver']}; metadata_digest={entry['metadata_digest']}"
+    return comment + "\n" + "\n".join(lines) + "\n"
 
 
 def build_refs_bib(paper_dir: Path, records: list[dict], *, guidance_dir: Path) -> dict:

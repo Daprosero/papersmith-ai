@@ -14617,7 +14617,16 @@ class ForgeVocabularyDerivedGuardTests(unittest.TestCase):
             #
             # What goes INSIDE the folder stays guarded below: the ingested paper ids
             # are the paper's own and are exactly what must not be borrowed.
-            shipped = forge_vocabulary.travelling_guidance_folders(base)
+            # Two independent reasons a guidance folder's NAME is the forge's
+            # own: git ships the slot, OR the contract corpus declares a section
+            # by that id. The second was added when the section-citation-folder
+            # design landed: `guidance/<section-id>/` is created by the operator
+            # and carries no tracked `.gitkeep`, so deriving forge-ownership from
+            # git alone read `introduction` as one paper's private word and
+            # reported every forge file that legitimately names it as a leak.
+            # Measured: one created folder was enough to redden the guard.
+            shipped = (forge_vocabulary.travelling_guidance_folders(base)
+                       | forge_vocabulary.forge_section_ids(base))
             if (evidence_dir.name not in shipped
                     and len(evidence_dir.name) >= self.MINIMUM_WORD):
                 words.add(evidence_dir.name.lower())

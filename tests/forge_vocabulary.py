@@ -31,6 +31,7 @@ module here is importable by every suite without becoming one.
 """
 
 import ast
+import json
 import re
 import subprocess
 from pathlib import Path
@@ -153,6 +154,58 @@ def travelling_guidance_folders(root=None) -> set:
     if completed.returncode != 0:
         return set()
     return {Path(entry).parent.name for entry in completed.stdout.split()}
+
+
+def forge_section_ids(root=None) -> set:
+    """The section ids this repository's own contract corpus DECLARES --
+    `{"introduction", "related-work", ...}` -- read from each
+    `sections/*.md` front matter's own `section` field.
+
+    These names are the forge's architecture in the plainest possible
+    sense: they are the manuscript skeleton the forge itself defines, the
+    same ids `paper_guidance.section_citation_status` resolves a section's
+    citation folder by. `SKILL.md` states the rule this obeys -- a section
+    id comes "from `SECTION_ID` in a contract's own front matter -- never a
+    hand-listed tuple, since one went stale silently in this repository the
+    day the skill grew past its first three verbs."
+
+    Separate from `travelling_guidance_folders` on purpose, and this is the
+    whole point of it existing. That function answers "what does a clone
+    receive", which is a question about git and is correctly asked of git.
+    Rule B's denylist asks a DIFFERENT question -- "which names belong to
+    the forge rather than to one paper" -- and the two answers stopped
+    agreeing the moment the section-citation-folder design landed: a folder
+    named after a section is forge vocabulary from the instant the contract
+    declares that section, whether or not anyone has created the folder or
+    git has ever seen it. Deriving the second answer from the first read a
+    section id as one paper's private word and reported every forge file
+    that legitimately names it -- `SKILL.md`, `paper_cli.py`,
+    `paper_declarations.py`, `sections/*.md` -- as a leak. Measured: one
+    created folder was enough to redden the guard.
+
+    Fails CLOSED, the same direction its sibling does: an absent `sections/`,
+    an unreadable file, or a header that does not parse exempts nothing, so
+    every name stays on the denylist. A corpus that cannot be read is not
+    licence to guard less.
+    """
+    sections_dir = (FORGE_ROOT if root is None else Path(root)) / "sections"
+    if not sections_dir.is_dir():
+        return set()
+    ids: set = set()
+    for entry in sorted(sections_dir.glob("*.md")):
+        try:
+            parts = entry.read_text(encoding="utf-8").split("---", 2)
+        except OSError:
+            continue
+        if len(parts) < 3:
+            continue
+        try:
+            declared = json.loads(parts[1]).get("section")
+        except (ValueError, AttributeError):
+            continue
+        if isinstance(declared, str) and declared:
+            ids.add(declared.lower())
+    return ids
 
 
 def repository_ignored(paths, root) -> set:
