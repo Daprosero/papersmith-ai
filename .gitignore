@@ -99,3 +99,16 @@ paper/*
 # Deuda tecnica local: notas del operador, nunca se versionan.
 # La regla sube, el contenido se queda en la maquina.
 DEUDA-*.md
+
+# Listas de trabajo sobre el corpus: que papers quedan afuera y por que. Son
+# decisiones de investigacion sobre UN paper, no doctrina de la forja, asi que
+# siguen la regla de DEUDA-*.md. Por clase y no por nombre, la misma razon que
+# `guidance/*/*` ya declara: una regla escrita nombrando lo que existia ese dia
+# no alcanza a lo que nace despues, y la primera lista nueva se publicaria.
+EXCLUSION-*.txt
+
+# Material de terceros descartado: se leyo, se descarto, y no se publica —
+# `guidance/*/*` ya lo dice de los que si se usan, y un descarte no cambia de
+# quien es el PDF. Por carpeta, no por archivo, para que el proximo quede
+# cubierto sin tocar esto.
+_descartados/
