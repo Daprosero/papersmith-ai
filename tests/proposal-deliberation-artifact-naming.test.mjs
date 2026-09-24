@@ -15,15 +15,15 @@ import path from 'node:path';
 import test from 'node:test';
 import { pathToFileURL } from 'node:url';
 
-const piRoot = '/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent';
+const piRoot = path.resolve('.');
 const { createJiti } = await import(pathToFileURL(path.join(piRoot, 'node_modules/jiti/lib/jiti.mjs')).href);
 const jiti = createJiti(import.meta.url, { alias: {
 	'@earendil-works/pi-coding-agent': path.join(piRoot, 'dist/index.js'),
 	'@earendil-works/pi-ai': path.join(piRoot, 'node_modules/@earendil-works/pi-ai/dist/index.js'),
 	typebox: path.join(piRoot, 'node_modules/typebox/build/index.mjs'),
 } });
-const AN = await jiti.import(path.resolve('.claude/skills/_core/deliberation/engine/artifact-naming.ts'));
-const { loadDocumentState } = await jiti.import(path.resolve('.claude/skills/_core/deliberation/engine/document-state.ts'));
+const AN = await jiti.import(path.resolve('skills/_core/deliberation/engine/artifact-naming.ts'));
+const { loadDocumentState } = await jiti.import(path.resolve('skills/_core/deliberation/engine/document-state.ts'));
 
 // --- STRICT ---------------------------------------------------------------
 

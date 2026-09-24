@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createRequire } from 'node:module';
 import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -6,17 +7,10 @@ import test from 'node:test';
 import { pathToFileURL } from 'node:url';
 
 const repositoryRoot = path.resolve('.');
-const piRoot = '/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent';
-const { createJiti } = await import(pathToFileURL(path.join(piRoot, 'node_modules/jiti/lib/jiti.mjs')).href);
-const jiti = createJiti(import.meta.url, {
-	alias: {
-		'@earendil-works/pi-coding-agent': path.join(piRoot, 'dist/index.js'),
-		'@earendil-works/pi-ai/compat': path.join(piRoot, 'node_modules/@earendil-works/pi-ai/dist/compat.js'),
-		'@earendil-works/pi-ai': path.join(piRoot, 'node_modules/@earendil-works/pi-ai/dist/index.js'),
-		typebox: path.join(piRoot, 'node_modules/typebox/build/index.mjs'),
-	},
-});
-const v2 = await jiti.import(path.join(repositoryRoot, '.claude/skills/_core/deliberation/engine/exports.ts'));
+const typeboxEntry = createRequire(import.meta.url).resolve('typebox');
+const { createJiti } = await import('jiti');
+const jiti = createJiti(import.meta.url, { alias: { typebox: typeboxEntry } });
+const v2 = await jiti.import(path.join(repositoryRoot, 'skills/_core/deliberation/engine/exports.ts'));
 
 const marker = '<!-- proposal-workspace:artifact:v1 -->\n';
 
@@ -85,7 +79,6 @@ test('readCanonicalManagedRevisionInventory surfaces every tied candidate as an 
 	assert.equal(inventory.activeRevisions.length, 2, 'both tied candidates surface, not just one');
 	assert.deepEqual(inventory.activeRevisions.map((r) => r.filename).sort(), ['research-concept-idea-b-r01.md', 'research-concept-r01.md']);
 });
-
 
 test('ProposalDeliberationOrchestrator.execute() surfaces MULTIPLE_ACTIVE_REVISIONS instead of NO_MANAGED_PROPOSAL when the managed proposal base is ambiguous', async () => {
 	const root = await tempProjectRoot();

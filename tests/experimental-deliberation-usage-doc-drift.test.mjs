@@ -26,7 +26,7 @@ import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
 const repoRoot = process.cwd();
-const skillDir = path.join(repoRoot, '.claude/skills/experimental-deliberation');
+const skillDir = path.join(repoRoot, 'skills/experimental-deliberation');
 const cliPath = path.join(skillDir, 'cli.mjs');
 const skillMdPath = path.join(skillDir, 'SKILL.md');
 const usageMdPath = path.join(skillDir, 'references/usage.md');

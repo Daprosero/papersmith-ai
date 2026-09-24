@@ -32,15 +32,9 @@ import test from 'node:test';
 import { pathToFileURL } from 'node:url';
 
 const root = process.cwd();
-const piRoot = '/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent';
-const { createJiti } = await import(pathToFileURL(path.join(piRoot, 'node_modules/jiti/lib/jiti.mjs')).href);
-const jiti = createJiti(import.meta.url, { alias: {
-	'@earendil-works/pi-coding-agent': path.join(piRoot, 'dist/index.js'),
-	'@earendil-works/pi-ai/compat': path.join(piRoot, 'node_modules/@earendil-works/pi-ai/dist/compat.js'),
-	'@earendil-works/pi-ai': path.join(piRoot, 'node_modules/@earendil-works/pi-ai/dist/index.js'),
-	typebox: path.join(piRoot, 'node_modules/typebox/build/index.mjs'),
-} });
-const v2 = await jiti.import(path.join(root, '.claude/skills/_core/deliberation/engine/exports.ts'));
+const { createJiti } = await import('jiti');
+const jiti = createJiti(import.meta.url);
+const v2 = await jiti.import(path.join(root, 'skills/_core/deliberation/engine/exports.ts'));
 
 const digest = (value) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 
@@ -69,5 +63,4 @@ test('SuccessorEditPlanner only appends a decisions block after the document -- 
 	assert.doesNotMatch(patch.plan.actions[0].content, /Original method text/);
 	assert.equal(patch.plan.actions[0].content.includes('Replace the method section with a formal derivation.'), true);
 });
-
 

@@ -1,17 +1,55 @@
 # papersmith-ai
 
-Una forja de papers. Nueve skills que llevan una investigación desde los PDFs de
-referencia hasta un documento compilado: ingieren papers a Markdown de alta fidelidad y
-legible por un agente (ecuaciones en LaTeX, tablas en Markdown, figuras como archivos),
-deliberan la matemática y el diseño experimental publicando cada acuerdo como una revisión
-gestionada, convierten esas revisiones en código que se verifica contra el documento que
-lo justifica, mandan el trabajo pesado a workers remotos llevando el registro de lo que
-volvió, y escriben el paper atando cada afirmación a su evidencia.
+> **Una forja de papers**: convierte PDFs de referencia en Markdown de alta fidelidad y legible por un agente (ecuaciones en LaTeX, tablas como tablas, figuras como archivos), y conduce la deliberación formal —matemática y de diseño experimental— hasta el código que se prueba solo y el paper compilado.
 
-Dos reglas atraviesan todas. **Nada corre contra un modelo ni una clave**: los motores son
-deterministas —mismas entradas, misma salida— y la ingesta corre **localmente** con
-[Marker](https://github.com/datalab-to/marker). Y **ninguna produce a medias**: cuando le
-falta una entrada se niega con un código que la nombra, en vez de inventarla o saltearla.
+[![CI](https://github.com/CarlosAndres12/papersmith-ai/actions/workflows/test.yml/badge.svg)](https://github.com/CarlosAndres12/papersmith-ai/actions/workflows/test.yml)
+[![Node.js](https://img.shields.io/badge/Node.js-%3E%3D20-green.svg)](https://nodejs.org/)
+[![Python](https://img.shields.io/badge/Python-%3E%3D3.11-blue.svg)](https://www.python.org/)
+
+Este README es el **manual completo, en español**: instalación, el workspace por
+dentro, los once comandos del CLI, las nueve skills, los quince agentes,
+cómputo remoto, desarrollo y solución de problemas.
+
+## Índice
+
+1. [Si es tu primera vez](#si-es-tu-primera-vez)
+2. [Flujo de uso — el camino corto](#flujo-de-uso--el-camino-corto)
+3. [Puesta en marcha](#puesta-en-marcha)
+4. [Cómo funciona — el orden](#cómo-funciona--el-orden)
+5. [El workspace por dentro](#el-workspace-por-dentro)
+6. [Harnesses y proyección de skills](#harnesses-y-proyección-de-skills)
+7. [Los agentes](#los-agentes)
+8. [Anatomía de cada skill](#anatomía-de-cada-skill)
+9. [Los comandos del CLI](#los-comandos-del-cli)
+10. [Cómputo remoto, con cuidado](#cómputo-remoto-con-cuidado)
+11. [Arquitectura](#arquitectura)
+12. [Desarrollo y pruebas](#desarrollo-y-pruebas)
+13. [Solución de problemas](#solución-de-problemas)
+14. [Documentación relacionada](#documentación-relacionada)
+15. [Licencia](#licencia)
+
+## Si es tu primera vez
+
+Bienvenido. Esta forja está pensada para que puedas ir de un PDF a un paper
+compilado sin adivinar el orden. El camino mínimo:
+
+1. **Instalá el CLI y prepará el entorno** — ver [Puesta en marcha](#puesta-en-marcha).
+2. **Creá tu workspace** — `papersmith init ~/papers/mi-paper --title "…" --topic "…"`.
+   Qué te deja adentro, en [El workspace por dentro](#el-workspace-por-dentro).
+3. **Poné un PDF de referencia** en `guidance/reference-papers/` y corré
+   `papersmith ingest <pdf>` — o pedí `/paper-ingestion` dentro de tu harness.
+4. **Abrí la deliberación** con `/proposal-deliberation` y discutí la matemática
+   con el agente.
+
+No hace falta usar todas las skills ni en este orden: **cada una declara qué
+necesita antes y se niega antes de hacer algo a medias**. Si le falta una
+entrada no la inventa: sale con un código de rechazo que nombra qué falta. Un
+`PAPER_ABSENT` no es un error tuyo; es la skill diciéndote qué le falta.
+
+El mapa completo está en [Flujo de uso](#flujo-de-uso--el-camino-corto); la
+ruta con detalle, en [Cómo funciona — el orden](#cómo-funciona--el-orden). Y si
+vas a usar un agente de IA como copiloto, los que ya vienen definidos están en
+[Los agentes](#los-agentes).
 
 ---
 
@@ -58,62 +96,78 @@ publicada y un repositorio destino donde implementarla.
 
 ---
 
-## 1. Instalar las dependencias
+## Puesta en marcha
 
-Se necesitan tres cosas: **Python 3.10–3.13**, el binario **`llama-server`** (el
-motor de OCR de la ingesta — no es un paquete de pip; es `llama.cpp`, **no
-Ollama**) y los **paquetes de Python**.
+Nada de esto requiere claves ni servicios externos: la forja corre localmente.
 
-> **La primera corrida descarga un modelo.** En la primera ingesta, Marker
-> descarga desde Hugging Face los pesos de los modelos de Surya —OCR y layout,
-> **~1.5 GB**— y los cachea en `~/.cache/huggingface`. No se descarga nada al
-> instalar: el modelo llega en la primera corrida real y, de ahí en más, todo
-> funciona offline. `llama.cpp` es el **motor**; los archivos `.gguf` de Surya
-> son el **modelo** que ese motor ejecuta. Surya detecta `llama-server` en el
-> `PATH` automáticamente; no hay que apuntar a ningún modelo a mano.
-
-### `llama-server` (motor de OCR, requerido)
-
-| SO | Cómo |
-|----|------|
-| macOS | `brew install llama.cpp` |
-| Windows | Descargar un build `llama-*-bin-win-*.zip` de <https://github.com/ggml-org/llama.cpp/releases>, extraerlo y agregar la carpeta (con `llama-server.exe`) al `PATH`. `winget`/`scoop` también pueden tenerlo. |
-| Linux | `brew install llama.cpp`, el paquete de la distribución, o un build de release. |
-
-Si no está en el `PATH`, definir `LLAMA_CPP_BINARY` con la ruta completa al
-binario. Verificar con `llama-server --version` (macOS/Linux) o
-`where llama-server` (Windows).
-
-### Python 3.12
-
-macOS: `brew install python@3.12`. Windows: instalar desde
-<https://www.python.org/downloads/> (marcar "Add to PATH").
-
-## 2. Crear el entorno virtual
-
-El motor vive en un entorno virtual aislado para no tocar el Python del sistema.
-
-**macOS / Linux:**
+### 1. Instalá el CLI y prepará el entorno
 
 ```bash
-python3.12 -m venv .claude/skills/paper-ingestion/.venv
-source .claude/skills/paper-ingestion/.venv/bin/activate
-pip install -r .claude/skills/paper-ingestion/requirements.txt
+# 1. El CLI, desde el checkout del framework
+pipx install .
+
+# 2. Runtime aislado de ingestión (micromamba: Python 3.12, PyTorch, Surya OCR, llama-server)
+python scripts/setup_env.py install
+
+# 3. Dependencias de Node y proyección de skills a los harnesses
+npm install
+npm run setup:harnesses
 ```
 
-**Windows (PowerShell):**
+`scripts/setup_env.py install` provisiona **todo** el stack de ingestión en un
+entorno micromamba aparte (CPU o CUDA, según lo que detecte), incluido el
+binario `llama-server` que el OCR necesita — **no** es Ollama ni una
+instalación de Homebrew. `npm run setup:harnesses` enlaza el árbol canónico
+`skills/` dentro de `.claude/skills`, `.pi/skills`, `.opencode/skills` y
+`.antigravity/skills`, con enlaces relativos e idempotentes (ver
+[Harnesses y proyección de skills](#harnesses-y-proyección-de-skills)). La
+primera corrida de `papersmith ingest` descarga ~1.5 GB de pesos de Surya si el
+entorno no quedó pre-provisionado.
 
-```powershell
-py -3.12 -m venv .claude\skills\paper-ingestion\.venv
-.claude\skills\paper-ingestion\.venv\Scripts\Activate.ps1
-pip install -r .claude\skills\paper-ingestion\requirements.txt
+### 2. Creá un workspace
+
+```bash
+papersmith init ~/papers/sparse-ae \
+  --title "Sparse Autoencoder Audit" \
+  --topic "mechanistic interpretability" \
+  --remote kaggle
+
+cd ~/papers/sparse-ae
+papersmith status
+papersmith status --json          # snapshot legible por máquina
 ```
 
-El entorno solo necesita existir: la skill lo usa internamente, no hace falta
-activarlo a mano. (Recordatorio: la primera ingesta descarga los modelos de
-Surya, ~1.5 GB, cacheados a partir de ahí.)
+El workspace queda desacoplado del checkout del framework: el andamiaje se
+sincroniza con `papersmith upgrade` y tus artefactos de investigación están
+protegidos por contrato. Qué crea `init` exactamente —y qué se versiona— en
+[El workspace por dentro](#el-workspace-por-dentro).
 
-> Sin `.env` ni claves de API. La ingesta es completamente local y keyless.
+### 3. Ingerí literatura
+
+```bash
+papersmith ingest https://arxiv.org/abs/2309.08600    # arXiv, OpenReview o URL
+papersmith ingest ~/Downloads/reference-paper.pdf     # PDF local
+papersmith ingest ~/Downloads/escaneo.pdf --ocr       # escaneado: modo OCR balanceado
+```
+
+Cada PDF suelto termina en su propia carpeta, junto a su Markdown (texto +
+LaTeX + tablas, con la bibliografía quitada) y las imágenes de sus figuras. El
+detalle del pipeline, en la sección de `paper-ingestion` de la
+[Anatomía](#anatomía-de-cada-skill).
+
+### 4. Deliberá, implementá y ejecutá
+
+```bash
+papersmith deliberate . --action status                                   # estado de la propuesta gestionada
+papersmith implement . --action verify --target implementations/mi-repo   # sobre un repo ya materializado
+papersmith run smoke_and_invariants --dry-run                             # planifica; no despacha nada
+```
+
+Dentro de un harness, las mismas capacidades se piden por nombre de skill:
+`/paper-ingestion`, `/proposal-deliberation`, `/experimental-deliberation`,
+`/proposal-implementation`, `/experimental-implementation`, `/paper-writing`.
+Y las que no dependen de un dominio — `/kaggle-accounts`, `/remote-execution`,
+`/skill-audit` — hacen de portero, memoria y auditor de lo que mandás afuera.
 
 ---
 
@@ -210,6 +264,172 @@ adentro** de cada skill —sus pasos, sus piezas, cómo se conectan entre sí y 
 limitaciones tiene cada una— seguí en [Anatomía de cada
 skill](#anatomía-de-cada-skill). Y para el contrato literal, el `SKILL.md` de cada
 una.
+
+---
+
+## El workspace por dentro
+
+`papersmith init` crea un directorio autocontenido —sin git inicializado y sin
+tocar tu checkout— con esta forma:
+
+```
+mi-paper/
+├── .papersmith/                 # estado del workspace (config, manifest, ledger)
+│   ├── config.json              #   target y perfil activos, rutas del ledger
+│   ├── manifest.json            #   hashes de todo lo que generó el framework
+│   ├── runs_ledger.jsonl        #   cada corrida despachada, en orden
+│   └── version                  #   versión del framework que lo creó
+├── .claude/agents/              # los catorce subagentes (fuente única de verdad)
+├── skills/                      # la copia del kit: las nueve skills + _core
+│   └── _core/                   #   los dos motores compartidos (deliberación, implementación)
+├── guidance/
+│   ├── reference-papers/        # drop-zone: dejá acá los PDFs de referencia
+│   └── paper-guide/             # papers guía de método y estilo (opcional pero recomendado)
+├── proposals/{drafts,deliberated,receipts}/   # revisiones gestionadas y sus recibos
+├── implementations/             # repos destino; cada uno con su propio git
+├── kaggle-inbox/                # lo que vuelve de los workers remotos
+├── journal/                     # bitácora de investigación
+├── CLAUDE.md / OPENCODE.md / PI.md / .antigravity/rules.md   # routing de harnesses
+├── papersmith.yaml              # configuración del workspace (la tuya, editable)
+├── package.json                 # dependencias Node del kit (jiti, typebox)
+├── requirements.txt
+├── scripts/setup_env.py         # provisión del runtime de ingestión
+└── README.md                    # descripción breve del workspace
+```
+
+### `papersmith.yaml` — la configuración que sí vas a tocar
+
+El archivo viene con tres targets de ejemplo y tres perfiles de ejecución. Los
+targets declaran **dónde** corre el trabajo; los perfiles, **qué** se corre y
+cómo se reparte:
+
+```yaml
+compute_targets:
+  default: "kaggle-gpu-pool"
+  targets:
+    local-workstation: { provider: "local", device: "cuda:0" }
+    kaggle-gpu-pool:   { provider: "kaggle", accelerator: "GPU_T4_X2", ... }
+    slurm-cluster:     { provider: "remote-ssh", host: "hpc.university.edu", ... }
+
+execution_profiles:
+  smoke_and_invariants:  { target: "local-workstation", entrypoint: "pytest …/tests/test_invariants.py" }
+  sweep_training:        { target: "kaggle-gpu-pool", sharding: { … }, artifacts: { … } }
+  benchmark_evaluation:  { target: "kaggle-gpu-pool", entrypoint: "papermill …/benchmark.ipynb" }
+
+paper_ingestion:
+  engine: marker
+  mode: fast            # fast (CPU) | balanced (GPU, máxima fidelidad)
+  strip_references: true
+  source_base: guidance
+```
+
+El target y el perfil activos viven en `.papersmith/config.json`; `papersmith
+target set` los cambia. El bloque `paper_ingestion` lo posee la skill de
+ingestión y el orquestador lo trata como opaco (editalo con la skill, no a
+mano).
+
+### Qué se versiona y qué no
+
+El contrato de preservación de `papersmith upgrade` es explícito: nunca toca
+`guidance/`, `proposals/`, `implementations/`, `kaggle-inbox/`, `journal/`,
+`DECISIONS.md`, `papersmith.yaml`, `README.md` ni los archivos `.env*`. Todo lo
+demás es andamiaje del framework y `upgrade` lo sincroniza —con `--force` si
+hace falta— dejando tus artefactos intactos.
+
+En este repositorio la misma regla vale para Git: el andamiaje se versiona, el
+contenido no. Las carpetas de investigación viajan con su `.gitkeep` y nada
+más; `guidance/` versiona las carpetas y nunca los PDFs ni el Markdown
+ingerido.
+
+### El estado: `.papersmith/`
+
+- **`manifest.json`** guarda el hash de cada archivo generado. `papersmith
+  audit --check-drift` compara contra el disco y nombra lo que se desvió; la
+  reparación es `papersmith upgrade`, nunca una edición a mano.
+- **`runs_ledger.jsonl`** es append-only: cada corrida de `papersmith run` que
+  se despacha queda registrada con su target, su perfil y su resultado.
+- **`config.json`** guarda el target activo, el perfil activo y las rutas de
+  configuración del ledger.
+
+---
+
+## Harnesses y proyección de skills
+
+`skills/` en la raíz del repositorio es la **fuente única de verdad**. Cada
+harness lee skills desde su propia carpeta, así que el script de proyección
+enlaza el árbol canónico en cada una con enlaces **relativos** e idempotentes:
+correrlo de nuevo converge al mismo layout y el checkout sigue siendo
+relocalizable.
+
+```bash
+npm run setup:harnesses      # = bash scripts/setup-harnesses.sh
+```
+
+| Harness | Dónde lee las skills | Documento de routing (workspace) |
+|---------|----------------------|-----------------------------------|
+| Claude Code | `.claude/skills/` | `CLAUDE.md` |
+| Pi | `.pi/skills/` | `PI.md` |
+| OpenCode | `.opencode/skills/` | `OPENCODE.md` |
+| Google Antigravity | `.antigravity/skills/` | `.antigravity/rules.md` |
+
+Dentro de un **workspace** generado, la historia es ligeramente distinta y
+conviene saberlo: el workspace embarca el árbol `skills/` completo y el de
+agentes (`.claude/agents/`), y sus routing docs apuntan al árbol canónico
+`skills/*/SKILL.md`. Los documentos de routing son generated projections: la
+fuente real de cada agente es `.claude/agents/*.md` y la de cada skill es su
+`SKILL.md`. No edites las proyecciones a mano; se regeneran (y
+`papersmith audit --check-drift` avisa si una se desvió). Para que tu harness
+liste las skills como comandos `/`, corré `npm run setup:harnesses` dentro del
+workspace: enlaza el árbol embarcado en `.claude/skills`, `.pi/skills`,
+`.opencode/skills` y `.antigravity/skills`, igual de relativo e idempotente que
+en el checkout. En este checkout, las proyecciones de comandos slash
+(`.claude/commands/`, `.opencode/commands/`) y el plugin de seguridad de OpenCode
+se sincronizan con `python scripts/sync-repo-harness.py` (`--check` para CI; no
+tiene script en `package.json` porque el kit lo embarca y el script es sólo del
+repo).
+
+---
+
+## Los agentes
+
+Un workspace trae **quince subagentes** en `.claude/agents/`. No son
+reemplazos del CLI: son tiradas cortas de trabajo que tu harness lanza (por
+ejemplo, con la Task tool) cuando vos se lo pedís. La forma es siempre la
+misma — **una tirada entre dos compuertas del operador**: el agente decide
+nada, pregunta nada, y termina reportando qué encontró y cuánto costó
+establecerlo. Las compuertas las abrís y cerrás vos.
+
+| Agente | Para qué entra | Skill que carga |
+|--------|----------------|-----------------|
+| `implementation-build` | Del mapa objeto→módulo aprobado al informe de hallazgos: materializa el scaffolding, escribe un módulo por objeto con su procedencia y sus tests de invariantes, y valida los remedios admitidos. | `proposal-implementation` |
+| `implementation-walk` | Camina el flujo declarado acto por acto, en su orden: corre los pasos locales, registra cada producto y se detiene en el ensayo previo al lanzamiento. No tiene camino para enviar una campaña. | `proposal-implementation` |
+| `deliberation-publish` | Desde que aceptás un cambio hasta que la revisión sucesora queda publicada y vigente — la única forma en que la matemática viaja. La deliberación en sí no está acá: sólo vos la cerrás. | `proposal-deliberation` |
+| `experimental-publish` | Lo mismo que `deliberation-publish`, sobre el documento de experimentos. | `experimental-deliberation` |
+| `experimental-validation` | La etapa `validated`: busca el protocolo de evaluación del área —métricas, baselines, dataset, semillas, test de significancia—, verifica cada baseline contra su repo y su venue, y fecha cada URL que usa. | `experimental-deliberation` |
+| `experiments-build` | Del mapa aprobado de pasos del protocolo a comandos ejecutables: materializa lo que haga falta, cablea cada paso e instrumenta cada medición para que se pueda correr y leer. | `experimental-implementation` |
+| `experiments-walk` | La caminata del protocolo, con las mismas compuertas y el mismo alto en el ensayo. | `experimental-implementation` |
+| `paper-ingestion` | Convierte un paper a la forma en que se puede usar de verdad: ecuaciones LaTeX, tablas como tablas, figuras como archivos. Etapas: `filed`, `extracted`, `readable`. No le pregunta nada a nadie. | `paper-ingestion` |
+| `contract-auditor` | Lee los `## Disqualifiers` de un contrato, literales, y juzga un bloque borrador contra cada uno: `fires`/`clear`/`undecidable`, con el pasaje citado en cada `fires`. | `paper-writing` |
+| `redactor` | Redacta el LaTeX de un bloque a partir de exactamente cuatro entradas (la prosa del contrato, su evidence set, su modo y su style set) y devuelve un mapa de binding: de dónde sale cada oración. | `paper-writing` |
+| `style-sampler` | Resuelve el bloque equivalente, completo, en cada carpeta de estilo de `guidance/` y lo devuelve verbatim, nunca recortado. Es la única material que un chequeo de solapamiento puede comparar. | `paper-writing` |
+| `diagram-author` | Escribe un diagrama TikZ standalone (`<id>.tex` + `<id>.diagram.json`) y lo compila en su propio loop, hasta el presupuesto de reparaciones. Nunca dibuja un gráfico a partir de números medidos — eso es el verbo `place`. | `paper-writing` |
+| `figure-auditor` | Compara los componentes declarados en el manifest contra la prosa de la sección y los pasos del pipeline; reporta veredicto estructurado. | `paper-writing` |
+| `insumos-observer` | Lee las cuatro fuentes de entrada declaradas del paper —`proposals/`, `experiments/`, el código del repo destino y sus propias salidas de corrida— y reporta, por cada hecho observable, si se cumple y con qué evidencia. Nunca decide un valor ni corre `declare`. | `paper-writing` |
+| `audit-report` | Audita un sujeto que enumera un conjunto cerrado —operaciones, subcomandos, códigos, assets— buscando la brecha entre lo que su código acepta y lo que su documentación promete. Reporta; nunca repara. | `skill-audit` |
+
+Tres reglas que ordenan todo lo demás:
+
+- **La fuente de verdad es `.claude/agents/`.** Los routing docs de cada
+  harness (`CLAUDE.md`, `PI.md`, `OPENCODE.md`, `.antigravity/rules.md`) listan
+  a los quince enteros, y se generan: si querés cambiar un agente, se cambia
+  ahí, no en la proyección.
+- **Cada agente declara la skill que carga** (`skills/<nombre>/SKILL.md`), y esa
+  atadura se verifica: un agente que apunte a una skill que el workspace no
+  embarca no llega.
+- **Algunos agentes no son invocados por ningún camino de código**
+  (`contract-auditor`, `redactor`, `style-sampler`): los lanzás vos, y es el
+  verbo `write` el que juzga lo que devuelven — nunca confía en tu relato ni en
+  el borrador por sí solos.
 
 ---
 
@@ -1564,7 +1784,7 @@ exactamente 2".
 | `scripts/credentials.py` | El único productor de un handle de credencial. Importa nada más que `subprocess`, `json`, `pathlib` y el seam: **estructuralmente no puede leer un secreto**. |
 | `scripts/jobfolder.py` | Genera y lee la carpeta del trabajo, y calcula la única condición de obsolescencia: que el fuente se haya movido más allá del commit fijado, dentro de las rutas declaradas. |
 | `scripts/shard_io.py` | Un único predicado de completitud de evidencia, compartido por el registro de ensayos y por el paso de fusión posterior. Una sola definición, cero deriva. |
-| `scripts/adapters/kaggle.py` | El **único** archivo de toda la skill autorizado a nombrar un servicio. Invoca el binario de línea de comandos; nunca importa el paquete. |
+| `scripts/adapters/kaggle.py`, `colab.py` | Los adaptadores de servicio autorizados a nombrar un backend. Invocan el CLI oficial correspondiente (`kaggle` o `google-colab-cli`); nunca importan paquetes privados ni leen secretos directamente. |
 | `assets/runner_bootstrap.py` | La celda 0 de todo cuaderno generado: valida la configuración, clona el commit fijado, pone `src/` en el path e importa los módulos declarados verificando que resuelvan **dentro del clon**. Corre en la máquina remota, antes que cualquier código tuyo. |
 | `assets/runner_invoke.py` | La celda 1: elige el bloque normal o el de ensayo y llama al punto de entrada declarado. |
 | `distribute` | Reparte las unidades declaradas entre los workers disponibles y devuelve el reparto, **sin enviar nada**. Es la respuesta a "¿en cuántos pedazos entra esto y quién corre cada uno?", separada de `submit` a propósito: decidir el reparto y gastar cuota son dos actos distintos. |
@@ -1598,8 +1818,10 @@ pendiente**.
   filtro que alguien pueda olvidarse de aplicar.
 - **La preparación se prueba, no se declara.** El veredicto de un ensayo sale de la
   evidencia traída, y no hay ningún reloj involucrado en ninguna parte.
-- **Un solo archivo nombra un servicio.** Y hay guardas a nivel de código fuente que lo
-  verifican en los otros ocho.
+- **Sólo los adaptadores nombran un servicio.** `scripts/adapters/kaggle.py` y
+  `scripts/adapters/colab.py` son los únicos lugares autorizados; hay guardas a
+  nivel de código fuente que verifican que el resto de la skill sea ciego respecto
+  del backend.
 
 **Limitaciones conocidas.**
 
@@ -2124,7 +2346,7 @@ $ paper_cli.py resolve --identifier 10.1038/nature14539 --resolver crossref
 ```
 
 **El flujo, por grupos de verbos.** Esta skill no declara una tabla de etapas:
-declara **diecisiete verbos detrás de una sola puerta** (`scripts/paper_cli.py`),
+declara **diecinueve verbos detrás de una sola puerta** (`scripts/paper_cli.py`),
 y el flujo es el orden en que esos grupos se habilitan entre sí.
 
 | Grupo | Verbos | Qué deja establecido |
@@ -2133,10 +2355,10 @@ y el flujo es el orden en que esos grupos se habilitan entre sí.
 | El contrato de sección | `contract`, `readiness`, `order` | Qué debe cumplir cada sección. El contrato es **dato, no código** |
 | Las decisiones del paper | `declare`, `observe`, `plan` | Lo que el paper decide sobre sí mismo. `observe` valida un informe de `insumos-observer` contra el esquema **antes** de que una persona corra `declare` |
 | La evidencia que sostiene | `resolve`, `bib build`, `validate` | Resolución de citas, bibliografía con fuente, y la compuerta de veredicto/colocación: **ninguna afirmación sin una fuente que la sostenga** |
-| Escribir y dibujar | `write`, `render`, `place` | Redacción atada a evidencia, auditoría de contrato y prueba de fuga de estilo. `render`/`place`: un diagrama que compila o dice por qué, con su presupuesto de reparación |
-| Comprobar | `verify` | Verificación de acoplamientos de sólo lectura, integridad de citas y vigencia del contrato |
+| Escribir y dibujar | `write`, `render`, `place`, `figure optimize`, `figure audit` | Redacción atada a evidencia, auditoría de contrato y prueba de fuga de estilo. Optimización de TikZ y auditoría semántica de figuras. `render`/`place`: un diagrama que compila o dice por qué, con su presupuesto de reparación |
+| Comprobar | `verify` | Verificación de acoplamientos de sólo lectura, integridad de citas, consistencia semántica de figuras y vigencia del contrato |
 
-**El motor de sustitución son cuatro de esos diecisiete** —`scaffold`, `status`,
+**El motor de sustitución son cuatro de esos diecinueve** —`scaffold`, `status`,
 `open`, `substitute`— y tienen una regla que conviene saber: **no existe
 `--force`**. Nada acá descarta jamás el texto en disco de una persona a favor de
 un cuerpo entrante. La única salida de un bloque editado a mano es `--adopt`,
@@ -2167,8 +2389,8 @@ donde nada quedó afirmado sin que una corrida lo haya chequeado.
 
 | Archivo | Qué hace y por qué existe |
 |---------|---------------------------|
-| `SKILL.md` | El contrato de conducta: los 17 verbos, sus refusals, el procedimiento de traslado hacia los 5 agentes. |
-| `scripts/paper_cli.py` | El front door — 17 verbos: `scaffold, status, open, substitute, contract, readiness, order, declare, observe, resolve, bib, validate, plan, write, render, verify, place`. Sin dependencias externas. |
+| `SKILL.md` | El contrato de conducta: los 19 verbos, sus refusals, el procedimiento de traslado hacia los 6 agentes. |
+| `scripts/paper_cli.py` | El front door — 19 verbos: `scaffold, status, open, substitute, contract, readiness, order, declare, observe, resolve, bib, validate, plan, write, render, verify, place, figure optimize, figure audit`. Sin dependencias externas. |
 | `scripts/paper_scaffold.py` | Crea y re-entra `paper/` sin clobbing — mismo patrón que `proposals/`/`experiments/`. |
 | `scripts/paper_block.py` | Gramática de marcadores: delimita, ubica, sustituye y rechaza sobre bloques nombrados dentro de `main.tex`, byte a byte. |
 | `scripts/paper_region.py` | La gramática compartida en la que se escriben las regiones `declarations`/`provenance`. |
@@ -2190,13 +2412,16 @@ donde nada quedó afirmado sin que una corrida lo haya chequeado.
 | `scripts/paper_validate.py` | El único gate de citas: veredicto, colocación por régimen, y un loop de búsqueda acotado a tres rondas que nunca deja pasar un bloque a medio citar. |
 | `scripts/paper_obligation.py` | Qué debe contener un diagrama, leído de la declaración `figure:` del contrato — nunca hardcodeado contra un id de sección o bloque. |
 | `scripts/paper_figure.py` | Layout de fuente/manifiesto de diagramas, el cruce de dos vías del manifiesto, y la ledger de presupuesto de reparación por figura. |
+| `scripts/paper_tikz.py` | Optimizador de código TikZ: poda librerías no usadas, detecta librerías faltantes y factoriza estilos repetidos en `\tikzset`. |
+| `scripts/paper_figure_audit.py` | Auditor semántico de figuras: compara nodos del manifiesto contra la prosa de la sección y las pipeline steps. |
 | `scripts/paper_latex.py` | El único módulo al que esta skill le permite importar `subprocess` — descubrimiento de toolchain, la única llamada a `latexmk`, parseo de log, veredicto de tres señales. |
 | `scripts/paper_coupling_evidence.py` | Toda lectura de disco que `verify` necesita, aislada acá y en ningún otro lado. |
-| `scripts/paper_verify.py` | Siete chequeos puros sobre esa evidencia — cero I/O propio, reporte de sólo lectura. |
+| `scripts/paper_verify.py` | Ocho chequeos puros sobre esa evidencia (incluyendo `figure-semantics`) — cero I/O propio, reporte de sólo lectura. |
 | `scripts/paper_objective.py` | El norte declarado: `OBJECTIVE_FLOW`, leído por `tests/test_agents.py` vía `ast.literal_eval` — literales puros, sin llamadas ni imports. |
 | `sections/*.md` | Los diez contratos reales, versionados: front-matter JSON + prosa. Entrada real, no fixture. |
 | `.claude/agents/insumos-observer.md` | Lee las **cuatro fuentes declaradas** del paper —`proposals/`, `experiments/`, el código del repo destino y lo que devolvieron sus corridas— y reporta, por cada hecho observable, si está satisfecho y **con qué evidencia**. `Read`, `Glob`, `Grep`. **Nunca decide un valor y nunca corre `declare`**: su informe es lo que una persona lee antes de correrlo ella. El informe se pasa por archivo y `observe` lo valida contra el esquema — nunca se le cree a un agente su propia cuenta. |
 | `.claude/agents/style-sampler.md` | Resuelve el bloque equivalente, **entero**, de cada carpeta de `guidance/` que el registro clasifica como `style-reference`, y lo devuelve **verbatim, nunca recortado**. `Read`, `Glob`, `Grep`. Lo que devuelve es el único material contra el cual una prueba posterior de solapamiento puede comparar un borrador con estilo: si recortara, la prueba compararía contra algo que nadie escribió. |
+| `.claude/agents/figure-auditor.md` | Audita diagramas TikZ contra la prosa de su sección y el manifiesto declarado; corre `figure audit` y reporta el veredicto estructurado. |
 
 **Los seguros.**
 
@@ -2450,69 +2675,415 @@ flowchart TD
     H --> M
 ```
 
+**Limitaciones conocidas.** La skill de auditoría no prueba contención por
+contenido: dos comandos quedaron fuera por presupuesto y siguen fuera —
+`manifest --root <dir> [--baseline <f>]` (huella `sha256` por archivo sobre una
+carpeta declarada y, contra una foto previa, qué se agregó, se borró y cambió) y
+`counts --before <f> --after <f>` (conteo de tests antes y después, **por separado
+en las dos suites**, con el número que no sube tratado como hallazgo). Mientras no
+estén, la prueba de que una carpeta de trabajo quedó limpia y de que
+`implementations/Domain_Adaptation` no se tocó descansa en `git status`, que sobre
+un directorio ignorado sale vacío **por construcción**: no prueba contención, solo
+lo parece; y "la suite quedó verde" sigue valiendo como evidencia de cobertura
+agregada, cuando lo que prueba es que el conteo suba. La decisión de diferirlos
+está registrada en el cambio archivado `the-skill-that-audits-the-others` y es
+explícita: *"The budget decision is made — do not reopen."* El cambio de
+seguimiento que iba a recogerlos nunca se creó, y esa nota apuntaba a la nada;
+este párrafo la reemplaza.
+
 ---
 
-## Tests
+## Los comandos del CLI
 
-**Son dos suites, no una.** Correr una sola y dar un veredicto es un error que este
-repositorio ya cometió, así que las dos van acá con su invocación exacta.
+Todos los comandos corren como `papersmith <comando> [opciones] [<dir>]`. `<dir>`
+es el directorio actual por defecto y debe apuntar a un workspace inicializado
+(salvo `init`). Flag global: `--version`.
+
+| Comando | Qué hace |
+|---------|----------|
+| `init` | Crea un workspace de investigación standalone |
+| `upgrade` | Sincroniza el andamiaje del framework preservando tu investigación |
+| `status` | Muestra salud del workspace, propuestas, corridas e inbox |
+| `ingest` | Ingesta un PDF o una URL de literatura a Markdown |
+| `deliberate` | Habla con el motor de `proposal-deliberation` |
+| `implement` | Delega al harness de `proposal-implementation` |
+| `run` | Ejecuta un perfil de cómputo (local / Kaggle / Slurm) |
+| `remote` | Empaca, envía y sigue trabajos remotos directamente |
+| `target` | Lista, selecciona y chequea targets de cómputo |
+| `audit` | Audita la estructura y detecta drift de lo generado |
+| `mcp` | Expone el orquestador y los verbos del paper por Model Context Protocol |
+
+### `papersmith init <dir>`
 
 ```bash
-npm test                                             # motor compartido de deliberación — 601 tests
-.venv/bin/python -m unittest discover -s tests -p 'test_*.py'   # todo lo demás — 3536 tests
+papersmith init ~/papers/sparse-ae \
+  --title "Sparse Autoencoder Audit" \
+  --topic "mechanistic interpretability" \
+  --remote kaggle
 ```
 
-Medido el 2026-09-13: **601/601** y **3536 OK** (3 salteados). `npm run typecheck` corre
-`tsc` sobre el motor de deliberación y sale limpio.
+| Flag | Efecto |
+|------|--------|
+| `--title TEXT` | Título del paper, escrito en los documentos del workspace |
+| `--topic TEXT` | Tema de investigación |
+| `--tools TEXT` | Runtimes a provisionar, separados por coma |
+| `--remote {kaggle,local,slurm}` | Target de cómputo por defecto (por defecto: `kaggle`) |
+| `--no-npm` | Saltea el `npm install` best-effort (uso offline/hermético) |
+
+Crea `.papersmith/`, `guidance/reference-papers/`,
+`proposals/{drafts,deliberated,receipts}/`, `implementations/`, `kaggle-inbox/`,
+`journal/`, más la copia del kit y su manifest. La forma completa del árbol
+está en [El workspace por dentro](#el-workspace-por-dentro).
+
+### `papersmith upgrade [<dir>]`
+
+```bash
+papersmith upgrade ~/papers/sparse-ae
+```
+
+| Flag | Efecto |
+|------|--------|
+| `--tools TEXT` | Reemplaza los generators de runtime activos |
+| `--force` | Fuerza la escritura de archivos del framework |
+
+Sólo toca archivos gestionados por el framework — jamás `guidance/`,
+`proposals/`, `implementations/`, `kaggle-inbox/`, `journal/`, `DECISIONS.md`,
+`papersmith.yaml`, `README.md` ni los `.env*`. Contra un checkout del kit sin
+reinstalar: `PAPERSMITH_KIT_ROOT=/ruta/al/papersmith-ai papersmith upgrade <dir>`.
+
+### `papersmith status [<dir>]`
+
+```bash
+papersmith status --json
+```
+
+| Flag | Efecto |
+|------|--------|
+| `--json` | Snapshot legible por máquina (versiones, propuestas, corridas, inbox) |
+
+Reporta los archivos desviados por nombre; el exit code queda en `0` mientras
+hay drift reportado (que sea no-cero es un gap conocido, registrado como
+follow-up).
+
+### `papersmith ingest <file_or_url> [<dir>]`
+
+```bash
+papersmith ingest https://arxiv.org/abs/2309.08600
+papersmith ingest ~/Downloads/reference-paper.pdf --ocr
+```
+
+| Flag | Efecto |
+|------|--------|
+| `--ocr` | Modo de extracción orientado a OCR, balanceado (más pesado, para escaneos) |
+
+Descarga/clasifica la referencia, la extrae a Markdown con ecuaciones LaTeX y
+archivos de figuras (una carpeta por paper) y refresca el índice. La primera
+corrida descarga ~1.5 GB de pesos de Surya si el entorno no quedó
+pre-provisionado.
+
+### `papersmith deliberate [<dir>]`
+
+```bash
+papersmith deliberate . --action status
+papersmith deliberate . --action init
+papersmith deliberate . --request-file request.json
+```
+
+| Flag | Efecto |
+|------|--------|
+| `--action ACTION` | Operación real del motor (`status`, `init`, sucesoras…) o alias soportado |
+| `--request JSON` / `--request-file FILE` | Objeto JSON crudo / archivo que lo contiene |
+| `--serve` | Modo persistente por JSON-lines |
+| `--revision FILE` | Archivo fuente gestionado al que aplica la operación |
+| `--instruction TEXT`, `--query TEXT` | Payloads de instrucción / consulta |
+| `--selected-entry-id ID`, `--decisions JSON` | Decisiones de edición resueltas, para operaciones de mutación |
+| `--accept`, `--acceptance-token TOKEN` | Aceptar un preview de `CREATE_SUCCESSOR` |
+| `--withdrawal-operation-id ID`, `--withdrawal-reason TEXT` | Retirar una revisión publicada |
+| `--prior-conclusion TEXT` | Conclusión previa para operaciones de seguimiento |
+
+Corre el motor de deliberación determinista y verificado por AST, keyless y
+local (ninguna operación de estado llama a un modelo).
+
+### `papersmith implement [<dir>]`
+
+```bash
+papersmith implement . --action verify --target implementations/demo
+papersmith implement . --action probe --target implementations/demo
+```
+
+`--action` es obligatorio. Acciones comunes: `env`, `plan`, `apply` (alias
+`materialize`), `admit`, `handoff`, `compose`, `probe` (alias `benchmark`),
+`verify`. Flags de apoyo: `--target`, `--name`, `--plan`, `--finding`,
+`--entry-text`, `--python`, `--shards`, `--revision`; lo que venga después de
+los flags conocidos se reenvía como `extra` a `implementation_cli.py`.
+
+### `papersmith run <profile> [<dir>]`
+
+```bash
+papersmith run smoke_and_invariants --dry-run
+papersmith run sweep_training --target kaggle-gpu-pool --consent <token>
+```
+
+| Flag | Efecto |
+|------|--------|
+| `--target NAME` | Pisa el target de cómputo del perfil |
+| `--dry-run` | Sólo planifica — registra el comando, no despacha nada |
+| `--shard VALUE` | Corre un solo shard de la campaña |
+| `--consent TOKEN` | Token de consentimiento para envío remoto (se reenvía, se hace cumplir aguas abajo) |
+
+Despacha según el provider (subproceso local / submit a Kaggle / `sbatch` por
+ssh) y agrega cada trabajo a `.papersmith/runs_ledger.jsonl`.
+
+### `papersmith remote {pack,push,status,pull,sync} [<dir>]`
+
+```bash
+papersmith remote pack --target kaggle-gpu-pool --entrypoint train.py
+papersmith remote status --job <job-id>
+papersmith remote pull --job <job-id> --dest ./results
+```
+
+Flags clave: `--target`, `--entrypoint`, `--backend`, `--account`, `--job`,
+`--submission-id`, `--dest`, `--consent`, `--smoke`, `--unit` (alcance de
+campaña, repetible), `--force`, `--resolve`, más los flags de definición de
+trabajo (`--service`, `--job-name`, `--product`, `--commit`, `--repo-url`,
+`--repo-ref`, `--run-module`, `--run-function`, `--clone-path`,
+`--regenerate`). Los tokens extra se reenvían a `remote_cli.py`. Un envío real
+gasta cuota: preferí `--smoke` y `--dry-run` primero (ver
+[Cómputo remoto, con cuidado](#cómputo-remoto-con-cuidado)).
+
+### `papersmith target {list,set,check}`
+
+```bash
+papersmith target list
+papersmith target set kaggle-gpu-pool
+papersmith target check
+papersmith target check slurm-cluster
+```
+
+- `list [<dir>]` — targets configurados, marcando el activo con `*`.
+- `set <name> [<dir>]` — persiste el target por defecto en `.papersmith/config.json`.
+- `check [name] [<dir>]` — prueba de conectividad: `local` busca Python, `kaggle`
+  pasa por el helper de cuentas, `remote-ssh` intenta
+  `ssh -o BatchMode=yes -o ConnectTimeout=5 <host> true`.
+
+### `papersmith audit [<dir>]`
+
+```bash
+papersmith audit --check-drift
+```
+
+| Flag | Efecto |
+|------|--------|
+| `--check-drift` | Reporta también el drift de archivos generados como findings (nunca repara) |
+
+Audita la estructura y consistencia del workspace. Hoy está atado al sujeto
+`skill-audit`; el drift se reporta, no se arregla.
+
+> **Nota:** `kaggle-accounts` (validate/remove/list/discover/materialize) no
+> tiene todavía un subcomando `papersmith` — corre como
+> `python3 skills/kaggle-accounts/scripts/accounts_cli.py …` o indirectamente
+> vía `target check`.
+
+### `papersmith mcp {serve,inspect,print-config}`
+
+```bash
+papersmith mcp serve --workspace ~/papers/sparse-ae
+papersmith mcp inspect
+papersmith mcp print-config --workspace ~/papers/sparse-ae
+```
+
+Expone el orquestador del workspace y los verbos de `paper-writing` a cualquier
+cliente del Model Context Protocol sobre `stdio` (JSON-RPC 2.0).
+
+- `serve --workspace <dir>` — arranca el servidor MCP sobre `stdio`, enlazado a un único workspace.
+- `inspect` — imprime el catálogo de capacidades en JSON (fuente de verdad).
+- `print-config [--workspace <dir>]` — emite el fragmento de configuración para el host que estés configurando (Claude Code, OpenCode).
+
+El catálogo completo de 22 herramientas (11 de sólo lectura y 11 mutantes), los recursos `papersmith://` y el modelo de seguridad están documentados en detalle en **[docs/mcp.md](docs/mcp.md)**.
+
+---
+
+## Cómputo remoto, con cuidado
+
+Antes de que un trabajo toque un worker real, la forja te da una escalera de
+ensayos baratos. Bajala en orden; no la saltees:
+
+1. `papersmith target list` — qué targets hay y cuál está activo.
+2. `papersmith target check [nombre]` — ¿responde ese target?
+3. `papersmith run <perfil> --dry-run` — planifica y registra el comando en el
+   ledger; **no despacha nada**.
+4. `papersmith remote … --smoke` — ensayo real contra el backend, sin gastar
+   campaña.
+5. Recién ahí, la corrida real (`--consent <token>` cuando corresponda).
+
+Los targets y los perfiles son los de tu `papersmith.yaml` (ver
+[El workspace por dentro](#el-workspace-por-dentro)). El ledger
+`.papersmith/runs_ledger.jsonl` es append-only: cada corrida despachada queda
+registrada con su target, su perfil y su resultado. Y `papersmith remote
+status` / `pull` es la memoria de lo que se mandó afuera y lo que volvió — el
+detalle de ese contrato vive en la sección de `remote-execution` de la
+[Anatomía](#anatomía-de-cada-skill).
+
+**Credenciales y backends.** `remote-execution` soporta múltiples backends (`kaggle`, `colab`):
+- **Kaggle**: corre contra el pool de workers configurados. Sus credenciales viven en el store de `kaggle-accounts` (`skills/kaggle-accounts/store/accounts.json`), nunca salen del disco y nunca se imprimen: `materialize` escribe el token de un worker a un archivo de texto y te dice **dónde**, jamás **qué**. `/kaggle-accounts` valida o remueve cuentas, y `papersmith target check kaggle` las prueba de costado. Un subcomando `papersmith accounts` todavía no existe (follow-up registrado): se invoca como `python3 skills/kaggle-accounts/scripts/accounts_cli.py {list,discover,validate,remove,materialize}`.
+- **Colab**: corre contra sesiones administradas por `google-colab-cli` (`papersmith remote push --backend colab ...`). No es un target de workspace (no se pasa a `init --remote` ni a `target check`), sino un backend directo de `remote-execution`. Requiere tener `google-colab-cli` en `PATH` y el token resuelto en `~/.config/colab-cli/token.json`.
+
+**Cuota real.** Un envío real gasta cuota y horas de GPU. La doctrina de la casa
+es simple: todo lo que se pueda ensayar con `--dry-run` y `--smoke`, se ensaya;
+lo que quede después de eso, lo decidís vos.
+
+---
+
+## Arquitectura
+
+```
+papersmith-ai/
+├── docs/                       # documentación complementaria (MCP server)
+├── src/papersmith/             # el CLI orquestador (Python) y sus bridges de runtime
+│   ├── core/                   # init, status, ingest, upgrade, executor, ledger
+│   ├── bridges/                # Node, Python, deliberación, ejecución remota
+│   └── mcp/                    # servidor stdio Model Context Protocol
+├── skills/                     # árbol canónico de skills, proyectado a los harnesses
+│   ├── _core/                  # motores compartidos de deliberación e implementación
+│   ├── paper-ingestion/        # Marker + Surya OCR + llama-server
+│   ├── proposal-deliberation/  # motor TypeScript: verificación por AST y máquina de estados
+│   ├── proposal-implementation/# generación de código reproducible y sus tests
+│   ├── experimental-deliberation/   # segundo dominio; mismo motor, otro norte
+│   ├── experimental-implementation/ # segundo huésped de implementación; dos documentos, un motor
+│   ├── paper-writing/          # contratos de sección → PDF, sin asumir nada
+│   ├── remote-execution/       # despacho a cómputo distribuido (Kaggle T4/P100 / local)
+│   ├── kaggle-accounts/        # guardián de credenciales: identidades, nunca valores
+│   └── skill-audit/            # meta-auditor de superficies y promesas
+├── guidance/                   # papers de referencia y lineamientos de dominio
+├── tests/                      # suites Node.js + pytest (meta-auditorías incluidas)
+└── scripts/                    # provisión de entorno y setup de harnesses
+```
+
+### Garantías de ingeniería
+
+- **Invariantes de AST y fronteras**: las ecuaciones y secciones se siguen por
+  IDs estables y cadenas de revisión inmutables. No hay borrados, reubicaciones
+  ni fusiones de frontera no autorizadas.
+- **Keyless y local-first**: la ingesta corre completamente offline y local, con
+  Marker y `llama.cpp`.
+- **Proyección agnóstica de harness**: el árbol canónico `skills/` se proyecta a
+  `.claude/skills`, `.pi/skills`, `.opencode/skills` y `.antigravity/skills`.
+
+---
+
+## Desarrollo y pruebas
+
+Son **dos suites**, no una. Correr una sola y dar un veredicto es un error que
+este repositorio ya cometió, así que las dos van acá con su invocación exacta:
+
+```bash
+npm test                                  # motor compartido de deliberación — 647 tests
+.venv/bin/python -m pytest                # todo lo demás — 4172 passed, 7 skipped (4179 tests)
+npm run test:all                          # las dos, en orden
+```
+
+Medido el 2026-09-20: **647/647** del lado Node y
+**4172 passed** (7 salteados, 4179 recolectados) del lado Python (con `requirements.txt` provisionado).
+`npm run typecheck` corre `tsc` sobre el motor de deliberación y sale limpio.
 
 **Dos trampas que parecen defectos del repositorio y no lo son.**
 
 *El script de npm fija el perfil de dominio.* `npm test` exporta
-`DELIBERATION_DOMAIN_PROFILE` antes de invocar `node --test`. Llamar `node --test` a secas
-falla cerrado, porque el motor no sirve ningún dominio propio y se niega a arrancar sin
-uno. Es la invocación la que está mal, no el motor.
+`DELIBERATION_DOMAIN_PROFILE` antes de invocar `node --test`. Llamar `node
+--test` a secas falla cerrado, porque el motor no sirve ningún dominio propio y
+se niega a arrancar sin uno. Es la invocación la que está mal, no el motor. Lo
+mismo vale del lado Python: los motores de implementación exigen
+`IMPLEMENTATION_DOMAIN_PROFILE`, y por eso el CLI que los lanza lo fija — y por
+eso `tests/domain_profile.py` lo siembra y lo restaura por import.
 
 *`tests/` no tiene `__init__.py`.* La forma que uno escribiría de memoria,
-`discover -s tests -t .`, muere con `ImportError: Start directory is not importable`. La
-forma de arriba —sin `-t .` y con `-p 'test_*.py'`— es la que funciona.
+`discover -s tests -t .`, muere con `ImportError: Start directory is not
+importable`. La forma que funciona es la de arriba, sin `-t .`.
 
-**Qué prueba cada cosa.** `tests/` cubre **el tooling de la forja**: los dos motores
-compartidos, los nueve `SKILL.md` y sus scripts, y la atadura entre cada skill y sus
-agentes en las dos direcciones. Los tests de una implementación materializada viven en su
-repositorio destino y en ningún otro lado; borrarlo borra sus tests.
+**Qué prueba cada cosa.** `tests/` cubre **el tooling de la forja**: los dos
+motores compartidos, los nueve `SKILL.md` y sus scripts, la atadura entre cada
+skill y sus agentes en las dos direcciones, y una serie *from-scratch* que
+genera un workspace con el CLI y recorre cada comando, cada skill embarcada y
+cada subagente dentro de él (`tests/test_workspace_{commands,skills,agents}_e2e.py`).
+Los tests de una implementación materializada viven en su repositorio destino y
+en ningún otro lado; borrarlo borra sus tests.
 
-**Dos corpus sellados.** `tests/seal/` y `tests/experiments_seal/` guardan la salida
-exacta de una batería de comandos como digests dorados. No son tests de unidad: existen
-para que un cambio en el motor compartido no altere en silencio lo que cada host produce.
-Valen lo que cuestan — durante el último arreglo, cuatro digests se movieron y dijeron que
-la corrección era equivocada, en una dirección que ningún test de unidad veía.
+**Un ensayo live, opt-in.** Todo lo de arriba es hermético. Para probar los
+motores reales —`npm install`, provisión de entorno, una ingesta y un agente—
+está `scripts/cli-paper-live-smoke.sh`, que se niega a correr sin
+`PAPERSMITH_LIVE=1` (y acepta `PAPERSMITH_LIVE_INGEST=<pdf>` y
+`PAPERSMITH_LIVE_AGENT=<nombre>` para extender el recorrido).
 
-`proposal-implementation` se validó además con un arnés de escenarios propio —catorce
-situaciones en las que puede caer un clon, más el ciclo completo hasta publicar la
-revisión que produce un hallazgo— construido para cerrar la v1.5 y retirado al cerrarla.
-Era andamiaje, no parte de la forja. Queda en la historia: el commit que lo saca lo dice,
-y `git revert` lo trae de vuelta si alguna vez hay que volver a correrlo.
+**Dos corpus sellados.** `tests/seal/` y `tests/experiments_seal/` guardan la
+salida exacta de una batería de comandos como digests dorados. No son tests de
+unidad: existen para que un cambio en el motor compartido no altere en silencio
+lo que cada host produce. Valen lo que cuestan — durante el último arreglo,
+cuatro digests se movieron y dijeron que la corrección era equivocada, en una
+dirección que ningún test de unidad veía.
 
-## Limitaciones conocidas
+`proposal-implementation` se validó además con un arnés de escenarios propio
+—las situaciones en las que puede caer un clon, más el ciclo completo hasta
+publicar la revisión que produce un hallazgo— construido para cerrar la v1.5 y
+retirado al cerrarla. Era andamiaje, no parte de la forja. Queda en la historia:
+el commit que lo saca lo dice, y `git revert` lo trae de vuelta si alguna vez
+hay que volver a correrlo.
 
-Lo que este repositorio sabe de sí mismo y decidió no arreglar todavía. Está acá para
-que nadie lo vuelva a descubrir desde cero y lo reporte como si fuera nuevo.
+---
 
-**La skill de auditoría no prueba contención por contenido.** Dos comandos quedaron
-fuera por presupuesto y siguen fuera:
+## Solución de problemas
 
-- `manifest --root <dir> [--baseline <f>]` — huella `sha256` por archivo sobre una
-  carpeta declarada, y contra una foto previa, qué se agregó, se borró y cambió.
-- `counts --before <f> --after <f>` — conteo de tests antes y después, **por separado
-  en las dos suites**, con el número que no sube tratado como hallazgo.
+**"La skill se negó a arrancar."** Es el comportamiento esperado: cada skill
+declara qué necesita antes y sale con un código de rechazo que nombra lo que
+falta, en vez de inventarlo o saltearlo. Leé el código como una lista de
+tareas — dice exactamente qué entrada falta. No es un error tuyo.
 
-**Qué falta mientras no estén.** Hoy la prueba de que una carpeta de trabajo quedó
-limpia y de que `implementations/Domain_Adaptation` no se tocó descansa en
-`git status`, que sobre un directorio ignorado sale vacío **por construcción**: no
-prueba contención, solo la parece. Y "la suite quedó verde" sigue valiendo como
-evidencia de que se agregó cobertura, cuando lo que la prueba es que el conteo suba.
+**"`node --test` a secas falla."** Por diseño: el motor de deliberación se niega
+a servir sin un perfil de dominio. Usá `npm test` (que lo fija) o el CLI de la
+skill. Lo mismo vale para los motores de implementación:
+`IMPLEMENTATION_DOMAIN_PROFILE_REQUIRED` significa que los estás invocando
+directo en vez de a través de `implementation_cli.py`, que es quien los arranca
+con su perfil.
 
-La decisión de diferirlos está registrada en el cambio archivado
-`the-skill-that-audits-the-others`, y es explícita: *"The budget decision is made — do
-not reopen."* El cambio de seguimiento que iba a recogerlos nunca se creó, y esa nota
-apuntaba a la nada; esta sección la reemplaza.
+**"El workspace no tiene `.claude/skills`."** Es el estado por defecto: un
+workspace embarca el árbol `skills/` completo y `.claude/agents/`, y sus
+documentos de routing apuntan al árbol canónico `skills/*/SKILL.md`; los
+agentes leen las skills desde ahí. Si querés que tu harness las liste como
+comandos `/`, corré `npm run setup:harnesses` dentro del workspace: crea las
+proyecciones de los cuatro harness, relativas e idempotentes.
+
+**"`papersmith audit` reporta drift."** Algún archivo generado cambió respecto
+del manifest. No lo edites a mano: corré `papersmith upgrade` (y `--force` si
+hace falta) para volver a la versión del framework.
+
+**"No puedo correr `papersmith accounts`."** Todavía no existe (follow-up
+registrado). Usá
+`python3 skills/kaggle-accounts/scripts/accounts_cli.py {list,discover,validate,remove,materialize}`.
+
+**"`status` sale con código 0 aunque haya drift."** Gap conocido y registrado:
+hoy el exit code no es estricto. Para un gate de CI, mirá el JSON (`--json`) en
+vez del código de salida.
+
+**"La primera ingesta descarga ~1.5 GB."** Son los pesos de Surya si el entorno
+no quedó pre-provisionado. Corré `python scripts/setup_env.py install` antes de
+la primera ingesta.
+
+---
+
+## Documentación relacionada
+
+- **Cada skill, su contrato literal**: `skills/<nombre>/SKILL.md` — la fuente de
+  verdad de lo que una skill acepta y promete.
+- **Contexto del proyecto para agentes**: `openspec/project-context.md`.
+- **Lineamientos de dominio**: `guidance/paper-guide/` — la drop-zone que
+  `proposal-deliberation` carga como contexto al inicio de cada deliberación.
+- **Provisión del entorno y de los harnesses**: `scripts/setup_env.py` y
+  `scripts/setup-harnesses.sh`.
+- **Suites y gates**: `tests/` y los scripts de `package.json` (`test`,
+  `test:all`, `typecheck`).
+- **Servidor MCP y catálogo de herramientas**: [docs/mcp.md](docs/mcp.md).
+
+---
+
+## Licencia
+
+Apache-2.0 — el texto completo está en [`LICENSE`](LICENSE).

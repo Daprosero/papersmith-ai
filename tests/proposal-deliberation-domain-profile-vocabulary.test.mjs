@@ -20,9 +20,9 @@ import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
 const repoRoot = process.cwd();
-const engineDir = path.join(repoRoot, '.claude/skills/_core/deliberation/engine');
+const engineDir = path.join(repoRoot, 'skills/_core/deliberation/engine');
 const domainProfilePath = path.join(engineDir, 'domain-profile.ts');
-const piRoot = '/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent';
+const piRoot = path.resolve('.');
 
 const BASE_VOCABULARY = {
 	conceptualTerms: [],

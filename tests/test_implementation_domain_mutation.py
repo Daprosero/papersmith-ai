@@ -47,16 +47,18 @@ import unittest
 from pathlib import Path
 
 FORGE = Path(__file__).resolve().parents[1]
-ENGINE_DIR = FORGE / ".claude/skills/_core/implementation/engine"
-REAL_PROFILE = FORGE / ".claude/skills/proposal-implementation/impl_profile.py"
+ENGINE_DIR = FORGE / "skills/_core/implementation/engine"
+REAL_PROFILE = FORGE / "skills/proposal-implementation/impl_profile.py"
 CASES_PATH = FORGE / "tests/seal/cases.json"
-
-os.environ.setdefault("IMPLEMENTATION_DOMAIN_PROFILE", str(REAL_PROFILE))
 
 import sys  # noqa: E402
 if str(ENGINE_DIR) not in sys.path:
     sys.path.insert(0, str(ENGINE_DIR))
-import implementation_engine as impl  # noqa: E402
+
+from domain_profile import seeded_profile  # noqa: E402  (tests/ on path)
+
+with seeded_profile(REAL_PROFILE):
+    import implementation_engine as impl  # noqa: E402
 
 _TESTS_DIR = Path(__file__).resolve().parent
 if str(_TESTS_DIR) not in sys.path:
@@ -152,7 +154,8 @@ MEASURED_MOVERS: dict[str, tuple[str, ...]] = {
     # now fails the same way -- every sealed case except the one already
     # excluded as non-deterministic moves.
     "findings.citation_pattern": (
-        "admit-e0", "admit-e1", "apply", "close-e0", "close-e1", "compose",
+        "admit-e0", "admit-e1", "adopt-same-target", "apply", "close-e0",
+        "close-e1", "compose",
         "defect", "discuss", "gate-e0", "gate-e1", "handoff-e0", "handoff-e1",
         "materialize", "name", "offer-e0", "offer-e1", "plan-a", "plan-b",
         "position-e0", "position-e1", "probe", "settle", "step", "verify-a",
@@ -467,7 +470,7 @@ class SeedForcedNoneMutationTests(unittest.TestCase):
         self.scratch_forge = Path(tempfile.mkdtemp(prefix="x5-forge-"))
         self.addCleanup(shutil.rmtree, self.scratch_forge, ignore_errors=True)
         self.scratch_core = (
-            self.scratch_forge / ".claude" / "skills" / "_core" / "implementation")
+            self.scratch_forge / "skills" / "_core" / "implementation")
         shutil.copytree(ENGINE_DIR.parent, self.scratch_core,
                         ignore=shutil.ignore_patterns("__pycache__"))
         (self.scratch_forge / "implementations").mkdir(parents=True)
@@ -772,7 +775,7 @@ class KitLockHonestyTests(unittest.TestCase):
 
     def test_a_scratch_kit_mutation_reddens_the_agreement_and_the_shipped_file_is_untouched(self):
         real_module_path = (
-            FORGE / ".claude/skills/proposal-implementation/assets/kit/src/module.py")
+            FORGE / "skills/proposal-implementation/assets/kit/src/module.py")
         real_source = real_module_path.read_text(encoding="utf-8")
         self.assertIn('"equations": ["{{EQUATION}}"],', real_source)
 

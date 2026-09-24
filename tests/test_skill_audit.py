@@ -26,7 +26,7 @@ import unittest
 from pathlib import Path
 
 FORGE = Path(__file__).resolve().parents[1]
-SKILL_ROOT = FORGE / ".claude" / "skills" / "skill-audit"
+SKILL_ROOT = FORGE / "skills" / "skill-audit"
 SKILL_MD = SKILL_ROOT / "SKILL.md"
 CLI = SKILL_ROOT / "scripts" / "audit_cli.py"
 USAGE_MD = SKILL_ROOT / "references" / "usage.md"
@@ -813,7 +813,7 @@ if __name__ == "__main__":
 # findings.
 # ==========================================================================
 
-PD = FORGE / ".claude" / "skills" / "proposal-deliberation"
+PD = FORGE / "skills" / "proposal-deliberation"
 PD_SPEC = PROBES / "proposal-deliberation.accepted-operations.json"
 SELF_SPEC = PROBES / "skill-audit.subcommands.json"
 
@@ -1440,7 +1440,7 @@ class RemoteExecutionMinInterpreterTests(unittest.TestCase):
     means this now derives, the way it already does when `PATH` happens to
     put a >=3.10 `python3` first."""
 
-    REMOTE_EXECUTION = FORGE / ".claude" / "skills" / "remote-execution"
+    REMOTE_EXECUTION = FORGE / "skills" / "remote-execution"
     ACCEPTED_OPS_SPEC = PROBES / "remote-execution.accepted-operations.json"
     SMOKE_SUBS_SPEC = PROBES / "remote-execution.smoke-subcommands.json"
 
@@ -1875,7 +1875,7 @@ class NumeralCheckTests(BoxMixin, unittest.TestCase):
     def test_the_live_target_names_both_halves_at_file_and_line(self):
         """Move 2, on a real document: a skill that says three above a list of
         more than three, in the repository as it stands."""
-        SKILL = FORGE / ".claude" / "skills" / "remote-execution" / "SKILL.md"
+        SKILL = FORGE / "skills" / "remote-execution" / "SKILL.md"
         found = audit_cli_module().numeral_mismatches(SKILL)
         self.assertEqual(len(found), 1, found)
         finding = found[0]
@@ -8927,9 +8927,9 @@ class RosterProbeEnvironmentTests(unittest.TestCase):
     is worse than a wrong count: it is the wrong subject, silently.
     """
 
-    SUBJECT = FORGE / ".claude" / "skills" / "experimental-implementation"
+    SUBJECT = FORGE / "skills" / "experimental-implementation"
     SPEC = PROBES / "experimental-implementation.accepted-operations.json"
-    SIBLING_PROFILE = (FORGE / ".claude" / "skills"
+    SIBLING_PROFILE = (FORGE / "skills"
                        / "proposal-implementation" / "impl_profile.py")
 
     def test_an_ambient_domain_profile_cannot_redirect_the_subject(self):
@@ -8964,7 +8964,7 @@ class NewlyCoveredSubjectRosterTests(unittest.TestCase):
     still the subject's own words, never a second parser of its source.
     """
 
-    SKILLS = FORGE / ".claude" / "skills"
+    SKILLS = FORGE / "skills"
 
     #: (subject directory name, expected accepted-operations count). The
     #: count is asserted rather than re-derived here, for the same reason
@@ -8972,15 +8972,22 @@ class NewlyCoveredSubjectRosterTests(unittest.TestCase):
     #: hardcodes `9` for `proposal-deliberation`: it is the number the
     #: subject's own refusal names today, and a real change to that number
     #: is exactly what a hardcoded count exists to catch.
+    #:
+    #: `paper-writing` moved from 17 to 18 when `figure` (the
+    #: `figure optimize` / `figure audit` namespace) was wired into
+    #: `paper_cli.py`: the roster is derived from the subject's own refusal,
+    #: so a new verb that reached the CLI and not this number would be the
+    #: drift this table exists to report, not a stale expectation to relax.
     _CASES = (
-        ("paper-ingestion", 3),
+        ("paper-ingestion", 4),
         ("experimental-deliberation", 9),
-        ("experimental-implementation", 21),
+        ("experimental-implementation", 22),
         ("kaggle-accounts", 5),
-        # 26 -> 27: `the-skill-writes-the-declaration-it-demands`, S2 adds a
-        # new top-level `mark` root (`mark revisions`) -- a real, measured
-        # widening of `paper_cli.py`'s own argparse roster, not a drift.
-        ("paper-writing", 27),
+        # 27 -> 28: this fork's own `figure` namespace (`figure optimize` /
+        # `figure audit`) joins the roster on top of upstream's `mark`
+        # widening (`the-skill-writes-the-declaration-it-demands`), a real,
+        # measured widening of `paper_cli.py`'s own argparse roster, not drift.
+        ("paper-writing", 28),
     )
 
     def test_each_new_recipe_derives_a_real_nonempty_roster(self):

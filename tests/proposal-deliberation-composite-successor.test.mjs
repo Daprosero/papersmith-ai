@@ -5,15 +5,9 @@ import test from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
-const piRoot = '/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent';
-const exportsPath = path.join(root, '.claude/skills/_core/deliberation/engine/exports.ts');
-const { createJiti } = await import(pathToFileURL(path.join(piRoot, 'node_modules/jiti/lib/jiti.mjs')).href);
-const jiti = createJiti(import.meta.url, { alias: {
-	'@earendil-works/pi-coding-agent': path.join(piRoot, 'dist/index.js'),
-	'@earendil-works/pi-ai/compat': path.join(piRoot, 'node_modules/@earendil-works/pi-ai/dist/compat.js'),
-	'@earendil-works/pi-ai': path.join(piRoot, 'node_modules/@earendil-works/pi-ai/dist/index.js'),
-	typebox: path.join(piRoot, 'node_modules/typebox/build/index.mjs'),
-} });
+const exportsPath = path.join(root, 'skills/_core/deliberation/engine/exports.ts');
+const { createJiti } = await import('jiti');
+const jiti = createJiti(import.meta.url);
 const v2 = await jiti.import(exportsPath);
 const sha256 = (value) => createHash('sha256').update(value).digest('hex');
 

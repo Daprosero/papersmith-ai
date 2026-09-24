@@ -29,13 +29,13 @@ from pathlib import Path
 from typing import Mapping
 
 FORGE = Path(__file__).resolve().parents[1]
-SKILL_DIR = FORGE / ".claude" / "skills" / "experimental-implementation"
+SKILL_DIR = FORGE / "skills" / "experimental-implementation"
 PROFILE_FILE = SKILL_DIR / "impl_profile.py"
 LAUNCHER = SKILL_DIR / "scripts" / "implementation_cli.py"
 SIBLING_LAUNCHER = (
-    FORGE / ".claude" / "skills" / "proposal-implementation" / "scripts"
+    FORGE / "skills" / "proposal-implementation" / "scripts"
     / "implementation_cli.py")
-RESOLVER = FORGE / ".claude/skills/_core/implementation/impl_domain_profile.py"
+RESOLVER = FORGE / "skills/_core/implementation/impl_domain_profile.py"
 
 _counter = itertools.count()
 
@@ -194,7 +194,7 @@ class CitationPatternGroupCountTests(unittest.TestCase):
 #: silently reads an earlier test's already-resolved profile (the exact
 #: scar `test_implementation_domain_mutation.py` records for its own
 #: mutation harness).
-ENGINE_DIR = FORGE / ".claude" / "skills" / "_core" / "implementation" / "engine"
+ENGINE_DIR = FORGE / "skills" / "_core" / "implementation" / "engine"
 
 
 def _engine_with_documents(documents: list[dict]):
@@ -932,7 +932,7 @@ class WalkPromisesOnlyWhatItPerformsTests(unittest.TestCase):
         SKILL.md and both walk agents' descriptions."""
         offenders = []
         for path, phrase in (
-                (FORGE / ".claude/skills/proposal-implementation/SKILL.md",
+                (FORGE / "skills/proposal-implementation/SKILL.md",
                  "and `rehearse`"),
                 (FORGE / ".claude/agents/implementation-walk.md",
                  "rehearse them on a worker"),
@@ -958,7 +958,7 @@ class FrontDoorIdentityTests(unittest.TestCase):
     """
 
     def _help(self, skill: str) -> str:
-        cli = (FORGE / ".claude" / "skills" / skill / "scripts"
+        cli = (FORGE / "skills" / skill / "scripts"
                / "implementation_cli.py")
         # The launcher uses `setdefault`, so an IMPLEMENTATION_DOMAIN_PROFILE
         # left in this process's environment by a sibling test would be

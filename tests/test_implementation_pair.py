@@ -43,13 +43,12 @@ TESTS_DIR = Path(__file__).resolve().parent
 if str(TESTS_DIR) not in sys.path:
     sys.path.insert(0, str(TESTS_DIR))
 
-os.environ.setdefault(
-    "IMPLEMENTATION_DOMAIN_PROFILE",
-    str(FORGE / ".claude/skills/proposal-implementation/impl_profile.py"))
+from domain_profile import seeded_profile  # noqa: E402  (path set above)
 
-from seal import harness as seal_harness  # noqa: E402  (path set above)
-from pair import corpus as pair_corpus  # noqa: E402  (path set above)
-import impl_position  # noqa: E402  (path set by seal_harness's own import)
+with seeded_profile(FORGE / "skills/proposal-implementation/impl_profile.py"):
+    from seal import harness as seal_harness  # noqa: E402  (path set above)
+    from pair import corpus as pair_corpus  # noqa: E402  (path set above)
+    import impl_position  # noqa: E402  (path set by seal_harness's own import)
 
 #: Cut 3 corrective apply (verify FAIL, CRITICAL finding): the real CLI
 #: entry point, the same one every subprocess case in this suite already
@@ -59,7 +58,7 @@ import impl_position  # noqa: E402  (path set by seal_harness's own import)
 #: target, something the single-command golden-digest mechanism cannot
 #: represent (`seal_harness.run_case` gives every case a fresh scratch
 #: target).
-CLI = FORGE / ".claude/skills/proposal-implementation/scripts/implementation_cli.py"
+CLI = FORGE / "skills/proposal-implementation/scripts/implementation_cli.py"
 
 CASES_PATH = TESTS_DIR / "pair" / "cases.json"
 DIGESTS_PATH = TESTS_DIR / "pair" / "digests.json"
@@ -235,7 +234,7 @@ class SubprocessRefusalNamesIndexedLeafTests(unittest.TestCase):
             roots = pair_corpus.build_broken_second_document(Path(tmp))
             env = dict(os.environ)
             env["IMPLEMENTATION_DOMAIN_PROFILE"] = str(roots.profile_path)
-            cli = (FORGE / ".claude/skills/proposal-implementation/scripts"
+            cli = (FORGE / "skills/proposal-implementation/scripts"
                   "/implementation_cli.py")
             proc = subprocess.run(
                 [_sys.executable, str(cli), "name", "--name", "Method"],
@@ -256,15 +255,14 @@ class SealCorpusUntouchedByPairCorpusTests(unittest.TestCase):
         pair_case_ids = {case["id"] for case in _load_cases()}
         self.assertEqual(pair_case_ids & set(seal_digests), set())
 
-    def test_the_seal_digests_file_still_has_exactly_twenty_eight_case_entries(self):
-        """29 raw keys: the 28 sealed cases plus the reserved
-        `__corpus_fingerprint__` entry (`tests/seal/corpus.py`'s own
-        docstring)."""
+    def test_the_seal_digests_file_still_has_exactly_twenty_nine_case_entries(self):
+        """30 raw keys: the sealed cases plus the reserved
+        `__corpus_fingerprint__` entry (`tests/seal/corpus.py`)."""
         seal_digests = json.loads(SEAL_DIGESTS_PATH.read_text(encoding="utf-8"))
         case_entries = {
             key: value for key, value in seal_digests.items()
             if key != "__corpus_fingerprint__"}
-        self.assertEqual(len(case_entries), 28)
+        self.assertEqual(len(case_entries), 29)
 
 
 class AuthorizationBindingKeysPresenceBranchTests(unittest.TestCase):
@@ -736,7 +734,7 @@ class TwoDocumentAmbiguousFamilyRefusesTests(unittest.TestCase):
         self.assertIn("final-#.md", payload["detail"])
 
 
-ENGINE = FORGE / ".claude/skills/_core/implementation/engine/implementation_engine.py"
+ENGINE = FORGE / "skills/_core/implementation/engine/implementation_engine.py"
 
 #: design.md D5: the mutation a WEAKER lock survives, so it is the one that
 #: proves the refusal is reachable rather than merely present in source.
@@ -963,7 +961,7 @@ class TwoDocumentLifecycleTests(unittest.TestCase):
                               env=self._child_env())
 
     def _register_capacity_adapter(self):
-        adapters_dir = (FORGE / ".claude" / "skills" / "remote-execution"
+        adapters_dir = (FORGE / "skills" / "remote-execution"
                         / "scripts" / "adapters")
         fixture_path = adapters_dir / f"{self.SERVICE}.py"
         fixture_path.write_text(

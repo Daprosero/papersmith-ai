@@ -1,0 +1,54 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "papersmith-ai"
+dynamic = ["version"]
+description = "CLI workspace orchestrator for the papersmith-ai scientific paper engineering framework"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+papersmith = "papersmith.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["papersmith*"]
+
+[tool.setuptools.package-data]
+papersmith = [
+  "templates/*.tpl",
+  "_kit/**/*",
+  "_kit/.claude/agents/*.md",
+  "_kit/guidance/paper-guide/.gitkeep",
+  "_kit/skills/kaggle-accounts/store/.gitignore",
+]
+
+[tool.setuptools.dynamic]
+version = {attr = "papersmith.__version__"}
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+norecursedirs = [
+  ".*",
+  "build",
+  "dist",
+  "node_modules",
+  "skills",
+  "src/papersmith/_kit",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+ignore = ["E501"]
+
+

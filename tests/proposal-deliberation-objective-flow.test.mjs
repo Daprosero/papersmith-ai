@@ -19,9 +19,9 @@ import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
 
-const ENGINE_PATH = path.resolve('.claude/skills/_core/deliberation/engine/cli.mjs');
-const CORE_DIR = path.resolve('.claude/skills/_core/deliberation/engine');
-const SKILLS_DIR = path.resolve('.claude/skills');
+const ENGINE_PATH = path.resolve('skills/_core/deliberation/engine/cli.mjs');
+const CORE_DIR = path.resolve('skills/_core/deliberation/engine');
+const SKILLS_DIR = path.resolve('skills');
 const engine = await readFile(ENGINE_PATH, 'utf8');
 
 /** Extracts the `<key>: { ... },` block at exactly one-tab indentation -- the

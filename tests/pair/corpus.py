@@ -25,7 +25,7 @@ _HERE = Path(__file__).resolve()
 _TESTS_DIR = _HERE.parents[1]
 FORGE = _TESTS_DIR.parent
 FIXTURE_PROFILE_TEMPLATE = _TESTS_DIR / "fixtures" / "two_documents" / "impl_profile.py"
-REAL_SKILL_DIR = FORGE / ".claude" / "skills" / "proposal-implementation"
+REAL_SKILL_DIR = FORGE / "skills" / "proposal-implementation"
 
 #: The exact line `tests/fixtures/two_documents/impl_profile.py` carries --
 #: replacing it is the whole re-anchoring mechanism, mirroring

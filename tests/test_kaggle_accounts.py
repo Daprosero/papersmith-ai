@@ -28,12 +28,12 @@ from pathlib import Path
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
-SCRIPT = REPOSITORY_ROOT / ".claude/skills/kaggle-accounts/scripts/accounts_cli.py"
+SCRIPT = REPOSITORY_ROOT / "skills/kaggle-accounts/scripts/accounts_cli.py"
 
 # Doctrine, as a path the suite can read: `MaterializedTokenDoctrineTests`
 # holds this document's materialized-token table to what `materialize`
 # actually writes. Prose cannot be held to code; a table can.
-SKILL_MD = REPOSITORY_ROOT / ".claude/skills/kaggle-accounts/SKILL.md"
+SKILL_MD = REPOSITORY_ROOT / "skills/kaggle-accounts/SKILL.md"
 SPEC = importlib.util.spec_from_file_location("accounts_cli", SCRIPT)
 assert SPEC and SPEC.loader
 ACCOUNTS = importlib.util.module_from_spec(SPEC)
@@ -800,7 +800,7 @@ class AccountVocabularyLeakTests(unittest.TestCase):
     live rather than copied by hand. That means an account added tomorrow is
     covered automatically, and removing one here needs no edit to this test.
     The tradeoff is the one a hardcoded list does not have: the store lives
-    under `.claude/skills/kaggle-accounts/store/`, which is gitignored, so a
+    under `skills/kaggle-accounts/store/`, which is gitignored, so a
     checkout with no accounts ever stored yields an empty forbidden set. This
     test SKIPS rather than passes when that happens, so "0 accounts to check"
     is visibly distinct in the run summary (`skipped=1`) from "N accounts
@@ -824,7 +824,7 @@ class AccountVocabularyLeakTests(unittest.TestCase):
     existed) would slip through unless a sibling account happens to share
     its stem.
 
-    Scoped to every `.py` under `.claude/skills/`, mirroring
+    Scoped to every `.py` under `skills/`, mirroring
     `TargetVocabularyLeakTests`'s scope. This test's own file lives under
     `tests/`, outside that tree, so it does not scan itself — it necessarily
     contains these same account names as literals here in this docstring and
@@ -872,7 +872,7 @@ class AccountVocabularyLeakTests(unittest.TestCase):
         it. What we version is what we are responsible for.
         """
         listed = subprocess.run(
-            ["git", "ls-files", "-z", "--", ".claude/skills/**/*.py"],
+            ["git", "ls-files", "-z", "--", "skills/**/*.py"],
             cwd=REPOSITORY_ROOT, capture_output=True, text=True, check=True,
         )
         return sorted(REPOSITORY_ROOT / name

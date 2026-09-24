@@ -16,7 +16,7 @@ import test from 'node:test';
 import { mkdtemp } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 
-const piRoot = '/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent';
+const piRoot = path.resolve('.');
 const { createJiti } = await import(pathToFileURL(path.join(piRoot, 'node_modules/jiti/lib/jiti.mjs')).href);
 const jiti = createJiti(import.meta.url, { alias: {
 	'@earendil-works/pi-coding-agent': path.join(piRoot, 'dist/index.js'),
@@ -24,9 +24,9 @@ const jiti = createJiti(import.meta.url, { alias: {
 	'@earendil-works/pi-ai': path.join(piRoot, 'node_modules/@earendil-works/pi-ai/dist/index.js'),
 	typebox: path.join(piRoot, 'node_modules/typebox/build/index.mjs'),
 } });
-const workspaceModule = await jiti.import(path.resolve('.claude/skills/_core/deliberation/engine/proposal-workspace.ts'));
-const v2 = await jiti.import(path.resolve('.claude/skills/_core/deliberation/engine/exports.ts'));
-const engine = path.resolve('.claude/skills/_core/deliberation/engine');
+const workspaceModule = await jiti.import(path.resolve('skills/_core/deliberation/engine/proposal-workspace.ts'));
+const v2 = await jiti.import(path.resolve('skills/_core/deliberation/engine/exports.ts'));
+const engine = path.resolve('skills/_core/deliberation/engine');
 
 /** Builds a CREATE_SUCCESSOR preview that drops the r01 dynamics display equation. */
 async function previewDroppedEquation() {
@@ -60,7 +60,7 @@ test('2.2.1 CREATE_SUCCESSOR with a genuinely lost atom and no acknowledgement i
 
 test('2.2.2 profile.preservation.{extractAtoms,violations} wired to preservation-math.ts reproduces byte-identical atoms/deltas/violations for the mathematical profile', async () => {
 	const { DOMAIN } = await jiti.import(path.join(engine, 'domain-profile.ts'));
-	const preservationMath = await jiti.import(path.resolve('.claude/skills/proposal-deliberation/preservation-math.ts'));
+	const preservationMath = await jiti.import(path.resolve('skills/proposal-deliberation/preservation-math.ts'));
 	const source = '## S\n\n$$\nx = 1 \\tag{1}\n$$\n';
 	const viaProfile = [...DOMAIN.preservation.extractAtoms(source).values()];
 	const direct = [...preservationMath.extractAtoms(source).values()];

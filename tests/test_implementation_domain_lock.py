@@ -23,26 +23,28 @@ from pathlib import Path
 from typing import Any, Mapping
 
 FORGE = Path(__file__).resolve().parents[1]
-SKILLS_DIR = FORGE / ".claude" / "skills"
+SKILLS_DIR = FORGE / "skills"
 ENGINE_DIR = SKILLS_DIR / "_core" / "implementation" / "engine"
 ENGINE_FILE = ENGINE_DIR / "implementation_engine.py"
+
+from domain_profile import seeded_profile  # noqa: E402  (tests/ on path)
 
 
 def _import_engine_module():
     """A fresh, uncached load of the engine itself -- for the ONE test
     (L3) that needs a live attribute off it rather than its source text.
-    Sets `IMPLEMENTATION_DOMAIN_PROFILE` to this skill's own profile first
-    (mirroring `tests/seal/harness.py`'s `os.environ.setdefault`), since the
-    engine fails closed at import without one."""
-    os.environ.setdefault(
-        "IMPLEMENTATION_DOMAIN_PROFILE",
-        str(SKILLS_DIR / "proposal-implementation" / "impl_profile.py"))
+    Seeds `IMPLEMENTATION_DOMAIN_PROFILE` to this skill's own profile for
+    the load only (the same `domain_profile.seeded_profile` discipline
+    `tests/seal/harness.py` uses), since the engine fails closed at import
+    without one -- and an un-restored override would leak into every later
+    subprocess in this test process."""
     if str(ENGINE_DIR) not in sys.path:
         sys.path.insert(0, str(ENGINE_DIR))
     spec = importlib.util.spec_from_file_location(
         "impl_domain_lock_engine_probe", ENGINE_FILE)
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    with seeded_profile(SKILLS_DIR / "proposal-implementation" / "impl_profile.py"):
+        spec.loader.exec_module(module)
     return module
 
 
@@ -87,7 +89,7 @@ def profile_values_text(profile: Mapping[str, Any]) -> str:
 
 
 def discover_profiles() -> list[dict[str, Any]]:
-    """Globs `.claude/skills/*/impl_profile.py`, skipping `_core` -- never
+    """Globs `skills/*/impl_profile.py`, skipping `_core` -- never
     one hardcoded path (design.md D5, mirroring `discoverProfiles` in the
     TS lock). A third skill's `impl_profile.py` is held to the rule the day
     it appears, without this file being edited."""
@@ -390,6 +392,10 @@ def build_denylist(profiles: list[dict[str, Any]]) -> dict[str, str]:
 #: `refuses` 86->87.
 #: `the-agreement-nothing-computes` (Slice D, D1): eleven more grew, the
 #: identical deliberate, measured shape -- `document_block_locator`,
+#: (upstream-sync 2026-09-13): `after` 79->80, the adopt port's own prose
+#: (`_adopt_survey`'s destination-conflict message and the adoption report),
+#: recorded here so the pin moves with every word it gained and never in
+#: silence.
 #: `finding_document_indices`, `_single_named_document_index` and the
 #: per-document `remedy_compatibility` loop's own prose reads naturally
 #: with ordinary English words this pin already exempts. `against`
@@ -523,23 +529,27 @@ def build_denylist(profiles: list[dict[str, Any]]) -> dict[str, str]:
 #: `reported` 145->146, `value` 239->242, `whose` 153->154, `write`
 #: 107->109. None shrank and none left the denylist; `test_2` confirms no
 #: new unpinned leak either.
+#: upstream-sync 2026-09-15: re-measured after merging upstream/main bf00e17
+#: (engine port + fork adopt deltas + both sides' prose). Every value below is
+#: taken from the merged tree, never assumed; pinned == every denylist word the
+#: engine actually spells, by construction.
 M5_PINNED_RESIDUE: dict[str, int] = {
-    "actually": 82, "admissible": 3, "after": 89, "against": 189,
-    "agreed": 27, "answered": 94, "answers": 106, "approved": 28,
-    "audit": 15, "before": 244, "benchmark": 108, "beside": 100,
-    "check": 153, "checkable": 3, "claim": 36, "command": 268,
-    "commands": 18, "compares": 24, "declaration": 209,
-    "destinations": 38, "empty": 129, "established": 4, "experiment": 25,
-    "experiments": 6, "implementations": 2, "incomplete": 28,
-    "invariant": 22, "isolated": 5, "leave": 11, "leaves": 36,
-    "local": 37, "longer": 53, "makes": 46, "materialized": 12,
-    "measured": 143, "measurement": 43, "module": 194, "notebooks": 110,
-    "object": 33, "pilot": 123, "place": 54, "produces": 51,
-    "rather": 370, "recorded": 78, "remedy": 54, "remote": 65,
+    "actually": 82, "admissible": 3, "after": 90, "against": 191,
+    "agreed": 27, "answered": 95, "answers": 106, "approved": 47,
+    "audit": 19, "before": 252, "benchmark": 108, "beside": 104,
+    "check": 157, "checkable": 3, "claim": 36, "command": 272,
+    "commands": 18, "compares": 25, "declaration": 209,
+    "destinations": 39, "empty": 129, "established": 5, "experiment": 25,
+    "experiments": 6, "implementations": 4, "incomplete": 28,
+    "invariant": 22, "isolated": 5, "leave": 11, "leaves": 37,
+    "local": 37, "longer": 54, "makes": 47, "materialized": 12,
+    "measured": 144, "measurement": 43, "module": 194, "notebooks": 110,
+    "object": 33, "pilot": 123, "place": 55, "produces": 51,
+    "rather": 376, "recorded": 78, "remedy": 54, "remote": 65,
     "reported": 146, "resolves": 31, "ruled": 9, "runnable": 15,
-    "scaffolded": 11, "sitting": 9, "small": 8, "something": 72,
+    "scaffolded": 12, "sitting": 9, "small": 8, "something": 74,
     "steps": 139, "sweep": 7, "validated": 8, "value": 243, "whose": 154,
-    "write": 109, "wrong": 51,
+    "write": 110, "wrong": 51
 }
 #: Unit 6b (Part B, the transitions): thirteen pins grew from the new
 #: engine prose alone (`_comparison_reuses_acid_test_question`,
@@ -761,7 +771,7 @@ class KitAgreementLockTests(unittest.TestCase):
 # after landing every S3-S13 field: still 96, still 1 file. Any OTHER
 # movement -- a rename campaign, an accidental sweep -- is refused here.
 L1_BASELINE_AT_S0 = 97
-L1_DELIBERATE_SHRINK = 4  # documents.label's ARMS_UNDECLARED_CONSEQUENCE conversion;
+L1_DELIBERATE_SHRINK = 3  # documents.label's ARMS_UNDECLARED_CONSEQUENCE conversion;
 #: and `fix/skills-critical-review`, where compressing the four per-document
 #: consumers' own comments dropped one prose mention of the first host by name
 #: (2 total). `the-comparison-nobody-asked-for` (Unit 4b, design D12) removed
@@ -771,6 +781,10 @@ L1_DELIBERATE_SHRINK = 4  # documents.label's ARMS_UNDECLARED_CONSEQUENCE conver
 #: standalone occurrences of the word (`\bproposal\b` never matches inside
 #: the identifier `wiring_proposal`, since there is no word boundary before
 #: it -- only the bare variable name itself ever counted here).
+#: upstream-sync 2026-09-15: re-measured over the merged engine -- 94
+#: occurrences, a 3-shrink from S0. Upstream alone measured 97-4=93; the merge
+#: lands at 94 because the fork's adopt-delta prose also spells the word
+#: (fork pre-merge measured 96). Measured over the merged tree, never assumed.
 #: A shrink in this count is the direction this pin wants -- it is recorded
 #: rather than absorbed because an unexplained MOVE is the defect, in either
 #: direction: a rename campaign looks exactly like this from outside.

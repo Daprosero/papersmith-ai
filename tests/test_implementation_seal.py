@@ -1,6 +1,6 @@
 """The stdout characterization seal for `proposal-implementation`'s CLI.
 
-Built across `openspec/changes/the-seal-before-the-cut/`: proposal.md, design.md,
+Built across `openspec/changes/archive/2026-09-11-the-seal-before-the-cut/`: proposal.md, design.md,
 tasks.md. Proves preservation across the later profile-driven extraction
 (`the-engine-leaves-its-skill` and its successors) by capturing byte-exact stdout
 and exit status for all 20 subcommands against a fixed corpus, and hosts the two
@@ -34,16 +34,15 @@ from pathlib import Path
 
 FORGE = Path(__file__).resolve().parents[1]
 #: The published launcher (meaning 1/3) -- unchanged path.
-CLI = FORGE / ".claude/skills/proposal-implementation/scripts/implementation_cli.py"
+CLI = FORGE / "skills/proposal-implementation/scripts/implementation_cli.py"
 #: The engine source (meaning 2) -- `impl` below resolves here, never to
 #: the launcher, which exposes none of the engine's attributes (design.md
 #: D1).
-ENGINE = FORGE / ".claude/skills/_core/implementation/engine/implementation_engine.py"
-os.environ.setdefault(
-    "IMPLEMENTATION_DOMAIN_PROFILE",
-    str(FORGE / ".claude/skills/proposal-implementation/impl_profile.py"))
+ENGINE = FORGE / "skills/_core/implementation/engine/implementation_engine.py"
 sys.path.insert(0, str(ENGINE.parent))
-import implementation_engine as impl  # noqa: E402  (path set above)
+from domain_profile import seeded_profile  # noqa: E402  (path set above)
+with seeded_profile(FORGE / "skills/proposal-implementation/impl_profile.py"):
+    import implementation_engine as impl  # noqa: E402  (path set above)
 
 TESTS_DIR = Path(__file__).resolve().parent
 SEAL_DIR = TESTS_DIR / "seal"
@@ -267,12 +266,12 @@ class NormalizerMutationTests(unittest.TestCase):
         try:
             sys.executable = "/opt/interpreter-a/bin/python3"
             text_a = (f"cmd: {shlex.quote(sys.executable)} "
-                     "/repo/.claude/skills/proposal-implementation/scripts/"
+                     "/repo/skills/proposal-implementation/scripts/"
                      "implementation_cli.py step")
             normalized_a = seal_normalize.n3_cli_invocation(text_a, roots)
             sys.executable = "/opt/interpreter-b/bin/python3"
             text_b = (f"cmd: {shlex.quote(sys.executable)} "
-                     "/repo/.claude/skills/proposal-implementation/scripts/"
+                     "/repo/skills/proposal-implementation/scripts/"
                      "implementation_cli.py step")
             normalized_b = seal_normalize.n3_cli_invocation(text_b, roots)
         finally:
@@ -299,7 +298,7 @@ class NormalizerMutationTests(unittest.TestCase):
         repo-relative launcher path. Verified live against gate-e1/step/
         offer-e1 during apply, 2026-09-11 — this is the single most
         load-bearing mutation in the change (design.md D4)."""
-        expected = ("<FORGE>/.claude/skills/proposal-implementation/scripts/"
+        expected = ("<FORGE>/skills/proposal-implementation/scripts/"
                    "implementation_cli.py")
         results = _captured_results()
         carriers = [cid for cid, result in results.items()
@@ -315,11 +314,11 @@ class NormalizerMutationTests(unittest.TestCase):
         `normalize()` — the pinned assertion above must go red."""
         roots = self._roots(forge=Path("/repo"))
         raw = ('{"resolve": {"command": "' + shlex.quote(sys.executable) + ' '
-              + shlex.quote(str(roots.forge / ".claude/skills/proposal-implementation"
+              + shlex.quote(str(roots.forge / "skills/proposal-implementation"
                                 "/scripts/implementation_cli.py"))
               + ' step --target x"}}')
         normalized = seal_normalize.normalize(raw, roots)
-        expected = ("<FORGE>/.claude/skills/proposal-implementation/scripts/"
+        expected = ("<FORGE>/skills/proposal-implementation/scripts/"
                    "implementation_cli.py")
         self.assertIn(expected, normalized)
 
@@ -327,7 +326,7 @@ class NormalizerMutationTests(unittest.TestCase):
         mutated_normalized = seal_normalize.normalize(mutated_raw, roots)
         self.assertNotIn(expected, mutated_normalized)
         self.assertIn(
-            "<FORGE>/.claude/skills/proposal-implementation/scripts/engine.py",
+            "<FORGE>/skills/proposal-implementation/scripts/engine.py",
             mutated_normalized)
 
     # --- N4 session_identity (pinned, not erased) ---
@@ -456,9 +455,9 @@ class SealEntryPointTests(unittest.TestCase):
     #: A pinned literal suffix -- never derived from `CLI`/`ENGINE` above,
     #: so a mutation that re-points both this test's OWN constants and the
     #: production code together in lockstep still cannot pass vacuously.
-    LAUNCHER_SUFFIX = ("/.claude/skills/proposal-implementation/scripts/"
+    LAUNCHER_SUFFIX = ("/skills/proposal-implementation/scripts/"
                        "implementation_cli.py")
-    ENGINE_SUFFIX = ("/.claude/skills/_core/implementation/engine/"
+    ENGINE_SUFFIX = ("/skills/_core/implementation/engine/"
                      "implementation_engine.py")
 
     def test_the_seal_invokes_the_published_launcher(self):

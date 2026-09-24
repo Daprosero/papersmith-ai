@@ -91,6 +91,33 @@ Components Check simply does not run for it; verify the crossing against
 the block's own prose yourself, since no mechanical check does it for you
 there.
 
+## Write it so it stays small
+
+A diagram that compiles but sprawls is a diagram nobody can review. Write it
+this way from the start — and run `figure optimize` before `render`, pasting
+its `changes` into your report:
+
+```bash
+.venv/bin/python skills/paper-writing/scripts/paper_cli.py figure optimize --figure-id <id>
+```
+
+- **The header is fixed**: `\documentclass[tikz,border=2pt]{standalone}`.
+- **Relative positioning only**: `below=of …`, `right=of …`. Never absolute
+  `at (3,2)` for layout that depends on a sibling's size — it moves the moment
+  anything else moves.
+- **Every option list used twice goes in one `\tikzset` style.** Per-instance
+  position keys never do: `below=of a` is where *this* node sits, not a style.
+- **Load only the libraries the source actually uses.** `optimize` can prove a
+  library unused only when it recognizes the syntax; a library it cannot
+  recognize it never removes, so an unprovable load is yours to justify.
+- **`% node:` markers are never deleted, never reformatted, never "cleaned
+  up".** They are the manifest contract, and `cross_check_manifest` refuses
+  `MANIFEST_SOURCE_MISMATCH` in both directions when one goes missing.
+- If `optimize` reports a warning — a self-recursive macro, an unbounded
+  `\foreach`, a plotted data series — fix the shape rather than the warning.
+  A warning you deleted from the report is a problem you hid, not one you
+  solved.
+
 ## Measure before you assert
 
 Never claim a diagram "matches the contract" without having read the

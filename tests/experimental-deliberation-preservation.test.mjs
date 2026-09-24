@@ -15,7 +15,7 @@ import test from 'node:test';
 import { pathToFileURL } from 'node:url';
 
 const repoRoot = process.cwd();
-const piRoot = '/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent';
+const piRoot = path.resolve('.');
 const { createJiti } = await import(pathToFileURL(path.join(piRoot, 'node_modules/jiti/lib/jiti.mjs')).href);
 const jiti = createJiti(import.meta.url, { alias: {
     '@earendil-works/pi-coding-agent': path.join(piRoot, 'dist/index.js'),
@@ -23,7 +23,7 @@ const jiti = createJiti(import.meta.url, { alias: {
     typebox: path.join(piRoot, 'node_modules/typebox/build/index.mjs'),
 } });
 const { extractAtoms, violations } = await jiti.import(
-    path.join(repoRoot, '.claude/skills/experimental-deliberation/preservation-experimental.ts'));
+    path.join(repoRoot, 'skills/experimental-deliberation/preservation-experimental.ts'));
 
 const kinds = (source) => [...extractAtoms(source).values()].map((atom) => atom.kind).sort();
 const rules = (source) => violations(source).map((entry) => entry.rule).sort();

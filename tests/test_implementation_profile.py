@@ -2,7 +2,7 @@
 moved engine fails closed without, and the launcher's own promise that it
 exposes none of the engine's attributes.
 
-Mirrors `.claude/skills/_core/deliberation/engine/domain-profile.ts`'s own
+Mirrors `skills/_core/deliberation/engine/domain-profile.ts`'s own
 resolver-property tests, ported to the shape design.md D3 settles on for
 Python: `IMPLEMENTATION_DOMAIN_PROFILE`, six named refusal codes,
 `ImplementationProfileError(RuntimeError)` -- never `Refused`/`NameRefused`,
@@ -33,10 +33,12 @@ import unittest
 from pathlib import Path
 from typing import Mapping
 
+from domain_profile import seeded_profile  # noqa: E402  (tests/ on path)
+
 FORGE = Path(__file__).resolve().parents[1]
-RESOLVER = FORGE / ".claude/skills/_core/implementation/impl_domain_profile.py"
-LAUNCHER = FORGE / ".claude/skills/proposal-implementation/scripts/implementation_cli.py"
-ENGINE_DIR = FORGE / ".claude/skills/_core/implementation/engine"
+RESOLVER = FORGE / "skills/_core/implementation/impl_domain_profile.py"
+LAUNCHER = FORGE / "skills/proposal-implementation/scripts/implementation_cli.py"
+ENGINE_DIR = FORGE / "skills/_core/implementation/engine"
 
 _ENV_VAR = "IMPLEMENTATION_DOMAIN_PROFILE"
 
@@ -1457,15 +1459,15 @@ class DocumentVocabularyZeroDeltaTests(unittest.TestCase):
 
     @staticmethod
     def _engine_module():
-        engine_dir = FORGE / ".claude/skills/_core/implementation/engine"
-        real_profile = FORGE / ".claude/skills/proposal-implementation/impl_profile.py"
-        os.environ.setdefault("IMPLEMENTATION_DOMAIN_PROFILE", str(real_profile))
+        engine_dir = FORGE / "skills/_core/implementation/engine"
+        real_profile = FORGE / "skills/proposal-implementation/impl_profile.py"
         if str(engine_dir) not in sys.path:
             sys.path.insert(0, str(engine_dir))
         spec = importlib.util.spec_from_file_location(
             "impl_engine_zero_delta_probe", engine_dir / "implementation_engine.py")
         module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
+        with seeded_profile(real_profile):
+            spec.loader.exec_module(module)
         return module
 
     def test_the_five_scalars_equal_the_top_level_profile_values(self):
@@ -1491,16 +1493,16 @@ class DocumentVocabularyIndependenceTests(unittest.TestCase):
 
     @staticmethod
     def _engine_module():
-        engine_dir = FORGE / ".claude/skills/_core/implementation/engine"
-        real_profile = FORGE / ".claude/skills/proposal-implementation/impl_profile.py"
-        os.environ.setdefault("IMPLEMENTATION_DOMAIN_PROFILE", str(real_profile))
+        engine_dir = FORGE / "skills/_core/implementation/engine"
+        real_profile = FORGE / "skills/proposal-implementation/impl_profile.py"
         if str(engine_dir) not in sys.path:
             sys.path.insert(0, str(engine_dir))
         spec = importlib.util.spec_from_file_location(
             "impl_engine_doc_vocab_independence_probe",
             engine_dir / "implementation_engine.py")
         module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
+        with seeded_profile(real_profile):
+            spec.loader.exec_module(module)
         return module
 
     def test_document_one_with_no_overlay_never_reads_document_zeros(self):

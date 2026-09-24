@@ -3,7 +3,7 @@
 A sweep that only proves it deletes is the dangerous kind. These tests pin
 the two things that must never happen: a tracked path must survive whatever
 its name, and a fixture a live sibling process is still writing to must
-survive whatever its name. `.claude/skills/_core/` is 66 tracked files behind
+survive whatever its name. `skills/_core/` is 66 tracked files behind
 a leading underscore, and this repository is routinely worked by several
 concurrent agents running the same suite.
 """
@@ -102,7 +102,7 @@ class RealRootsAreResolvableTests(unittest.TestCase):
 
     def test_every_skills_scripts_directory_is_covered(self) -> None:
         derived = set(orphan_sweep.SWEEP_ROOTS)
-        on_disk = set((orphan_sweep.FORGE_ROOT / ".claude" / "skills").glob("*/scripts"))
+        on_disk = set((orphan_sweep.FORGE_ROOT / "skills").glob("*/scripts"))
         self.assertTrue(on_disk, "no skill scripts directories found at all")
         self.assertTrue(on_disk <= derived, f"not covered: {on_disk - derived}")
 

@@ -11,10 +11,12 @@ from __future__ import annotations
 
 import argparse
 import ast
+import contextlib
 import dataclasses
 import hashlib
 import importlib
 import inspect
+import io
 import json
 import os
 import re
@@ -28,7 +30,7 @@ import uuid
 from pathlib import Path
 
 FORGE_ROOT = Path(__file__).resolve().parents[1]
-SKILL_SCRIPTS = FORGE_ROOT / ".claude" / "skills" / "paper-writing" / "scripts"
+SKILL_SCRIPTS = FORGE_ROOT / "skills" / "paper-writing" / "scripts"
 SECTIONS_DIR = FORGE_ROOT / "sections"
 sys.path.insert(0, str(SKILL_SCRIPTS))
 import paper_scaffold  # noqa: E402
@@ -54,7 +56,7 @@ import paper_source_span  # noqa: E402
 import paper_marker  # noqa: E402
 import paper_grounding  # noqa: E402 -- the-block-asserts-only-what-its-section-carries: per-sentence support reconciliation against the bound section's own bytes
 
-sys.path.insert(0, str(FORGE_ROOT / ".claude" / "skills" / "_core" / "implementation"))
+sys.path.insert(0, str(FORGE_ROOT / "skills" / "_core" / "implementation"))
 from impl_refusals import Refused  # noqa: E402
 import impl_layout  # noqa: E402
 
@@ -62,7 +64,7 @@ sys.path.insert(0, str(FORGE_ROOT / "tests"))
 from paper_mutation import _run_against_mutant  # noqa: E402
 
 CLI = SKILL_SCRIPTS / "paper_cli.py"
-CORE_IMPLEMENTATION = FORGE_ROOT / ".claude" / "skills" / "_core" / "implementation"
+CORE_IMPLEMENTATION = FORGE_ROOT / "skills" / "_core" / "implementation"
 
 
 #: Guarded, module-scoped `subprocess.Popen` monitor
@@ -888,6 +890,197 @@ class CLIWiringTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 2, proc.stdout)
         payload = json.loads(proc.stdout)
         self.assertEqual(payload["code"], "EVIDENCE_CONFLATED")
+
+
+class FigureVerbFrontDoorTests(unittest.TestCase):
+    """`figure`: the verb-level front door, added because the guard
+    (`test_paper_contract.VerbFrontDoorCoverageTests`) measured `figure` as
+    the one shipped verb with no front-door test in any of the six
+    `paper-writing` suites -- the FUNCTION level (`paper_figure.
+    optimize_figure` etc.) was covered, the VERB was not. Both tests drive
+    the real argparse dispatch (`paper_cli.main([...])`), the same shape
+    the other wiring tests here use, never `paper_figure.*` directly.
+    `figure optimize --file` alone is a DRY RUN by construction: no
+    manifest, no `paper/`, nothing written, so a fixture beyond the tex
+    source is unnecessary. `figure audit --file` additionally needs a
+    manifest and the shipped sections corpus read -- never written."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.tmp = Path(self._tmp.name)
+
+    def test_figure_optimize_dry_run_returns_the_envelope_and_writes_nothing(self) -> None:
+        """`figure optimize --file <path>` runs the whole pure pipeline
+        (libraries pruned, styles factored) on the candidate text, reports
+        it in the public envelope, and writes nothing -- the source file is
+        untouched and no ledger/output file appears. A provably-unused
+        detectable library (`calc`) proves the pipeline ran rather than
+        echoing the input back."""
+        tex = self.tmp / "front-door-figure.tex"
+        tex.write_text(
+            "\\documentclass[tikz,border=2pt]{standalone}\n"
+            "\\usetikzlibrary{calc}\n"
+            "\\begin{document}\n"
+            "\\begin{tikzpicture}\n"
+            "\\node[draw] (a) {A};\n"
+            "\\end{tikzpicture}\n"
+            "\\end{document}\n",
+            encoding="utf-8",
+        )
+        before_listing = sorted(p.name for p in self.tmp.iterdir())
+        before_bytes = tex.read_bytes()
+
+        with contextlib.redirect_stdout(io.StringIO()) as buf:
+            exit_code = paper_cli.main(["figure", "optimize", "--file", str(tex)])
+        payload = json.loads(buf.getvalue())
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(payload["status"], "ok")
+        self.assertEqual(payload["command"], "figure")
+        self.assertEqual(payload["figureId"], "front-door-figure")
+        self.assertIn("\\begin{document}", payload["text"])
+        self.assertNotIn("\\usetikzlibrary", payload["text"], "the unused 'calc' library is pruned")
+        self.assertTrue(
+            any("calc" in change for change in payload["changes"]),
+            f"the dry-run report names the prune: {payload['changes']}",
+        )
+        self.assertEqual(tex.read_bytes(), before_bytes, "a dry run never rewrites the source")
+        self.assertEqual(
+            sorted(p.name for p in self.tmp.iterdir()), before_listing,
+            "a dry run plants no ledger, manifest, or output file",
+        )
+
+    def test_figure_audit_returns_the_unmeasured_verdict_through_the_front_door(self) -> None:
+        """`figure audit --file --manifest` with a manifest declaring no
+        components is deterministic without any prose coupling: the verdict
+        is `unmeasured` (`NO_COMPONENTS_DECLARED`), and `status: ok` -- a
+        content finding is a verdict, never a refusal. `--section
+        introduction` resolves against the shipped sections corpus, which
+        is only read."""
+        tex = self.tmp / "audited.tex"
+        tex.write_text(
+            "\\documentclass[tikz,border=2pt]{standalone}\n"
+            "\\begin{document}\n"
+            "\\begin{tikzpicture}\n"
+            "\\node (a) {A};\n"
+            "\\end{tikzpicture}\n"
+            "\\end{document}\n",
+            encoding="utf-8",
+        )
+        manifest = self.tmp / "audited.diagram.json"
+        manifest.write_text(json.dumps({"components": []}), encoding="utf-8")
+
+        with contextlib.redirect_stdout(io.StringIO()) as buf:
+            exit_code = paper_cli.main([
+                "figure", "audit", "--file", str(tex), "--manifest", str(manifest),
+                "--section", "introduction",
+            ])
+        payload = json.loads(buf.getvalue())
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(payload["status"], "ok")
+        self.assertEqual(payload["command"], "figure")
+        self.assertEqual(payload["figureId"], "audited")
+        self.assertEqual(payload["verdict"], "unmeasured")
+        self.assertEqual(payload["unmeasured_reason"], "NO_COMPONENTS_DECLARED")
+        self.assertEqual(payload["evidence"]["section"], "introduction.md")
+
+    def test_figure_audit_with_block_whose_contract_declares_components_from_returns_the_envelope(self) -> None:
+        """`figure audit --block` against the shipped `rw-synthesis-artefact`
+        block (whose `figure.components_from` names `contributions`) must
+        return the documented pass/fail/unmeasured envelope, never raise --
+        the merge added `sections_dir` to `_resolve_expected_components` but
+        this fork call site still passed two positional arguments, so the
+        verb tracebacked with `TypeError: ... missing 1 required positional
+        argument: 'fact_id'` and exit 1 whenever a block's contract declared
+        `components_from` (except Refused does not catch TypeError). A
+        content finding stays a verdict: on a clean checkout `contributions`
+        has no declared/written producer, so the resolution refuses
+        `COMPONENTS_FACT_UNRESOLVED` and the envelope reports `unmeasured`;
+        if a real `paper/` ever carries the producer, the same call still
+        returns a verdict, which is what this regression locks."""
+        tex = self.tmp / "audited-components-from.tex"
+        tex.write_text(
+            "\\documentclass[tikz,border=2pt]{standalone}\n"
+            "\\begin{document}\n"
+            "\\begin{tikzpicture}\n"
+            "\\node (a) {A};\n"
+            "\\end{tikzpicture}\n"
+            "\\end{document}\n",
+            encoding="utf-8",
+        )
+        manifest = self.tmp / "audited-components-from.diagram.json"
+        manifest.write_text(json.dumps({"components": ["A"]}), encoding="utf-8")
+
+        with contextlib.redirect_stdout(io.StringIO()) as buf:
+            exit_code = paper_cli.main([
+                "figure", "audit", "--file", str(tex), "--manifest", str(manifest),
+                "--section", "related-work", "--block", "rw-synthesis-artefact",
+            ])
+        payload = json.loads(buf.getvalue())
+
+        self.assertEqual(exit_code, 0, "the components_from branch never raises through the front door")
+        self.assertEqual(payload["status"], "ok")
+        self.assertEqual(payload["command"], "figure")
+        self.assertEqual(payload["figureId"], "audited-components-from")
+        self.assertIn(payload["verdict"], ("pass", "fail", "unmeasured"))
+        self.assertEqual(payload["evidence"]["section"], "related-work.md")
+        if payload["verdict"] == "unmeasured":
+            self.assertEqual(
+                payload["unmeasured_reason"], "COMPONENTS_FACT_UNRESOLVED",
+                "the components_from branch ran: only 'contributions' having no written "
+                "producer excuses the check, never the contract declining the comparison",
+            )
+
+    def test_figure_audit_unreadable_source_refuses_with_diagram_source_absent(self) -> None:
+        """`figure audit` with a source it cannot read refuses through the
+        front door instead of tracebacking: a manifest that is not valid
+        JSON and a tex that does not decode as UTF-8 both refuse with the
+        same `DIAGRAM_SOURCE_ABSENT` the absent-pair guard already uses
+        (`status: refused`, exit 2) -- never a `JSONDecodeError` /
+        `UnicodeDecodeError` crash with exit 1, because an unreadable
+        invocation reuses the code the repo already names for it."""
+        tex = self.tmp / "audited.tex"
+        tex.write_text(
+            "\\documentclass[tikz,border=2pt]{standalone}\n"
+            "\\begin{document}\n"
+            "\\begin{tikzpicture}\n"
+            "\\node (a) {A};\n"
+            "\\end{tikzpicture}\n"
+            "\\end{document}\n",
+            encoding="utf-8",
+        )
+        malformed_manifest = self.tmp / "malformed.diagram.json"
+        malformed_manifest.write_text("not json{", encoding="utf-8")
+        valid_manifest = self.tmp / "valid.diagram.json"
+        valid_manifest.write_text(json.dumps({"components": []}), encoding="utf-8")
+        undecodable_tex = self.tmp / "undecodable.tex"
+        undecodable_tex.write_bytes(
+            b"\\documentclass[tikz,border=2pt]{standalone}\n"
+            b"\\begin{document}\n"
+            b"\\begin{tikzpicture}\n"
+            b"\\node (a) {\xff};\n"
+            b"\\end{tikzpicture}\n"
+            b"\\end{document}\n"
+        )
+
+        for label, tex_path, manifest_path in [
+            ("malformed manifest", tex, malformed_manifest),
+            ("undecodable tex", undecodable_tex, valid_manifest),
+        ]:
+            with self.subTest(label=label):
+                with contextlib.redirect_stdout(io.StringIO()) as buf:
+                    exit_code = paper_cli.main([
+                        "figure", "audit", "--file", str(tex_path),
+                        "--manifest", str(manifest_path),
+                        "--section", "introduction",
+                    ])
+                payload = json.loads(buf.getvalue())
+
+                self.assertEqual(exit_code, 2)
+                self.assertEqual(payload["status"], "refused")
+                self.assertEqual(payload["code"], "DIAGRAM_SOURCE_ABSENT")
 
 
 class MutationProofTests(unittest.TestCase):
@@ -5113,7 +5306,7 @@ class SkillMdModeCountAccuracyTests(unittest.TestCase):
     """
 
     SKILL_MD = (
-        FORGE_ROOT / ".claude" / "skills" / "paper-writing" / "SKILL.md"
+        FORGE_ROOT / "skills" / "paper-writing" / "SKILL.md"
     )
 
     def _real_corpus_count(self) -> tuple[int, int]:
@@ -7816,7 +8009,7 @@ def paper_cli_imported_modules() -> list[Path]:
     them went unrostered with no test going red, because nothing re-derived
     the tuple. A directory scan is the OTHER wrong shape: it would claim a
     sibling change's own modules the moment they land beside these, which is
-    exactly the whole-directory-scan pattern `.claude/skills/_core/` is
+    exactly the whole-directory-scan pattern `skills/_core/` is
     forbidden from reproducing (measured elsewhere in this repository, where
     a different skill's roster derivation does scan a whole directory and is
     the reason nothing of this skill's may live under `_core/`). Importing

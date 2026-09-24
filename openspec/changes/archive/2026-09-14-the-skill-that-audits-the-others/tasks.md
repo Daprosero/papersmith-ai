@@ -57,7 +57,7 @@ Lo que sigue se conserva como el registro de qué llevaba:
 | Unit | Goal | PR | Focused test command | Runtime harness | Rollback boundary |
 |---|---|---|---|---|---|
 | 1 | `SKILL.md` doctrine core + moves-table self-audit | PR 1 | `python3 -m unittest discover -s tests -p 'test_skill_audit.py'` | `python3 -m unittest discover -s tests` (full, 902 → 902+N) | delete `.claude/skills/skill-audit/SKILL.md` + `tests/test_skill_audit.py` |
-| 2 | `roster` + descriptors + copied helpers | PR 2 | same focused command | full discover + `node .claude/skills/proposal-deliberation/engine/cli.mjs '{"operation":"__AUDIT_NONCE__","instruction":"probe"}'` | delete `scripts/audit_cli.py` + `references/probes/` + PR-2 test classes |
+| 2 | `roster` + descriptors + copied helpers | PR 2 | same focused command | full discover + `node skills/proposal-deliberation/cli.mjs '{"operation":"__AUDIT_NONCE__","instruction":"probe"}'` | delete `scripts/audit_cli.py` + `references/probes/` + PR-2 test classes |
 | 4 | `references/usage.md` + `check-report` + report-schema self-application | PR 4 | same focused command | full discover | delete `references/usage.md` + `check-report` subparser + PR-4 test classes |
 | 5 | First damage report on the operation surface | PR 5 | `python3 .claude/skills/skill-audit/scripts/audit_cli.py check-report openspec/changes/the-skill-that-audits-the-others/audit-proposal-deliberation-operations.md` | full discover | delete the report file |
 
@@ -102,7 +102,7 @@ before 1.
       record the exact `invalid choice` rendering and the stream (stderr) and exit (2). Gates
       slice 2 (design R12).
 - [x] 0.5 **Drive the D1 probe once by hand.** From a cwd with **no** project root, run
-      `node .claude/skills/proposal-deliberation/engine/cli.mjs '{"operation":"__AUDIT_NONCE__","instruction":"probe"}'`.
+      `node skills/proposal-deliberation/cli.mjs '{"operation":"__AUDIT_NONCE__","instruction":"probe"}'`.
       Record the refusal text, the stream (stdout) and the exit (1). Confirm nine names and that
       nothing was written. Pass/fail gates the whole change.
 - [x] 0.6 **Re-verify the anchors this phase could only read** (§Anchor re-location), including the

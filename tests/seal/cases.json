@@ -1,113 +1,474 @@
 [
-  {"id": "name", "command": "name", "fixture": null, "proposals": false,
-   "argv": ["--name", "Seal"]},
-
-  {"id": "walk", "command": "walk", "fixture": "A", "proposals": true,
-   "argv": ["--target", "<TARGET>", "--name", "Seal", "--session", "seal-s1"]},
-
-  {"id": "plan-a", "command": "plan", "fixture": "A", "proposals": true,
-   "argv": ["--target", "<TARGET>", "--name", "Seal"]},
-
-  {"id": "plan-b", "command": "plan", "fixture": "B", "proposals": true,
-   "argv": ["--target", "<TARGET>", "--name", "Seal"]},
-
-  {"id": "apply", "command": "apply", "fixture": "A", "proposals": true,
-   "argv": ["--target", "<TARGET>", "--name", "Seal", "--plan", "<PLAN>"]},
-
-  {"id": "admit-e1", "command": "admit", "fixture": "A", "proposals": true,
-   "argv": ["--target", "<TARGET>", "--name", "Seal", "--revision", "seal-2.md"]},
-
-  {"id": "admit-e0", "command": "admit", "fixture": "A", "proposals": false,
-   "argv": ["--target", "<TARGET>", "--name", "Seal", "--revision", "seal-2.md"]},
-
-  {"id": "handoff-e1", "command": "handoff", "fixture": "A", "proposals": true,
-   "argv": ["--target", "<TARGET>", "--name", "Seal", "--revision", "seal-2.md"]},
-
-  {"id": "handoff-e0", "command": "handoff", "fixture": "A", "proposals": false,
-   "argv": ["--target", "<TARGET>", "--name", "Seal", "--revision", "seal-2.md"]},
-
-  {"id": "compose", "command": "compose", "fixture": "A", "proposals": true,
-   "argv": ["--target", "<TARGET>", "--finding", "inline-fix",
-            "--entry-text", "$$\nc = d \\tag{2.1}\n$$"]},
-
-  {"id": "probe", "command": "probe", "fixture": "A", "proposals": true,
-   "argv": ["--target", "<TARGET>", "--name", "Seal", "--revision", "seal-2.md"]},
-
-  {"id": "verify-a", "command": "verify", "fixture": "A", "proposals": true,
-   "argv": ["--target", "<TARGET>", "--name", "Seal"]},
-
-  {"id": "verify-b", "command": "verify", "fixture": "B", "proposals": true,
-   "argv": ["--target", "<TARGET>", "--name", "Seal"]},
-
-  {"id": "verify-t", "command": "verify", "fixture": "T", "proposals": true,
-   "argv": ["--target", "<TARGET>", "--name", "Seal", "--revision", "draft-1.md"]},
-
-  {"id": "position-e1", "command": "position", "fixture": "A", "proposals": true,
-   "argv": ["--target", "<TARGET>", "--name", "Seal", "--session", "seal-s1",
-            "--revision", "seal-2.md",
-            "--sequence", "[{\"text\": \"First step of the sequence.\", \"witness\": {\"kind\": \"record\"}}]",
-            "--target-level", "standing"]},
-
-  {"id": "position-e0", "command": "position", "fixture": "A", "proposals": false,
-   "argv": ["--target", "<TARGET>", "--name", "Seal", "--session", "seal-s1",
-            "--revision", "seal-2.md",
-            "--sequence", "[{\"text\": \"First step of the sequence.\", \"witness\": {\"kind\": \"record\"}}]",
-            "--target-level", "standing"]},
-
-  {"id": "discuss", "command": "discuss", "fixture": "A", "proposals": true,
-   "argv": ["--target", "<TARGET>", "--name", "Seal", "--about", "record",
-            "--question", "Is this settled?", "--answer", "Yes, it is settled."]},
-
-  {"id": "propose", "command": "propose", "fixture": "A", "proposals": true,
-   "argv": ["--target", "<TARGET>", "--name", "Seal", "--session", "seal-s1",
-            "--job", "job-1", "--worker", "w1",
-            "--rationale", "Because it is time."]},
-
-  {"id": "gate-e1", "command": "gate", "fixture": "A", "proposals": true,
-   "argv": ["--target", "<TARGET>", "--name", "Seal", "--revision", "seal-2.md",
-            "--session", "seal-s1", "--job", "job-1", "--worker", "w1",
-            "--justification", "Because it is time."]},
-
-  {"id": "gate-e0", "command": "gate", "fixture": "A", "proposals": false,
-   "argv": ["--target", "<TARGET>", "--name", "Seal", "--revision", "seal-2.md",
-            "--session", "seal-s1", "--job", "job-1", "--worker", "w1",
-            "--justification", "Because it is time.",
-            "--authorization", "dummy-token"]},
-
-  {"id": "offer-e1", "command": "offer", "fixture": "A", "proposals": true,
-   "argv": ["--target", "<TARGET>", "--name", "Seal", "--revision", "seal-2.md",
-            "--session", "seal-s1", "--answer", "yes"]},
-
-  {"id": "offer-e0", "command": "offer", "fixture": "A", "proposals": false,
-   "argv": ["--target", "<TARGET>", "--name", "Seal", "--revision", "seal-2.md",
-            "--session", "seal-s1", "--answer", "yes"]},
-
-  {"id": "close-e1", "command": "close", "fixture": "A", "proposals": true,
-   "argv": ["--target", "<TARGET>", "--name", "Seal", "--revision", "seal-2.md",
-            "--session", "seal-s1"]},
-
-  {"id": "close-e0", "command": "close", "fixture": "A", "proposals": false,
-   "argv": ["--target", "<TARGET>", "--name", "Seal", "--revision", "seal-2.md",
-            "--session", "seal-s1"]},
-
-  {"id": "step", "command": "step", "fixture": "A", "proposals": true,
-   "argv": ["--target", "<TARGET>", "--name", "Seal", "--session", "seal-s1",
-            "--step", "measure"]},
-
-  {"id": "settle", "command": "settle", "fixture": "A", "proposals": true,
-   "argv": ["--target", "<TARGET>", "--name", "Seal", "--session", "seal-s1",
-            "--about", "record", "--text", "New settled text.",
-            "--under", "## Ladder"]},
-
-  {"id": "defect", "command": "defect", "fixture": "A", "proposals": true,
-   "argv": ["--target", "<TARGET>", "--name", "Seal", "--session", "seal-s1",
-            "--file", "<FORGE>/.claude/skills/_core/implementation/impl_refusals.py",
-            "--detail", "found an issue"]},
-
-  {"id": "materialize", "command": "materialize", "fixture": "A", "proposals": true,
-   "argv": ["--target", "<TARGET>", "--name", "Seal", "--stage", "scaffold",
-            "--plan", "<PLAN>", "--seed", "1234"]},
-
-  {"id": "env", "command": "env", "fixture": "A", "proposals": true,
-   "argv": ["--target", "<TARGET>", "--python", "/nonexistent/python"]}
+ {
+  "id": "name",
+  "command": "name",
+  "fixture": null,
+  "proposals": false,
+  "argv": [
+   "--name",
+   "Seal"
+  ]
+ },
+ {
+  "id": "walk",
+  "command": "walk",
+  "fixture": "A",
+  "proposals": true,
+  "argv": [
+   "--target",
+   "<TARGET>",
+   "--name",
+   "Seal",
+   "--session",
+   "seal-s1"
+  ]
+ },
+ {
+  "id": "plan-a",
+  "command": "plan",
+  "fixture": "A",
+  "proposals": true,
+  "argv": [
+   "--target",
+   "<TARGET>",
+   "--name",
+   "Seal"
+  ]
+ },
+ {
+  "id": "plan-b",
+  "command": "plan",
+  "fixture": "B",
+  "proposals": true,
+  "argv": [
+   "--target",
+   "<TARGET>",
+   "--name",
+   "Seal"
+  ]
+ },
+ {
+  "id": "apply",
+  "command": "apply",
+  "fixture": "A",
+  "proposals": true,
+  "argv": [
+   "--target",
+   "<TARGET>",
+   "--name",
+   "Seal",
+   "--plan",
+   "<PLAN>"
+  ]
+ },
+ {
+  "id": "admit-e1",
+  "command": "admit",
+  "fixture": "A",
+  "proposals": true,
+  "argv": [
+   "--target",
+   "<TARGET>",
+   "--name",
+   "Seal",
+   "--revision",
+   "seal-2.md"
+  ]
+ },
+ {
+  "id": "admit-e0",
+  "command": "admit",
+  "fixture": "A",
+  "proposals": false,
+  "argv": [
+   "--target",
+   "<TARGET>",
+   "--name",
+   "Seal",
+   "--revision",
+   "seal-2.md"
+  ]
+ },
+ {
+  "id": "handoff-e1",
+  "command": "handoff",
+  "fixture": "A",
+  "proposals": true,
+  "argv": [
+   "--target",
+   "<TARGET>",
+   "--name",
+   "Seal",
+   "--revision",
+   "seal-2.md"
+  ]
+ },
+ {
+  "id": "handoff-e0",
+  "command": "handoff",
+  "fixture": "A",
+  "proposals": false,
+  "argv": [
+   "--target",
+   "<TARGET>",
+   "--name",
+   "Seal",
+   "--revision",
+   "seal-2.md"
+  ]
+ },
+ {
+  "id": "compose",
+  "command": "compose",
+  "fixture": "A",
+  "proposals": true,
+  "argv": [
+   "--target",
+   "<TARGET>",
+   "--finding",
+   "inline-fix",
+   "--entry-text",
+   "$$\nc = d \\tag{2.1}\n$$"
+  ]
+ },
+ {
+  "id": "probe",
+  "command": "probe",
+  "fixture": "A",
+  "proposals": true,
+  "argv": [
+   "--target",
+   "<TARGET>",
+   "--name",
+   "Seal",
+   "--revision",
+   "seal-2.md"
+  ]
+ },
+ {
+  "id": "verify-a",
+  "command": "verify",
+  "fixture": "A",
+  "proposals": true,
+  "argv": [
+   "--target",
+   "<TARGET>",
+   "--name",
+   "Seal"
+  ]
+ },
+ {
+  "id": "verify-b",
+  "command": "verify",
+  "fixture": "B",
+  "proposals": true,
+  "argv": [
+   "--target",
+   "<TARGET>",
+   "--name",
+   "Seal"
+  ]
+ },
+ {
+  "id": "verify-t",
+  "command": "verify",
+  "fixture": "T",
+  "proposals": true,
+  "argv": [
+   "--target",
+   "<TARGET>",
+   "--name",
+   "Seal",
+   "--revision",
+   "draft-1.md"
+  ]
+ },
+ {
+  "id": "position-e1",
+  "command": "position",
+  "fixture": "A",
+  "proposals": true,
+  "argv": [
+   "--target",
+   "<TARGET>",
+   "--name",
+   "Seal",
+   "--session",
+   "seal-s1",
+   "--revision",
+   "seal-2.md",
+   "--sequence",
+   "[{\"text\": \"First step of the sequence.\", \"witness\": {\"kind\": \"record\"}}]",
+   "--target-level",
+   "standing"
+  ]
+ },
+ {
+  "id": "position-e0",
+  "command": "position",
+  "fixture": "A",
+  "proposals": false,
+  "argv": [
+   "--target",
+   "<TARGET>",
+   "--name",
+   "Seal",
+   "--session",
+   "seal-s1",
+   "--revision",
+   "seal-2.md",
+   "--sequence",
+   "[{\"text\": \"First step of the sequence.\", \"witness\": {\"kind\": \"record\"}}]",
+   "--target-level",
+   "standing"
+  ]
+ },
+ {
+  "id": "discuss",
+  "command": "discuss",
+  "fixture": "A",
+  "proposals": true,
+  "argv": [
+   "--target",
+   "<TARGET>",
+   "--name",
+   "Seal",
+   "--about",
+   "record",
+   "--question",
+   "Is this settled?",
+   "--answer",
+   "Yes, it is settled."
+  ]
+ },
+ {
+  "id": "propose",
+  "command": "propose",
+  "fixture": "A",
+  "proposals": true,
+  "argv": [
+   "--target",
+   "<TARGET>",
+   "--name",
+   "Seal",
+   "--session",
+   "seal-s1",
+   "--job",
+   "job-1",
+   "--worker",
+   "w1",
+   "--rationale",
+   "Because it is time."
+  ]
+ },
+ {
+  "id": "gate-e1",
+  "command": "gate",
+  "fixture": "A",
+  "proposals": true,
+  "argv": [
+   "--target",
+   "<TARGET>",
+   "--name",
+   "Seal",
+   "--revision",
+   "seal-2.md",
+   "--session",
+   "seal-s1",
+   "--job",
+   "job-1",
+   "--worker",
+   "w1",
+   "--justification",
+   "Because it is time."
+  ]
+ },
+ {
+  "id": "gate-e0",
+  "command": "gate",
+  "fixture": "A",
+  "proposals": false,
+  "argv": [
+   "--target",
+   "<TARGET>",
+   "--name",
+   "Seal",
+   "--revision",
+   "seal-2.md",
+   "--session",
+   "seal-s1",
+   "--job",
+   "job-1",
+   "--worker",
+   "w1",
+   "--justification",
+   "Because it is time.",
+   "--authorization",
+   "dummy-token"
+  ]
+ },
+ {
+  "id": "offer-e1",
+  "command": "offer",
+  "fixture": "A",
+  "proposals": true,
+  "argv": [
+   "--target",
+   "<TARGET>",
+   "--name",
+   "Seal",
+   "--revision",
+   "seal-2.md",
+   "--session",
+   "seal-s1",
+   "--answer",
+   "yes"
+  ]
+ },
+ {
+  "id": "offer-e0",
+  "command": "offer",
+  "fixture": "A",
+  "proposals": false,
+  "argv": [
+   "--target",
+   "<TARGET>",
+   "--name",
+   "Seal",
+   "--revision",
+   "seal-2.md",
+   "--session",
+   "seal-s1",
+   "--answer",
+   "yes"
+  ]
+ },
+ {
+  "id": "close-e1",
+  "command": "close",
+  "fixture": "A",
+  "proposals": true,
+  "argv": [
+   "--target",
+   "<TARGET>",
+   "--name",
+   "Seal",
+   "--revision",
+   "seal-2.md",
+   "--session",
+   "seal-s1"
+  ]
+ },
+ {
+  "id": "close-e0",
+  "command": "close",
+  "fixture": "A",
+  "proposals": false,
+  "argv": [
+   "--target",
+   "<TARGET>",
+   "--name",
+   "Seal",
+   "--revision",
+   "seal-2.md",
+   "--session",
+   "seal-s1"
+  ]
+ },
+ {
+  "id": "step",
+  "command": "step",
+  "fixture": "A",
+  "proposals": true,
+  "argv": [
+   "--target",
+   "<TARGET>",
+   "--name",
+   "Seal",
+   "--session",
+   "seal-s1",
+   "--step",
+   "measure"
+  ]
+ },
+ {
+  "id": "settle",
+  "command": "settle",
+  "fixture": "A",
+  "proposals": true,
+  "argv": [
+   "--target",
+   "<TARGET>",
+   "--name",
+   "Seal",
+   "--session",
+   "seal-s1",
+   "--about",
+   "record",
+   "--text",
+   "New settled text.",
+   "--under",
+   "## Ladder"
+  ]
+ },
+ {
+  "id": "defect",
+  "command": "defect",
+  "fixture": "A",
+  "proposals": true,
+  "argv": [
+   "--target",
+   "<TARGET>",
+   "--name",
+   "Seal",
+   "--session",
+   "seal-s1",
+   "--file",
+   "<FORGE>/skills/_core/implementation/impl_refusals.py",
+   "--detail",
+   "found an issue"
+  ]
+ },
+ {
+  "id": "materialize",
+  "command": "materialize",
+  "fixture": "A",
+  "proposals": true,
+  "argv": [
+   "--target",
+   "<TARGET>",
+   "--name",
+   "Seal",
+   "--stage",
+   "scaffold",
+   "--plan",
+   "<PLAN>",
+   "--seed",
+   "1234"
+  ]
+ },
+ {
+  "id": "adopt-same-target",
+  "command": "adopt",
+  "fixture": "A",
+  "proposals": false,
+  "argv": [
+   "--target",
+   "<TARGET>",
+   "--source",
+   "<TARGET>"
+  ]
+ },
+ {
+  "id": "env",
+  "command": "env",
+  "fixture": "A",
+  "proposals": true,
+  "argv": [
+   "--target",
+   "<TARGET>",
+   "--python",
+   "/nonexistent/python"
+  ]
+ }
 ]

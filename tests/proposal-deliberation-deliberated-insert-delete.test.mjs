@@ -26,15 +26,9 @@ import test from 'node:test';
 import { pathToFileURL } from 'node:url';
 
 const root = process.cwd();
-const piRoot = '/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent';
-const { createJiti } = await import(pathToFileURL(path.join(piRoot, 'node_modules/jiti/lib/jiti.mjs')).href);
-const jiti = createJiti(import.meta.url, { alias: {
-	'@earendil-works/pi-coding-agent': path.join(piRoot, 'dist/index.js'),
-	'@earendil-works/pi-ai/compat': path.join(piRoot, 'node_modules/@earendil-works/pi-ai/dist/compat.js'),
-	'@earendil-works/pi-ai': path.join(piRoot, 'node_modules/@earendil-works/pi-ai/dist/index.js'),
-	typebox: path.join(piRoot, 'node_modules/typebox/build/index.mjs'),
-} });
-const v2 = await jiti.import(path.join(root, '.claude/skills/_core/deliberation/engine/exports.ts'));
+const { createJiti } = await import('jiti');
+const jiti = createJiti(import.meta.url);
+const v2 = await jiti.import(path.join(root, 'skills/_core/deliberation/engine/exports.ts'));
 
 const sha256 = (value) => createHash('sha256').update(value).digest('hex');
 const digest = (value) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
@@ -215,12 +209,7 @@ const reviewerAssessment = (overrides = {}) => ({
 	...overrides,
 });
 
-
 const fragment = (entryId, text = 'Original text.') => ({ entryId, type: 'paragraph', text, textSha256: 'a'.repeat(64), headingPath: [], revision: { filename: 'lifecycle-v1:x', revision: 'working', documentSha256: 'b'.repeat(64) } });
-
-
-
-
 
 // --- Section C: coexistence -- CHANGE + ADD + DELETE at distinct loci, ONE version ------
 
@@ -232,12 +221,6 @@ async function withTempRoot(run) {
 		await rm(projectRoot, { recursive: true, force: true });
 	}
 }
-
-
-
-
-
-
 
 // --- Section D: SuccessorEditPlanner (secondary/filename-era route) -------------------
 

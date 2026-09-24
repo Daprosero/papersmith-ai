@@ -22,7 +22,7 @@ from pathlib import Path
 
 FORGE = Path(__file__).resolve().parents[2]
 LAUNCHER = (
-    FORGE / ".claude" / "skills" / "experimental-implementation" / "scripts"
+    FORGE / "skills" / "experimental-implementation" / "scripts"
     / "implementation_cli.py")
 
 _TESTS_DIR = FORGE / "tests"

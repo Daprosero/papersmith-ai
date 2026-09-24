@@ -35,10 +35,10 @@ import unittest
 from pathlib import Path
 
 FORGE = Path(__file__).resolve().parents[1]
-ENGINE_DIR = FORGE / ".claude" / "skills" / "_core" / "implementation" / "engine"
+ENGINE_DIR = FORGE / "skills" / "_core" / "implementation" / "engine"
 ENGINE_FILE = ENGINE_DIR / "implementation_engine.py"
 REAL_PROFILE = (
-    FORGE / ".claude" / "skills" / "experimental-implementation"
+    FORGE / "skills" / "experimental-implementation"
     / "impl_profile.py")
 
 _counter = itertools.count()

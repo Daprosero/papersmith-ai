@@ -1,6 +1,6 @@
 """The shared implementation core: its guards, and the wall against domain names.
 
-`.claude/skills/_core/implementation/` is what every implementation skill needs
+`skills/_core/implementation/` is what every implementation skill needs
 and none of them owns. Three of the things it holds -- the workspace guard, the
 dirty-worktree guard, and the migration's prefix mapping -- had NO test before
 this file: replacing each with a permissive stub left all 1440 tests green, which
@@ -12,7 +12,6 @@ from __future__ import annotations
 import ast
 import hashlib
 import importlib.util
-import os
 import re
 import shutil
 import subprocess
@@ -22,8 +21,10 @@ import unittest
 from pathlib import Path
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
-CORE = REPOSITORY_ROOT / ".claude/skills/_core/implementation"
+CORE = REPOSITORY_ROOT / "skills/_core/implementation"
 sys.path.insert(0, str(CORE))
+
+from domain_profile import seeded_profile  # noqa: E402  (tests/ on path)
 
 import impl_availability  # noqa: E402
 import impl_execution_strategy  # noqa: E402
@@ -34,13 +35,13 @@ import impl_position  # noqa: E402
 import impl_references  # noqa: E402
 import impl_refusals  # noqa: E402
 
-CLI_SCRIPT = REPOSITORY_ROOT / ".claude/skills/proposal-implementation/scripts/implementation_cli.py"
+CLI_SCRIPT = REPOSITORY_ROOT / "skills/proposal-implementation/scripts/implementation_cli.py"
 #: The engine source (meaning 2, design.md M2): what `CoreNamesNoDomainTests`
 #: reads for `PRODUCT_DIRS`/`SOURCE_ROOTS` -- the launcher above exposes
 #: none of the engine's attributes (design.md D1), so this lock must load
 #: the engine directly, never the launcher it used to be the same file as.
 ENGINE_SCRIPT = (REPOSITORY_ROOT
-                 / ".claude/skills/_core/implementation/engine/implementation_engine.py")
+                 / "skills/_core/implementation/engine/implementation_engine.py")
 
 
 def _git(cwd: Path, *args: str) -> None:
@@ -199,7 +200,7 @@ class NonForgeInterpreterGuardTests(unittest.TestCase):
         self.addCleanup(setattr, sys, "prefix", self._original_prefix)
 
     def test_a_forge_owned_venv_prefix_is_refused(self):
-        sys.prefix = str(impl_layout.FORGE_ROOT / ".claude" / "some-skill" / ".venv")
+        sys.prefix = str(impl_layout.FORGE_ROOT / "skills" / "some-skill" / ".venv")
         with self.assertRaises(impl_refusals.Refused) as caught:
             impl_guards.require_non_forge_interpreter()
         self.assertEqual(caught.exception.code, "FORGE_INTERPRETER")
@@ -367,14 +368,12 @@ class CoreNamesNoDomainTests(unittest.TestCase):
 
     @staticmethod
     def _cli_module():
-        os.environ.setdefault(
-            "IMPLEMENTATION_DOMAIN_PROFILE",
-            str(REPOSITORY_ROOT
-               / ".claude/skills/proposal-implementation/impl_profile.py"))
         spec = importlib.util.spec_from_file_location("impl_cli_for_lock", ENGINE_SCRIPT)
         module = importlib.util.module_from_spec(spec)
         sys.modules[spec.name] = module
-        spec.loader.exec_module(module)
+        with seeded_profile(REPOSITORY_ROOT
+                            / "skills/proposal-implementation/impl_profile.py"):
+            spec.loader.exec_module(module)
         return module
 
     def test_no_core_file_names_a_product_directory_or_source_root(self):
@@ -390,13 +389,13 @@ class CoreNamesNoDomainTests(unittest.TestCase):
         self.assertEqual(leaks, [], "the core must take these from its caller")
 
     def test_the_core_resolves_the_repository_root_it_actually_lives_in(self):
-        """`parents[4]` is a count, and a count is silent when a file moves.
+        """`parents[3]` is a count, and a count is silent when a file moves.
 
-        It happens to be the same five components the CLI walked before this
+        It happens to be the same four components the CLI walked before this
         core existed -- a coincidence of two directory names, not a rule.
         """
         self.assertEqual(impl_layout.FORGE_ROOT, REPOSITORY_ROOT)
-        self.assertTrue((impl_layout.FORGE_ROOT / ".claude").is_dir())
+        self.assertTrue((impl_layout.FORGE_ROOT / "skills").is_dir())
         self.assertEqual(impl_layout.WORKSPACE,
                          REPOSITORY_ROOT / "implementations")
 

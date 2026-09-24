@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createRequire } from "node:module";
 import { createHash } from "node:crypto";
 import { access, link, mkdtemp, mkdir, readFile, realpath, readdir, rename, stat, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -6,41 +7,10 @@ import path from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
 
-async function findPiPackageRoot() {
-	for (const directory of (process.env.PATH ?? "").split(path.delimiter)) {
-		if (!directory) continue;
-		const candidate = path.join(directory, process.platform === "win32" ? "pi.cmd" : "pi");
-		try {
-			let current = path.dirname(await realpath(candidate));
-			while (current !== path.dirname(current)) {
-				try {
-					const packageJson = JSON.parse(await readFile(path.join(current, "package.json"), "utf8"));
-					if (packageJson.name === "@earendil-works/pi-coding-agent") return current;
-				} catch {
-					// Keep walking to the package root.
-				}
-				current = path.dirname(current);
-			}
-		} catch {
-			// This PATH entry does not contain Pi.
-		}
-	}
-	throw new Error("Pi executable not found on PATH; cannot load the project extension test runtime.");
-}
-
-const piRoot = await findPiPackageRoot();
-const { createJiti } = await import(
-	pathToFileURL(path.join(piRoot, "node_modules/jiti/lib/jiti.mjs")).href
-);
-const jiti = createJiti(import.meta.url, {
-	alias: {
-		"@earendil-works/pi-coding-agent": path.join(piRoot, "dist/index.js"),
-		"@earendil-works/pi-ai/compat": path.join(piRoot, "node_modules/@earendil-works/pi-ai/dist/compat.js"),
-		"@earendil-works/pi-ai": path.join(piRoot, "node_modules/@earendil-works/pi-ai/dist/index.js"),
-		typebox: path.join(piRoot, "node_modules/typebox/build/index.mjs"),
-	},
-});
-const extensionPath = path.resolve(".claude/skills/_core/deliberation/engine/proposal-workspace.ts");
+const typeboxEntry = createRequire(import.meta.url).resolve("typebox");
+const { createJiti } = await import("jiti");
+const jiti = createJiti(import.meta.url, { alias: { typebox: typeboxEntry } });
+const extensionPath = path.resolve("skills/_core/deliberation/engine/proposal-workspace.ts");
 const extension = await jiti.import(extensionPath);
 // The engine accepts exactly one derive base and names it in its own refusals,
 // and both values belong to the host-chosen domain profile rather than to this
@@ -48,7 +18,7 @@ const extension = await jiti.import(extensionPath);
 // project's file name spelled a hundred times in a general forge's test suite,
 // and `tests/proposal-deliberation-domain-profile-lock.test.mjs` now refuses it.
 const { DOMAIN } = await jiti.import(
-	path.resolve(".claude/skills/_core/deliberation/engine/domain-profile.ts"),
+	path.resolve("skills/_core/deliberation/engine/domain-profile.ts"),
 );
 const deriveBase = DOMAIN.deriveBase;
 //: `DOMAIN.baseLabel` as it appears inside an engine refusal, escaped so the

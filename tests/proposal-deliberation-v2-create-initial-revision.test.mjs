@@ -13,16 +13,10 @@ import { pathToFileURL } from 'node:url';
 // through either an in-memory fake publication port or a mkdtemp() temp project root.
 
 const root = process.cwd();
-const piRoot = '/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent';
-const aiRoot = path.join(piRoot, 'node_modules/@earendil-works/pi-ai/dist');
-const { createJiti } = await import(pathToFileURL(path.join(piRoot, 'node_modules/jiti/lib/jiti.mjs')).href);
-const jiti = createJiti(import.meta.url, { alias: {
-	'@earendil-works/pi-coding-agent': path.join(piRoot, 'dist/index.js'),
-	'@earendil-works/pi-ai': path.join(aiRoot, 'index.js'),
-	typebox: path.join(piRoot, 'node_modules/typebox/build/index.mjs'),
-} });
-const v2 = await jiti.import(path.join(root, '.claude/skills/_core/deliberation/engine/exports.ts'));
-const workspace = await jiti.import(path.join(root, '.claude/skills/_core/deliberation/engine/proposal-workspace.ts'));
+const { createJiti } = await import('jiti');
+const jiti = createJiti(import.meta.url);
+const v2 = await jiti.import(path.join(root, 'skills/_core/deliberation/engine/exports.ts'));
+const workspace = await jiti.import(path.join(root, 'skills/_core/deliberation/engine/proposal-workspace.ts'));
 
 const MARKER = '<!-- proposal-workspace:artifact:v1 -->\n';
 
