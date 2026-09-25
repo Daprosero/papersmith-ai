@@ -1986,5 +1986,73 @@ class HolderCollisionTests(unittest.TestCase):
                 "- [ ] an agreement the proposal skill settled here\n")
 
 
+class ShippedHolderObligationsTests(unittest.TestCase):
+    """`experimental-implementation-skill`'s own requirement that this skill
+    SHIPS `references/usage.md` carrying the holder's obligations.
+
+    Written because nothing checked it. Measured, not assumed: with the file
+    moved aside, `test_implementation_pair.py`,
+    `test_experimental_implementation.py` and `test_skill_audit.py` ran
+    489 passed / 3 skipped -- the whole suite agreed that a shipped file the
+    spec requires had simply stopped existing. A requirement no test
+    exercises is indistinguishable from a requirement nobody kept, which is
+    the defect this repository cares most about, and it landed on the very
+    file this change created to close a structural gap.
+
+    The assertions are deliberately about the OBLIGATIONS, not the prose:
+    the declared filename, the create-on-absent behaviour, and the refusal a
+    reader meets when the holder they hold is not this skill's own. Pinning
+    sentences would redden on every honest edit; pinning the obligations
+    reddens only when one stops being documented.
+    """
+
+    REFERENCES = SKILL_DIR / "references" / "usage.md"
+
+    def test_the_skill_ships_its_references_usage(self) -> None:
+        self.assertTrue(
+            self.REFERENCES.is_file(),
+            f"{self.REFERENCES.relative_to(FORGE)} is required by this "
+            "skill's own spec and is not on disk; its twin has carried one "
+            "since before this skill existed",
+        )
+
+    def test_the_shipped_usage_names_every_holder_obligation(self) -> None:
+        text = self.REFERENCES.read_text(encoding="utf-8")
+        for obligation in (
+                "Experimental_AGREED.md",
+                "HOLDER_UNDECLARED",
+        ):
+            with self.subTest(obligation=obligation):
+                self.assertIn(
+                    obligation, text,
+                    f"{obligation!r} is an obligation of this skill's own "
+                    "declared holder and is undocumented in the file that "
+                    "exists to document it",
+                )
+
+    def test_the_shipped_usage_never_names_the_sibling_holder_as_this_skill_s(
+            self) -> None:
+        """The whole point of the declared name is that this skill stops
+        landing on `AGREED.md`. A `usage.md` that still calls that file this
+        skill's own would re-teach the collision the change removed.
+
+        Measured while writing this: the attribution can sit on the line
+        BEFORE the filename, because prose wraps. A per-line check reddened
+        on "a deliberately distinct name from the sibling's / own
+        `AGREED.md`" -- correct prose, wrong assertion. The window below is
+        the fix; the first draft of this test was the defect.
+        """
+        text = self.REFERENCES.read_text(encoding="utf-8")
+        bare = re.compile(r"(?<!Experimental_)AGREED\.md")
+        for match in bare.finditer(text):
+            window = text[max(0, match.start() - 240):match.end() + 240]
+            self.assertTrue(
+                any(word in window for word in
+                    ("proposal-implementation", "sibling", "twin")),
+                "a bare `AGREED.md` mention must say whose it is; nothing "
+                f"attributes the one at offset {match.start()}",
+            )
+
+
 if __name__ == "__main__":
     unittest.main()
