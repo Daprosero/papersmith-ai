@@ -489,13 +489,38 @@ Spec: `implementation-declared-holder` ("The Engine Uses No Default Or Fallback 
 Filename Of Its Own", "The Never-Invents-A-File Doctrine Is Narrowed To The Read Path, Not
 Retired"), `implementation-cli-seal` ("The Proposal Seal's 28 Digests Stay Byte-Identical").
 
-- [ ] 6.1 Grep-provable check: no engine-side default/fallback holder filename literal
+- [x] 6.1 Grep-provable check: no engine-side default/fallback holder filename literal
       remains. Verification: `grep -n "AGREED"
       skills/_core/implementation/engine/implementation_engine.py
       skills/_core/implementation/impl_position.py` — every remaining hit must be one of the
       9 (+3 in `impl_position.py`) "leave standing" dated/target-specific quotations from
       task 2.12, never a Python default value or fallback expression.
-- [ ] 6.2 Run the `ForgeVocabularyDerivedGuardTests` / lock family after the declarations
+      **Result (2026-09-25):** 7 hits remain (down from 18): `impl_position.py:20,270,1139`
+      (all 3, byte-identical to `main`, confirmed by diff — file received no functional
+      edit at all, per design). `implementation_engine.py:315,698,12303,14273` — of these,
+      `:315` and `:14273` are the exact, byte-identical `main:304`/`main:13892` dated
+      measurements (only their line numbers shifted, +11/+381, from unrelated insertions
+      earlier in the file); `:698` and `:12303` are `main:575`/`main:12005` **amended**
+      (not left standing) to name `PROFILE["holder"]["filename"]` and keep `AGREED.md`
+      only as an illustrative `e.g. ... for proposal-implementation` example — exactly the
+      form `implementation-engine-neutrality`'s own scenario sanctions ("distinguishing it
+      from a comment merely illustrating one skill's own declared example value"). No
+      remaining hit is a Python default or fallback expression. Grep-provable check PASSES.
+      **Deviation noted, not a defect:** 4 of design D12's 9 "leave standing" engine-side
+      sites (`main:11083,15746,18866,18916`) were in fact **amended** in Phases 2/4 to say
+      "this skill's own declared holder" instead of the literal filename — verified by
+      locating their exact surviving prose at `implementation_engine.py:11219-11220`
+      (`This says only what the skill is FOR`), `:16185` (`expand-contract`), `:19320`
+      (`@step` operand) and `:19370-19371` (`@record:level` operand). Unlike `:304`/`:13892`
+      (genuine dated measurements — "zero hits across 114 checklist lines", "carries
+      agreements ticked with no witness at all"), these 4 sites are generic mechanism
+      descriptions with no date or number attached, and leaving them as a literal
+      `AGREED.md` would have been **false** prose for `experimental-implementation` (whose
+      own holder is `Experimental_AGREED.md`) — amending them is the more correct outcome
+      and the grep-provable check still passes, but this is a real divergence from
+      `design.md`'s literal D12 classification, reported per this phase's charter rather
+      than silently accepted.
+- [x] 6.2 Run the `ForgeVocabularyDerivedGuardTests` / lock family after the declarations
       have landed (vocabulary caution: `AGREED.md`, `Experimental_AGREED.md`, `"# Agreed"`,
       `"## Ladder"` are new literals in *skill* files, which Rule B/LockB scans for engine
       neutrality). Verification:
@@ -503,19 +528,93 @@ Retired"), `implementation-cli-seal` ("The Proposal Seal's 28 Digests Stay Byte-
       — expect only the one known pre-existing failure
       (`test_rule_b_finds_no_target_vocabulary_in_the_forge`, dated 2026-09-24) — no new
       failures.
-- [ ] 6.3 Verify all 10 doctrine-table rows (A1–A7, B1–B3, `design.md` D12) against shipped
+      **Result (2026-09-25):** 22 tests, 21 passed, 1 failed — exactly the one named
+      pre-existing failure (`{'paper-writing/scripts/paper_tikz.py': ['plots']}`, unrelated
+      to this change). No new vocabulary leak from `AGREED.md`, `Experimental_AGREED.md`,
+      `# Agreed` or `## Ladder`. Re-confirmed after the 6.6 SKILL.md edits below.
+- [x] 6.3 Verify all 10 doctrine-table rows (A1–A7, B1–B3, `design.md` D12) against shipped
       bytes, not intent, after all Phase 2–5 edits have landed. Verification: manual
       read-through checklist, one row at a time, against the D12 table.
-- [ ] 6.4 Success-criteria closure check against `proposal.md`'s 14-item checklist — walk
+      **Result (2026-09-25):** all 10 rows read against shipped bytes and confirmed to
+      match their D12 verdict. A1 (`agreements_state:392-404`): "Found by shape, never by
+      name" kept verbatim, new write-side paragraph added. A2 (`_chosen_holder:11992-12014`):
+      dispatches off `holder_resolution`, docstring cross-reference repointed. A3/A4
+      (`cmd_settle:14530-14548`, item 12 enumeration): amended, cites the same doctrine
+      `_chosen_holder` states. A5/A6 (`SETTLE_HOLDER_ABSENT`/`POSITION_HOLDER_ABSENT`
+      questions, `:19757-19760`/`:19822-19826`): re-authored for the narrowed "no product
+      folder" case, not retired. A7 (`test_implementation_pair.py:477-485`): amended
+      comment, fixture moved to `Fixture_AGREED.md` — that fixture's own declared name
+      (from `tests/fixtures/two_documents/impl_profile.py`), not the literal
+      `Experimental_AGREED.md` `design.md` named — correct, since this fixture is not the
+      `experimental-implementation` skill itself. B1 (`position_state:767-782`): "found by
+      shape... never a fixed filename" kept, gains a pointer to the declared-name lookup
+      above it. B2 (`cmd_position:12412-12424`): sweep comment amended, glob-survives
+      rationale preserved. B3 (`cmd_position:12302-12345`): docstring amended to describe
+      the declared-name-first mechanism. All 4 fact-asserting docstrings (`main:575,
+      12005, 18946, 18992`) confirmed to now name the declared leaf, not a literal
+      filename (current sites: `:698`, `:12303`, `:19446`, `:19400-19401`). See 6.1 for the
+      4-site leave-standing/amend deviation, reported there rather than duplicated here.
+- [x] 6.4 Success-criteria closure check against `proposal.md`'s 14-item checklist — walk
       every box and confirm it is satisfied by a specific task above; do not check a box
       without the corresponding shipped test. Verification: manual cross-reference table
       (proposal checklist item → task ID → passing test).
-- [ ] 6.5 Final full-suite gate. Verification: `npm run test:all`. Acceptance: green except
+      **Result (2026-09-25):** full 14-row table recorded in this phase's return report to
+      the orchestrator (not duplicated here for length). 11 of 14 items have a direct
+      automated test; items 8 ("all 7+3 doctrine restatements verified against shipped
+      bytes"), 9 ("the four fact-asserting docstrings name the declared leaf") and 13
+      (`references/usage.md` exists and matches shipped behavior) are satisfied only by
+      this phase's manual read-through (6.3) and by tasks 5.1/5.3's own manual
+      verification — no automated test exercises any of these three, confirmed by an
+      exhaustive `rg` across `tests/` finding zero references to
+      `experimental-implementation`'s `references/usage.md` at all. This is reported as a
+      genuine, durable test-coverage gap, not closed by this phase (closing it would mean
+      writing new tests, which is out of this phase's cross-cutting-verification charter).
+- [x] 6.5 Final full-suite gate. Verification: `npm run test:all`. Acceptance: green except
       the 8 named pre-existing environmental failures from 1.8 (dated 2026-09-24);
       `tests/seal/digests.json` byte-identical to its pre-change state (hard zero-delta gate,
       confirmed via `git diff --stat tests/seal/digests.json` empty across the whole change);
       `tests/experiments_seal/digests.json` reflects exactly the 2.16/2.20-verified declared
       delta and nothing else.
+      **Result (2026-09-25):** `npm run test:node`: 653/653 passed (run twice, before and
+      after the 6.6 SKILL.md edits). `.venv/bin/python -m pytest` (hang test deselected):
+      11 failed / 5077 passed / 3 skipped / 1 deselected — all 11 failures are exactly the
+      8 named pre-existing tests from 1.8 (`GateInterpreterTests` ×3, `KitTests` ×3,
+      `BridgesTests`×1, `ExecutorTests`×1, `GroundingThresholdObligationTests`×1,
+      `test_repo_papersmith_yaml_parses`×1, `test_rule_b_finds_no_target_vocabulary_in_the_forge`×1
+      — 11 test methods across those 8 named cases); zero unaccounted delta. Re-ran the
+      full `tests/test_proposal_implementation.py` file a second time after the 6.6
+      SKILL.md edits (1696 passed, 1 known failure) and both seal files together (73
+      passed) to confirm the edits introduced no regression. `git diff main..HEAD --stat
+      -- tests/seal/digests.json`: empty (confirmed across the whole change, not just this
+      phase). `git diff main..HEAD -- tests/experiments_seal/digests.json`: exactly the 9
+      keys `experiments-seal-delta.md` names (`__corpus_fingerprint__`, `position-e1`,
+      `propose`, `verify-a`, `verify-a-declared`, `verify-b`, `verify-b-declared`,
+      `verify-b-undeclared`, `verify-t`) — nothing else moved. `reachable_refusal_codes()`
+      independently re-run (not just read from the pinned assertion): **121**, with
+      `HOLDER_UNDECLARED`/`HOLDER_REPAIR_AMBIGUOUS`/`POSITION_REPAIR_CONFLICT` all present
+      and classified (50 `INVOCATION_DEFECT` + 71 `WORK_STATE` = 121, independently
+      recomputed and matching `proposal-implementation/SKILL.md`'s own stated split).
+- [x] 6.6 Close the `HOLDER_UNDECLARED`/`HOLDER_REPAIR_AMBIGUOUS`/`POSITION_REPAIR_CONFLICT`
+      gap in `proposal-implementation/SKILL.md`'s Command Roster table, left unassigned by
+      Phases 4 and 5. **Result (2026-09-25):** added `--repair-header` to the `position`
+      row's "What it writes" cell; added `POSITION_REPAIR_CONFLICT`, the narrowed
+      `POSITION_HOLDER_ABSENT`, `HOLDER_UNDECLARED` and `HOLDER_REPAIR_AMBIGUOUS` to the
+      `position` row's "Refuses on" cell; added the narrowed `SETTLE_HOLDER_ABSENT` and
+      `HOLDER_UNDECLARED` to the `settle` row's "Refuses on" cell; corrected `settle`'s
+      opening sentence, which still said "whichever holder file `agreements_state` already
+      knows carries checklist items" (stale since D10 narrowed `settle`'s write set to the
+      one `holder_resolution`-resolved file). No digest moved (`SKILL.md` is outside both
+      seal corpora); no word-count lock exists on this file (checked: no test asserts a
+      byte/word count on `proposal-implementation/SKILL.md`). Re-ran
+      `tests/test_proposal_implementation.py` in full (1696 passed, 1 known failure) and
+      both seal test files (73 passed, zero-delta held) after the edit to confirm.
+      `experimental-implementation/SKILL.md` was left unchanged: it already documents
+      `HOLDER_UNDECLARED` (`:281`) and explicitly delegates every other command's refusal
+      documentation to the sibling's own doctrine ("every other published command runs
+      exactly as `proposal-implementation`'s own doctrine describes it"), which now covers
+      `--repair-header`/`HOLDER_REPAIR_AMBIGUOUS`/`POSITION_REPAIR_CONFLICT` by that same
+      delegation — adding a second copy would duplicate, not close, the gap.
 
-## Total: 62 tasks across 6 phases (Phase 1: 8, Phase 2: 25, Phase 3: 9, Phase 4: 12,
-Phase 5: 3, Phase 6: 5)
+## Total: 63 tasks across 6 phases (Phase 1: 8, Phase 2: 25, Phase 3: 9, Phase 4: 12,
+Phase 5: 3, Phase 6: 6 — 6.6 added during Phase 6 itself, closing the SKILL.md roster gap
+Phases 4/5 both deliberately left unassigned)
