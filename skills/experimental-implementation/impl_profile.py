@@ -280,4 +280,14 @@ PROFILE = {
                 r"Ecuaciones?\s*\((\d+)\)"),
         },
     ],
+    # `the-holder-each-skill-declares` (design.md D1/D4, tasks.md 1.6):
+    # this skill's own declared checklist holder -- a distinct filename
+    # from the sibling's `AGREED.md`, closing the collision the two
+    # skills' shared engine and product-folder shape would otherwise let
+    # them write into each other's holder.
+    "holder": {
+        "filename": "Experimental_AGREED.md",
+        "headings": ("# Agreed", "## Ladder"),
+        "scaffold": "# Agreed\n\n## Ladder\n",
+    },
 }
