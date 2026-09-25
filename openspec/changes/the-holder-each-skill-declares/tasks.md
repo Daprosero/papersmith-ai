@@ -370,28 +370,28 @@ Spec: `implementation-declared-holder` — "Create-On-Absent When No Candidate E
 
 Spec: `implementation-holder-repair` — all requirements.
 
-- [ ] 4.1 RED: `POSITION_REPAIR_CONFLICT` mutual exclusivity — `--repair-header` combined with
+- [x] 4.1 RED: `POSITION_REPAIR_CONFLICT` mutual exclusivity — `--repair-header` combined with
       any of `--sequence`, `--reconcile`, `--replace` refuses `POSITION_REPAIR_CONFLICT`
       (`INVOCATION_DEFECT`), same shape as `POSITION_SEQUENCE_AND_RECONCILE`
       (`:12070-12075`). Verification:
       `.venv/bin/python -m pytest tests/test_proposal_implementation.py -k POSITION_REPAIR_CONFLICT -v`
       (RED).
-- [ ] 4.2 GREEN: add the `--repair-header` flag and its mutual-exclusivity guard to
+- [x] 4.2 GREEN: add the `--repair-header` flag and its mutual-exclusivity guard to
       `cmd_position`'s argparse in `implementation_engine.py`. Verification:
       `.venv/bin/python -m pytest tests/test_proposal_implementation.py -k POSITION_REPAIR_CONFLICT -v`
       (GREEN).
-- [ ] 4.3 Confirm the repair-decision path calls the **same** `_header_document_count_detail`
+- [x] 4.3 Confirm the repair-decision path calls the **same** `_header_document_count_detail`
       helper from task 2.4, never a re-derived comparison (spec: "The repair path uses the
       same helper, not a re-derived expression"). Verification:
       `.venv/bin/python -m pytest tests/test_proposal_implementation.py -k "repair and header_document_count_detail" -v`.
-- [ ] 4.4 RED: D7 unambiguous-repair case — a poisoned target where every `documents=` entry
+- [x] 4.4 RED: D7 unambiguous-repair case — a poisoned target where every `documents=` entry
       either carries no `revision`, or carries a `label` the current profile does not
       declare → repair proceeds: header re-rendered **without** the `documents=` group,
       `revision`/`revisionSha256`/`derivedAt`/`session`/`target` unchanged, block body
       byte-identical. Byte-compare before/after. Verification:
       `.venv/bin/python -m pytest tests/test_proposal_implementation.py -k repair_unambiguous -v`
       (RED).
-- [ ] 4.5 GREEN: implement D7's repair branch in `cmd_position`'s `--repair-header` handling.
+- [x] 4.5 GREEN: implement D7's repair branch in `cmd_position`'s `--repair-header` handling.
       Preconditions (**all four** must hold, else fall through to 4.8's ambiguous refusal):
       (1) `holder_resolution`'s `action == "declared"`; (2)
       `impl_position.locate_block(data, allow_legacy=True)` returns a block rather than
@@ -401,36 +401,36 @@ Spec: `implementation-holder-repair` — all requirements.
       path with the `documents=` key omitted (already byte-for-byte identical to
       pre-Cut-3 output, `impl_position.py:1106-1115`). Acceptance: 4.4 GREEN. Verification:
       `.venv/bin/python -m pytest tests/test_proposal_implementation.py -k repair_unambiguous -v`.
-- [ ] 4.6 RED: D7 unambiguous create-new case — a poisoned target where the evidence
+- [x] 4.6 RED: D7 unambiguous create-new case — a poisoned target where the evidence
       unambiguously supports creating this skill's own separate declared holder instead of
       touching the existing one → this skill's declared holder is created, the existing
       poisoned holder is left untouched. Verification:
       `.venv/bin/python -m pytest tests/test_proposal_implementation.py -k repair_create_new -v`
       (RED).
-- [ ] 4.7 GREEN: wire the create-new branch under `--repair-header`, reusing task 3.2's
+- [x] 4.7 GREEN: wire the create-new branch under `--repair-header`, reusing task 3.2's
       creation path when `action == "create"` for this target. Verification:
       `.venv/bin/python -m pytest tests/test_proposal_implementation.py -k repair_create_new -v`
       (GREEN).
-- [ ] 4.8 RED: D7 ambiguous cases (3 sub-cases), each → `HOLDER_REPAIR_AMBIGUOUS`, nothing
+- [x] 4.8 RED: D7 ambiguous cases (3 sub-cases), each → `HOLDER_REPAIR_AMBIGUOUS`, nothing
       written: (a) an entry carries a non-empty `revision` for a label this profile **does**
       declare; (b) `block["legacy"]` is true (`target` is `None`, `impl_position.py:241`);
       (c) more than one `*.md` carries a block — assert `POSITION_HOLDER_AMBIGUOUS` still
       fires and repair never runs (it must not become a second answer to that code).
       Verification: `.venv/bin/python -m pytest tests/test_proposal_implementation.py -k repair_ambiguous -v`
       (RED).
-- [ ] 4.9 GREEN: implement `HOLDER_REPAIR_AMBIGUOUS` (`WORK_STATE`) — message names the
+- [x] 4.9 GREEN: implement `HOLDER_REPAIR_AMBIGUOUS` (`WORK_STATE`) — message names the
       decoded group entries, which labels this profile declares, and asks whether this
       header's recorded binding still means something under this profile (repair by dropping
       the group, or give this target its own declared holder). Add `HOLDER_REPAIR_AMBIGUOUS`
       and `POSITION_REPAIR_CONFLICT` to `GATING_REFUSALS` (`:18402-18521`) and the
       question/command table (`:19274-19347`). Acceptance: 4.8 GREEN. Verification:
       `.venv/bin/python -m pytest tests/test_proposal_implementation.py -k repair_ambiguous -v`.
-- [ ] 4.10 Mutation test — D7's ambiguity-detection guard reachability. Invert the ambiguity
+- [x] 4.10 Mutation test — D7's ambiguity-detection guard reachability. Invert the ambiguity
       guard; the mutated build must pick an action (repair or create) instead of stopping,
       proving the restored guard is what forces the stop. Assert the mutated anchor count,
       never `git diff --stat`. Verification: manual guard-invert + targeted
       `.venv/bin/python -m pytest` re-run.
-- [ ] 4.11 Final re-measurement of the pinned reachable-refusal-code count. After
+- [x] 4.11 Final re-measurement of the pinned reachable-refusal-code count. After
       `HOLDER_REPAIR_AMBIGUOUS` and `POSITION_REPAIR_CONFLICT` land (verify against source
       whether `INVOCATION_DEFECT` classification is walked by `reachable_refusal_codes()` —
       do not assume), run the derivation again and update the pin from task 2.24's interim
@@ -440,7 +440,7 @@ Spec: `implementation-holder-repair` — all requirements.
       (`HOLDER_UNDECLARED`, `HOLDER_REPAIR_AMBIGUOUS`, `POSITION_REPAIR_CONFLICT`).
       Verification:
       `.venv/bin/python -m pytest tests/test_proposal_implementation.py -k "reachable_refusal_codes or roster" -v`.
-- [ ] 4.12 Full-suite + zero-delta seal gate for Phase 4. Verification: `npm run test:all`;
+- [x] 4.12 Full-suite + zero-delta seal gate for Phase 4. Verification: `npm run test:all`;
       `.venv/bin/python -m pytest tests/test_implementation_seal.py -x` (zero-delta, still
       green).
 
