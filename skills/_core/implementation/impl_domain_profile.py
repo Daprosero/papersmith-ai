@@ -347,6 +347,85 @@ def _resolve() -> Mapping[str, Any]:
             f"IMPLEMENTATION_DOMAIN_PROFILE_INCOMPLETE: {configured} is "
             f"missing {', '.join(missing)}.")
 
+    # `the-holder-each-skill-declares` (design.md D1/D4, tasks.md 1.4): the
+    # holder leaf's own shape, validated at resolve time --
+    # `IMPLEMENTATION_DOMAIN_PROFILE_INVALID_HOLDER`, joining the
+    # `..._INVALID_CITATION_PATTERN`/`..._INVALID_BLOCK_LOCATOR`/
+    # `..._INVALID_CROSS_CITATION_PATTERN` family (a distinct
+    # `..._INVALID_<THING>` code per the established convention, never a
+    # reuse of `..._UNSAFE_PATH`, whose message would be false here). Every
+    # leaf's presence is already guaranteed by the check above. Four
+    # checks (D4):
+    holder = profile["holder"]
+    holder_filename = holder["filename"]
+    # (1) exactly one path component -- non-empty, no separator, not
+    # `.`/`..`, no NUL, no newline, and `Path(f).name == f` as a general
+    # safety net over any other separator this platform might honor.
+    if (
+        not isinstance(holder_filename, str)
+        or not holder_filename
+        or "/" in holder_filename
+        or "\\" in holder_filename
+        or holder_filename in (".", "..")
+        or "\x00" in holder_filename
+        or "\n" in holder_filename
+        or Path(holder_filename).name != holder_filename
+    ):
+        raise ImplementationProfileError(
+            f"IMPLEMENTATION_DOMAIN_PROFILE_INVALID_HOLDER: {configured} "
+            f"declares holder.filename={holder_filename!r}, which is not "
+            "exactly one safe path component.")
+    # (2) ends `.md` -- `AGREEMENTS_GLOB` is `"*.md"`, and the read
+    # fall-back would not see a holder the write side created under
+    # another suffix.
+    if not holder_filename.endswith(".md"):
+        raise ImplementationProfileError(
+            f"IMPLEMENTATION_DOMAIN_PROFILE_INVALID_HOLDER: {configured} "
+            f"declares holder.filename={holder_filename!r}, which does "
+            "not end \".md\".")
+    # (3) `headings` is a non-empty sequence of `str`.
+    holder_headings = holder["headings"]
+    if (
+        not isinstance(holder_headings, (list, tuple))
+        or len(holder_headings) == 0
+        or any(not isinstance(heading, str) for heading in holder_headings)
+    ):
+        raise ImplementationProfileError(
+            f"IMPLEMENTATION_DOMAIN_PROFILE_INVALID_HOLDER: {configured} "
+            f"declares holder.headings={holder_headings!r}, which is not "
+            "a non-empty sequence of str.")
+    holder_scaffold = holder["scaffold"]
+    if not isinstance(holder_scaffold, str):
+        raise ImplementationProfileError(
+            f"IMPLEMENTATION_DOMAIN_PROFILE_INVALID_HOLDER: {configured} "
+            f"declares holder.scaffold={holder_scaffold!r}, which is not "
+            "a str.")
+    # (4) every `headings` entry occurs in `scaffold` as a full line whose
+    # stripped text equals it, outside a fenced region -- the exact
+    # matching rule `locate_headings` implements (`impl_position.py:
+    # 366-389`: `stripped != heading` skips, and a ``` ``` `` `/`~~~` line
+    # toggles `fenced`). Reimplemented here, never imported: this module
+    # resolves before the engine and owns no dependency on it.
+    for heading in holder_headings:
+        stripped_heading = heading.strip()
+        fenced = False
+        found = False
+        for line in holder_scaffold.split("\n"):
+            stripped_line = line.strip()
+            if stripped_line.startswith("```") or stripped_line.startswith("~~~"):
+                fenced = not fenced
+                continue
+            if fenced:
+                continue
+            if stripped_line == stripped_heading:
+                found = True
+                break
+        if not found:
+            raise ImplementationProfileError(
+                f"IMPLEMENTATION_DOMAIN_PROFILE_INVALID_HOLDER: {configured} "
+                f"declares holder.headings entry {heading!r}, which does "
+                "not occur in holder.scaffold as a full, unfenced line.")
+
     # Cut 3 slice C (design.md D3, tier 3): `citation_pattern`'s group
     # count, validated wherever it resolves -- the top-level fallback AND
     # every declared overlay. `_impact_class` reads `match.group(1) or
