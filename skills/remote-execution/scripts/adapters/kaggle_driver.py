@@ -402,6 +402,24 @@ def cmd_capacity(client: "KernelsApiClient") -> dict:
         except Exception as exc:  # any per-ref failure stays per-ref
             http_response = getattr(exc, "response", None)
             status_code = getattr(http_response, "status_code", None)
+            # An auth refusal is a fact about the WORKER, never about this
+            # ref, so it does NOT stay per-ref: it is re-raised to reach
+            # `main()`'s own `requests.exceptions.HTTPError` handler, which
+            # returns `EXIT_UNAUTHORIZED` for exactly 401/403, which
+            # `adapters/kaggle.py`'s `_parse_capacity_result` maps to
+            # `ADAPTER.WorkerUnauthorized`, which `packer.plan()` re-raises
+            # rather than degrading to the ledger.
+            #
+            # Containing it per-ref the way a 404 is contained looks
+            # symmetrical and is not: the next ref may well answer after a
+            # 404 or a timeout, and will answer identically after a refused
+            # credential. Folded into `status_lookup_failed`, the ref counts
+            # as unknown, `list_active()` counts unknown as ACTIVE, and a
+            # revoked account reads as a busy one -- inverting the single
+            # distinction `_parse_capacity_result`'s docstring says it exists
+            # to preserve, and hiding the only remedy that works.
+            if status_code in (401, 403):
+                raise
             detail = f"HTTP {status_code}: {exc}" if status_code is not None else str(exc)
             # A 404 is DEFINITIVE negative evidence (no session exists), not
             # a lookup this driver merely failed to complete.

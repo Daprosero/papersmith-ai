@@ -8093,6 +8093,55 @@ class WorkerSelectionAndMeteringTests(unittest.TestCase):
         self.assertEqual(unresolved["reason"], "session_absent")
         self.assertIn("404", unresolved["detail"])
 
+    def test_driver_capacity_lets_an_auth_refusal_out_instead_of_burying_it(self) -> None:
+        """A 401/403 mid-loop is a fact about the WORKER, not about the ref.
+
+        The per-ref containment this loop grew for a 404 was written with a
+        two-and-a-half-way classification, not a three-way one: everything
+        that was not an exact 404 became `status_lookup_failed`, and
+        `adapters/kaggle.py`'s `list_active()` counts that as unknown, which
+        it counts as ACTIVE. So a revoked credential read as a busy worker.
+
+        That inverts the one distinction `_parse_capacity_result`'s own
+        docstring says it exists to preserve -- "the one driver call whose
+        refusal must distinguish 'credential refused' from every other
+        failure shape" -- and it hides the only remedy that works:
+        re-materializing that account's token. It fails on the safe side for
+        capacity (nobody is oversubscribed) and on the wrong side for the
+        operator, who is told nothing actionable.
+
+        A 404 or a timeout is per-ref because the next ref may well answer.
+        An auth refusal will answer identically for every remaining ref, so
+        containing it per-ref buys nothing and costs the diagnosis. Letting
+        it out reaches `main()`'s existing `requests.exceptions.HTTPError`
+        handler, which already returns `EXIT_UNAUTHORIZED` for 401/403, which
+        `_parse_capacity_result` already maps to `ADAPTER.WorkerUnauthorized`,
+        which `packer.plan()` already re-raises rather than degrading -- four
+        mechanisms that were all in place and simply never reached.
+        """
+        driver = _load_kaggle_driver_module()
+        for status in (401, 403):
+            with self.subTest(status=status):
+                responses = [
+                    {
+                        "kernels": [
+                            {"ref": "acct-1/a", "slug": "a"},
+                            {"ref": "acct-1/b", "slug": "b"},
+                        ]
+                    },
+                    {"status": "QUEUED", "failureMessage": None},
+                    _SequentialResponseTransport.Error(
+                        status, {"message": "credential refused"}),
+                ]
+                client, recorder = _kaggle_http_client_with_sequential_recorder(
+                    FIXTURE_TOKEN, responses)
+                kernels_client = driver.KernelsApiClient(client)
+
+                with self.assertRaises(driver.requests.exceptions.HTTPError) as caught:
+                    driver.cmd_capacity(kernels_client)
+
+                self.assertEqual(caught.exception.response.status_code, status)
+
     def test_driver_capacity_reports_an_unaddressable_ref_without_a_request(self) -> None:
         """MEASURED, not assumed, against the live service on 2026-09-24:
         one of the nine stored accounts' enumeration answered with one
