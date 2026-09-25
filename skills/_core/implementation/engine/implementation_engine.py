@@ -12074,9 +12074,14 @@ def _holder_repair_ambiguous_detail(
         f"{path.relative_to(target)}'s position header carries {entries_text}; "
         f"this skill's own declared documents are {sorted(declared_labels)!r}. "
         "Does this header's recorded binding still mean something under "
-        "this profile -- repair it by dropping the group with `position "
-        "--repair-header` once that is safe, or should this target get its "
-        "own separate declared holder instead, and why?")
+        "this profile? If not, drop the `documents=` group yourself, by "
+        "hand, in the target repository's own history -- nothing in this "
+        "engine drops it for you, and this exact refusal fires again on "
+        "the same unchanged bytes. If it does, this file is not this "
+        "skill's own holder after all; give this target its own separate "
+        "declared holder by declaring a different name in this skill's "
+        "own PROFILE[\"holder\"][\"filename\"] -- which changes every "
+        "target this skill is run against, not only this one -- and why?")
 
 
 def _cmd_position_repair(
@@ -19712,10 +19717,12 @@ _WORK_STATE_RESOLUTIONS = {
               "`documents=` group the evidence does not clearly resolve "
               "(the refusal detail names the decoded entries and this "
               "skill's own declared documents); does this header's "
-              "recorded binding still mean something under this profile "
-              "-- repair it by dropping the group with `position "
-              "--repair-header`, or give this target its own separate "
-              "declared holder instead, and why?"),
+              "recorded binding still mean something under this profile? "
+              "If not, drop the group yourself, by hand, in the target "
+              "repository's own history -- nothing in this engine drops "
+              "it for you. If it does, give this target its own separate "
+              "declared holder by declaring a different name in this "
+              "skill's own PROFILE[\"holder\"][\"filename\"], and why?"),
     "AGREEMENT_DISAGREES": lambda args: _refusal_question(
         args, "a ticked agreement names a witness function that is absent "
               "from a fully-parsed tests/ (the refusal detail names it); "

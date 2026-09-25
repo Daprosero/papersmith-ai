@@ -84,7 +84,9 @@ than the thing that stopped you.
 
 **It is not the agreements and does not replace them.** What the mathematics
 says lives in the managed revision; what was settled about a repository lives in
-its `AGREED.md`. This says only what the skill is for.
+its own declared holder, `AGREED.md` (`PROFILE["holder"]["filename"]` in this
+skill's own `impl_profile.py` -- a name this skill declares for itself, not an
+engine default). This says only what the skill is for.
 
 **Purpose:** carry the agreed formulation as far as complete runs that can be
 reported — not a green verification, not a passing rehearsal.

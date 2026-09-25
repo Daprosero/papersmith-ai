@@ -449,7 +449,7 @@ Spec: `implementation-holder-repair` — all requirements.
 Spec: `experimental-implementation-skill` — "The Skill Ships `references/usage.md`
 Documenting Its Holder Obligations".
 
-- [ ] 5.1 Create `skills/experimental-implementation/references/usage.md` (no
+- [x] 5.1 Create `skills/experimental-implementation/references/usage.md` (no
       `references/` directory exists today for this skill). Document this skill's holder
       obligations **only**: the declared filename (`Experimental_AGREED.md`), the
       create-on-absent behavior, and the write-refusal-into-an-undeclared-holder behavior —
@@ -457,18 +457,31 @@ Documenting Its Holder Obligations".
       without mirroring its unrelated sections (e.g. kit assets this skill does not ship).
       Verification: `ls skills/experimental-implementation/references/usage.md` confirms the
       file now exists.
-- [ ] 5.2 Update `skills/proposal-implementation/SKILL.md` and
+- [x] 5.2 Update `skills/proposal-implementation/SKILL.md` and
       `skills/experimental-implementation/SKILL.md` so holder naming follows each skill's own
       declaration. Verification: `grep -n "AGREED" skills/proposal-implementation/SKILL.md
       skills/experimental-implementation/SKILL.md` — confirm each names only its own declared
       holder.
-- [ ] 5.3 Verify `references/usage.md`'s stated obligations match shipped behavior
+- [x] 5.3 Verify `references/usage.md`'s stated obligations match shipped behavior
       (documentation-only capability, no executable scenario): cross-check the stated
       filename, create-on-absent behavior, and write-refusal behavior against the actually
       enforced `cmd_settle`/`cmd_position` behavior for `experimental-implementation` from
       Phases 2–4. Verification: manual read-through cross-check; record the result in this
       change's own verification notes (N/A for an automated command — this is a documentation
       fidelity check).
+      **Result (2026-09-25):** cross-checked live against the real
+      `experimental-implementation` launcher (scratch fixture under `implementations/`,
+      deleted after). `holder_resolution`/`_chosen_holder`'s create-on-absent path wrote
+      `<Name>/Experimental_AGREED.md` with the declared scaffold (`# Agreed\n\n## Ladder\n`)
+      verbatim, before the position block was spliced beneath it — matches. A pre-existing
+      `TASKS.md` holding checklist items produced `HOLDER_UNDECLARED` naming both exits
+      (rename in the target, or declare the found name in `PROFILE["holder"]["filename"]`) —
+      matches. `references/usage.md`'s example detail string was corrected to the exact
+      observed format (`Method/TASKS.md holds checklist items under Method/, ...`). Also
+      confirmed against `tests/test_experimental_implementation.py::HolderCollisionTests`
+      (`engine.HOLDER_FILENAME == "Experimental_AGREED.md"`; a target holding the proposal's
+      own `AGREED.md` resolves `"undeclared"` under this profile). No shipped behavior
+      diverges from the stated obligations.
 
 ## Phase 6: Cross-Cutting Verification And Final Gate
 

@@ -548,8 +548,16 @@ def build_denylist(profiles: list[dict[str, Any]]) -> dict[str, str]:
 #: declared holder leaf instead, leaving only the dated/target-specific
 #: measurements standing. None left the denylist; `test_2` confirms no
 #: new unpinned leak either.
+#: `the-holder-each-skill-declares` (Phase 5, carried defect fix): the
+#: rewritten `HOLDER_REPAIR_AMBIGUOUS` refusal detail and its published
+#: `resolve` question (naming only exits a reader can actually take,
+#: never `--repair-header` as the remedy for a refusal `--repair-header`
+#: itself produced) are rewritten engine prose, not a domain word: two
+#: words already exempted here read naturally inside it and grew. `after`
+#: 91->92, `against` 195->196. None left the denylist; `test_2` confirms
+#: no new unpinned leak either.
 M5_PINNED_RESIDUE: dict[str, int] = {
-    "actually": 83, "admissible": 3, "after": 91, "against": 195,
+    "actually": 83, "admissible": 3, "after": 92, "against": 196,
     "agreed": 16, "answered": 95, "answers": 107, "approved": 47,
     "audit": 19, "before": 259, "benchmark": 108, "beside": 109,
     "check": 158, "checkable": 3, "claim": 36, "command": 277,

@@ -270,6 +270,17 @@ Every other published command runs exactly as `proposal-implementation`'s own
 doctrine describes it, against this domain's own profile leaves instead of the
 sibling's.
 
+## The checklist holder: `Experimental_AGREED.md`
+
+This skill declares its own checklist holder in `impl_profile.py`'s
+`PROFILE["holder"]["filename"]`: `Experimental_AGREED.md`, deliberately
+distinct from the sibling's own `AGREED.md` -- the two skills share the same
+engine and the same per-product-folder shape, so a fixed shared name would
+let one skill's write land inside the other's checklist. See
+`references/usage.md` for the create-on-absent behavior and for what
+`position`/`settle` refuse (`HOLDER_UNDECLARED`, naming both exits) when a
+checklist already exists under some other name.
+
 ## What this skill has not written down
 
 Same as the sibling, and settled the same way: `.implementation/` is a required
@@ -287,3 +298,14 @@ Every run works inside `implementations/<repo>/` and uses that repository's own
 refuses to create a venv from a forge interpreter -- exactly as the sibling's
 own doctrine states, because this is the shared engine's own behaviour, not a
 domain-specific one.
+
+## References
+
+- `references/usage.md` -- this skill's own checklist-holder obligations
+  (declared filename, create-on-absent, write-refusal-into-an-undeclared-
+  holder). This skill ships no `assets/kit/`, so the sibling's own worked
+  invocations and kit-asset sections do not apply here; see
+  [`proposal-implementation/references/usage.md`](../proposal-implementation/references/usage.md)
+  for those.
+- `scripts/implementation_cli.py` -- the byte-identical launcher copy
+  (design.md D4) that resolves to this skill's own profile.

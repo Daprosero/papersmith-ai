@@ -21198,6 +21198,30 @@ class PositionRepairHeaderTests(unittest.TestCase):
         self.assertEqual(first.read_text(encoding="utf-8"), one)
         self.assertEqual(second.read_text(encoding="utf-8"), two)
 
+    def test_repair_ambiguous_message_never_names_repair_header_as_its_own_remedy(self):
+        """Carried defect, found reviewing Phase 4: `--repair-header` is the
+        command that just produced this refusal, and D7's condition 4 -- "no
+        entry carries a revision under a label this profile declares" --
+        can never flip for a declared label carrying a revision, so
+        re-running `--repair-header` refuses identically forever. Neither
+        the refusal detail nor its published `resolve` question may name
+        `--repair-header` as the remedy for a refusal it itself produced."""
+        box = self._box()
+        documents = [{"label": "proposal", "revision": "r1.md",
+                      "revisionSha256": "b" * 64}]
+        body = "- [ ] 1. Something. `@record`\n"
+        before = self.block_text(body, documents=documents)
+        holder = box / "Method" / "AGREED.md"
+        holder.write_text(before, encoding="utf-8")
+        proc = self.run_cli("position", "--target", str(box), "--name", "Method",
+                            "--revision", "r1.md", "--session", "s1",
+                            "--repair-header", proposals=self._proposals())
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        payload = json.loads(proc.stdout)
+        self.assertEqual(payload["code"], "HOLDER_REPAIR_AMBIGUOUS")
+        self.assertNotIn("--repair-header", payload["detail"])
+        self.assertNotIn("--repair-header", payload["resolve"]["question"])
+
 
 class PositionRecordMalformedTests(unittest.TestCase):
     """`__steps__` has a shape refusal; `__records__` had none.
