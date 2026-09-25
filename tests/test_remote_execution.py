@@ -8095,8 +8095,9 @@ class WorkerSelectionAndMeteringTests(unittest.TestCase):
 
     def test_driver_capacity_reports_an_unaddressable_ref_without_a_request(self) -> None:
         """MEASURED, not assumed, against the live service on 2026-09-24:
-        `andresalvarez`'s enumeration answered with one entry carrying
-        `ref == ''` and `title == '[Private Notebook]'`. Before this
+        one of the nine stored accounts' enumeration answered with one
+        entry carrying `ref == ''` and `title == '[Private Notebook]'`.
+        Before this
         test's own fix, `''.split("/", 1)` on that ref produced `['']`,
         and the two-target unpack (`user_name, kernel_slug = ...`) raised
         `ValueError: not enough values to unpack (expected 2, got 1)`
@@ -9281,8 +9282,8 @@ class ConsentGateTests(unittest.TestCase):
     # -- F2: an explicitly-named worker binds into the token -------------
 
     def test_named_worker_tokens_diverge(self) -> None:
-        """Measured, not assumed, BEFORE this fix: `--worker Daprosero`,
-        `--worker Trayectoria50` and `--worker Diego9901` all minted the
+        """Measured, not assumed, BEFORE this fix: `--worker Alcazar`,
+        `--worker Mirador50` and `--worker Mateo9901` all minted the
         IDENTICAL token, because none of them fed the worker into the
         digest. Two single-sends approving two DIFFERENT named accounts
         must now mint two DIFFERENT tokens.

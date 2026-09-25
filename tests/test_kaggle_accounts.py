@@ -811,24 +811,36 @@ class AccountVocabularyLeakTests(unittest.TestCase):
     `TargetVocabularyLeakTests` generalized a target's product name past its
     exact spelling
     — but only when the generalization is corroborated by the store itself.
-    Two or more stored usernames that share a digit-stripped stem (`Trayec-
-    toria51` and `Trayectoria50` both stem to `Trayectoria`) prove that the
+    Two or more stored usernames that share a digit-stripped stem (`Mira-
+    dor51` and `Mirador50` both stem to `Mirador`) prove that the
     stem is the human-meaningful, reused part, the same way multiple real
     spellings of one product proved that one was. A singleton account's stem
-    is deliberately NOT added on its own — `Diego9901` stems to `Diego`, a
+    is deliberately NOT added on its own — `Mateo9901` stems to `Mateo`, a
     common first name, and banning it unconditionally would flag ordinary
     prose (a citation, an example name) that has nothing to do with this
     leak. That is narrower than exhaustive: an account whose exact spelling
-    is disguised in a way no other stored account corroborates (as `Trayec-
-    toria XX` disguised `Trayectoria51`/`Trayectoria50` before this test
+    is disguised in a way no other stored account corroborates (as `Mira-
+    dor XX` disguised `Mirador51`/`Mirador50` before this test
     existed) would slip through unless a sibling account happens to share
-    its stem.
+    its stem. (The four names above are invented stand-ins, not this
+    machine's real stored usernames — this class's own file is now IN
+    SCOPE below, so it cannot spell the real ones here without tripping
+    itself.)
 
-    Scoped to every `.py` under `skills/`, mirroring
-    `TargetVocabularyLeakTests`'s scope. This test's own file lives under
-    `tests/`, outside that tree, so it does not scan itself — it necessarily
-    contains these same account names as literals here in this docstring and
-    below, exactly as `test_remote_execution.py` freely contains `kaggle`.
+    Scoped to every tracked file under `skills/` AND `tests/` — this test's
+    own file lives under `tests/`, so unlike `TargetVocabularyLeakTests` it
+    DOES scan itself, which is why the account names above are invented
+    rather than real. The scope widened past `.py` on 2026-09-25, after a
+    real account name reached a `SKILL.md` and a `references/usage.md` —
+    neither a Python source — while this guard was only ever pointed at
+    `skills/**/*.py`, and a matching gap left every non-`.py` fixture and
+    docstring under `tests/` unscanned too. `openspec/changes/archive/` is
+    excluded on purpose, not by omission: those are archived change
+    reports, this repository's own historical record, and this
+    repository's doctrine holds that a change is undeclared, never
+    deleted — a guard that reddens on that history would demand rewriting
+    the record just to stay green, which inverts the doctrine instead of
+    enforcing it. See `_tracked_skill_scripts` for the exact pathspec.
     """
 
     def _stored_usernames(self) -> list[str]:
@@ -855,24 +867,58 @@ class AccountVocabularyLeakTests(unittest.TestCase):
         scripts = self._tracked_skill_scripts()
         self.assertTrue(scripts, "no tracked skill sources found to scan")
         for script in scripts:
-            source = script.read_text(encoding="utf-8").lower()
+            try:
+                source = script.read_text(encoding="utf-8").lower()
+            except UnicodeDecodeError:
+                # Not valid UTF-8 (a binary fixture such as
+                # tests/fixtures/e2e/paper.pdf) -- best-effort decode rather
+                # than letting the guard crash instead of reporting a leak.
+                # See the docstring on this method for why that tradeoff is
+                # accepted rather than excluding the file outright.
+                source = script.read_bytes().decode(
+                    "utf-8", errors="replace"
+                ).lower()
             for leaked in forbidden:
                 self.assertNotIn(leaked, source, f"{leaked!r} in {script}")
 
     @staticmethod
     def _tracked_skill_scripts() -> list[Path]:
-        """The skill sources this repository versions, and only those.
+        """The tracked sources this repository is responsible for.
 
-        Deliberately `git ls-files` rather than `rglob("*.py")`: a skill may
+        Scoped to `skills/` AND `tests/` — every tracked file in either
+        tree, not only `*.py`. It used to be `skills/**/*.py` alone; that
+        missed `tests/` entirely (this very file included) and missed every
+        non-Python file (a `SKILL.md`, a `references/usage.md`) in the tree
+        it did scan. A real account name reached both kinds of gap before
+        this widened.
+
+        Deliberately `git ls-files` rather than `rglob("*")`: a skill may
         keep its own `.venv`, and walking the tree reaches vendored
         third-party code — including fixtures that are not valid UTF-8 at
-        all, which made this guard raise `UnicodeDecodeError` instead of
-        reporting a leak. Scanning what is not ours also answers the wrong
-        question: a dependency naming something is not this skill leaking
-        it. What we version is what we are responsible for.
+        all. `git ls-files` only ever lists what this repository actually
+        versions, so it never walks into a `.venv` or `node_modules` in the
+        first place; a dependency naming something is not this skill
+        leaking it. What we version is what we are responsible for. A
+        tracked fixture CAN still be binary or non-UTF-8 (see
+        `tests/fixtures/e2e/paper.pdf`), so the caller above still guards
+        the read against `UnicodeDecodeError` rather than assuming one.
+
+        `openspec/changes/archive/` is excluded EXPLICITLY here, not merely
+        left out because it falls outside `skills/`/`tests/`: this pathspec
+        is the one place that boundary is spelled out, so a later widening
+        of the include list (say, adding `openspec/` for some unrelated
+        reason) does not silently re-open 20 leaked occurrences across 8
+        archived change reports. Archived changes are this repository's
+        historical record, and this repository's doctrine holds that a
+        change is undeclared, never deleted — rewriting that record to
+        satisfy this guard would be backwards.
         """
         listed = subprocess.run(
-            ["git", "ls-files", "-z", "--", "skills/**/*.py"],
+            [
+                "git", "ls-files", "-z", "--",
+                "skills", "tests",
+                ":!:openspec/changes/archive",
+            ],
             cwd=REPOSITORY_ROOT, capture_output=True, text=True, check=True,
         )
         return sorted(REPOSITORY_ROOT / name
