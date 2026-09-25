@@ -514,16 +514,19 @@ _CUT2_LEAVES: tuple[str, ...] = (
     # `CrossCitationLeafOwnTierTests` below proves the sub-key shape and the
     # `None`-is-legal positive control.
     "documents[0].cross_citation",
-    # `the-holder-each-skill-declares` (design.md D1): an 8th top-level
-    # `holder` section, three leaves -- `filename`, `headings`, `scaffold`.
-    # A plain top-level `section.key` shape, exactly like `kit.root`/
-    # `cli.path` -- `_without_leaf` needs no indexed branch for these.
-    # Appended at task 1.2 (RED), not here: `_cut2_profile` already
-    # declares the section (task 1.1, behaviour-free), but adding these
-    # three dotted leaves to this walk is itself the RED step -- no
+    # `the-holder-each-skill-declares` (design.md D1, tasks.md 1.2): an 8th
+    # top-level `holder` section, three leaves -- `filename`, `headings`,
+    # `scaffold`. A plain top-level `section.key` shape, exactly like
+    # `kit.root`/`cli.path` -- `_without_leaf` needs no indexed branch for
+    # these. Appended here (task 1.2, RED): `_cut2_profile` already
+    # declares the section (task 1.1, behaviour-free), but naming these
+    # three dotted leaves in this walk is itself the RED step -- no
     # requirement enforces `holder.*`'s presence until task 1.3 lands, so
-    # naming them here before 1.3 would fail this very test, not merely
-    # leave it uncovered.
+    # each of the three now fails `test_each_cut2_leaf_refuses_incomplete_
+    # and_names_itself` until 1.3's GREEN.
+    "holder.filename",
+    "holder.headings",
+    "holder.scaffold",
 )
 
 #: `vocabulary.names` is declared at S13 (design.md D7), not S2 -- so a
@@ -723,6 +726,99 @@ class DomainFieldLeafRefusalTests(unittest.TestCase):
             module.PROFILE["findings"]["remedy_locus_key"], "remedy_equations")
         self.assertEqual(module.PROFILE["vocabulary"]["artifact_noun"], "formulation")
         self.assertEqual(module.PROFILE["documents"][0]["label"], "proposal")
+
+
+class HolderShapeValidationTests(unittest.TestCase):
+    """`the-holder-each-skill-declares` (design.md D1/D4, tasks.md 1.2): the
+    holder leaf's own shape, validated at resolve time --
+    `IMPLEMENTATION_DOMAIN_PROFILE_INVALID_HOLDER`, joining the
+    `..._INVALID_CITATION_PATTERN`/`..._INVALID_BLOCK_LOCATOR`/
+    `..._INVALID_CROSS_CITATION_PATTERN` family (`BlockLocatorShapeValidationTests`
+    above is this class's own precedent). Two tiers: (1) the threat-matrix
+    row-1 adversarial filenames (design.md's Threat Matrix, "Documentation-
+    like paths"), one `subTest` each; (2) the scaffold/heading agreement
+    `locate_headings` itself enforces (`impl_position.py:366-389`) --
+    stripped-line-equal, outside a fenced region -- proven RED-first in
+    both directions design.md D4 calls out: absent from the scaffold
+    entirely, present only inside a fence, present only as a substring."""
+
+    def _tmp_dir(self) -> Path:
+        tmp_dir = Path(tempfile.mkdtemp(prefix="impl-profile-holder-shape-"))
+        self.addCleanup(shutil.rmtree, tmp_dir, ignore_errors=True)
+        return tmp_dir
+
+    def _profile_with_holder(self, tmp_dir: Path, holder: dict) -> dict:
+        full = _cut2_profile(tmp_dir)
+        full["holder"] = holder
+        return full
+
+    def _assert_invalid_holder(self, tmp_dir: Path, full: dict, *, contains: str):
+        profile_file = _write_profile(tmp_dir, full)
+        with self.assertRaises(RuntimeError) as ctx:
+            _fresh_resolver_load(str(profile_file))
+        message = str(ctx.exception)
+        self.assertIn("IMPLEMENTATION_DOMAIN_PROFILE_INVALID_HOLDER", message)
+        self.assertIn(contains, message)
+
+    def test_adversarial_filenames_each_refuse_invalid_holder(self):
+        adversarial = (
+            "../x.md", "/etc/x.md", "a/b.md", "", ".", "..", "x.md\n",
+            "AGREED\x00.md", "x.sh", "AGREED",
+        )
+        for filename in adversarial:
+            with self.subTest(filename=filename):
+                tmp_dir = self._tmp_dir()
+                holder = {
+                    "filename": filename,
+                    "headings": ("# Agreed", "## Ladder"),
+                    "scaffold": "# Agreed\n\n## Ladder\n",
+                }
+                full = self._profile_with_holder(tmp_dir, holder)
+                self._assert_invalid_holder(tmp_dir, full, contains="holder.filename")
+
+    def test_a_heading_absent_from_the_scaffold_refuses_by_name(self):
+        tmp_dir = self._tmp_dir()
+        holder = {
+            "filename": "AGREED.md",
+            "headings": ("# Agreed", "## Nope"),
+            "scaffold": "# Agreed\n\n## Ladder\n",
+        }
+        full = self._profile_with_holder(tmp_dir, holder)
+        self._assert_invalid_holder(tmp_dir, full, contains="## Nope")
+
+    def test_a_heading_present_only_inside_a_fence_refuses_by_name(self):
+        tmp_dir = self._tmp_dir()
+        holder = {
+            "filename": "AGREED.md",
+            "headings": ("# Agreed", "## Ladder"),
+            "scaffold": "# Agreed\n\n```\n## Ladder\n```\n",
+        }
+        full = self._profile_with_holder(tmp_dir, holder)
+        self._assert_invalid_holder(tmp_dir, full, contains="## Ladder")
+
+    def test_a_heading_present_only_as_a_substring_refuses_by_name(self):
+        tmp_dir = self._tmp_dir()
+        holder = {
+            "filename": "AGREED.md",
+            "headings": ("# Agreed", "## Ladder"),
+            "scaffold": "# Agreed\n\n## Ladder Extended\n",
+        }
+        full = self._profile_with_holder(tmp_dir, holder)
+        self._assert_invalid_holder(tmp_dir, full, contains="## Ladder")
+
+    def test_a_complete_holder_leaf_resolves_cleanly(self):
+        """The positive control every refusal case above is a mutation OF."""
+        tmp_dir = self._tmp_dir()
+        holder = {
+            "filename": "AGREED.md",
+            "headings": ("# Agreed", "## Ladder"),
+            "scaffold": "# Agreed\n\n## Ladder\n",
+        }
+        full = self._profile_with_holder(tmp_dir, holder)
+        (tmp_dir / "proposals").mkdir()
+        profile_file = _write_profile(tmp_dir, full)
+        module = _fresh_resolver_load(str(profile_file))
+        self.assertEqual(module.PROFILE["holder"]["filename"], "AGREED.md")
 
 
 class DocumentsDirectoryOwnTierTests(unittest.TestCase):
