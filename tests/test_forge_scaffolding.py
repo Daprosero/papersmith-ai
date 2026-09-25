@@ -26,7 +26,9 @@ a PDF, so illustrations must not become shipped scaffolding.
 """
 
 import re
+import shutil
 import subprocess
+import tempfile
 import sys
 import unittest
 from pathlib import Path
@@ -110,6 +112,83 @@ class DeclaredGuidanceSourcesTravelTests(unittest.TestCase):
             "versioned under guidance/ but not a `.gitkeep` -- research "
             f"material reaching GitHub is the leak the rule exists to stop: {leaked}",
         )
+
+
+class ForgeSectionIdsFailClosedTests(unittest.TestCase):
+    """`forge_section_ids`'s own promise, held to the exception it meets.
+
+    Its docstring says it fails CLOSED: *"an absent `sections/`, an
+    unreadable file, or a header that does not parse exempts nothing, so
+    every name stays on the denylist. A corpus that cannot be read is not
+    licence to guard less."* Returning FEWER ids is the closed direction --
+    each id is an exemption, so a file it cannot read simply grants none.
+
+    But the read was guarded by `except OSError`, and `read_text(encoding=
+    "utf-8")` on a byte sequence that is not UTF-8 raises
+    `UnicodeDecodeError`, which is a `ValueError`. So a malformed-encoding
+    `sections/*.md` did not degrade to "grants no exemption" -- it took the
+    whole guard down with it. A crash is not the closed direction; it is no
+    direction at all, and it stops every OTHER name from being checked too.
+
+    Found by triaging a review advisory that was filed as a WARNING against
+    the wrong consequence: it read the `except OSError` as a coverage gap,
+    when the function's own docstring already promised the behaviour the
+    code did not have.
+    """
+
+    def _corpus(self, *files: tuple[str, bytes]) -> Path:
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        sections = root / "sections"
+        sections.mkdir()
+        for name, data in files:
+            (sections / name).write_bytes(data)
+        return root
+
+    @staticmethod
+    def _contract(section_id: str) -> bytes:
+        """A real contract's front matter is JSON keyed `"section"`.
+
+        Measured from `sections/01-materials-and-methods.md`, not from
+        `forge_section_ids`'s own docstring, which says the id comes "from
+        `SECTION_ID` in a contract's own front matter" while the code reads
+        `json.loads(parts[1]).get("section")`. The first draft of this
+        fixture believed the docstring and the positive control below
+        reddened -- which is how the prose drift surfaced.
+        """
+        return (
+            '---\n{"section": "' + section_id + '"}\n---\n\nbody\n'
+        ).encode("utf-8")
+
+    def test_a_readable_contract_grants_its_own_id(self) -> None:
+        """The positive control: without it, the test below cannot tell
+        "degraded correctly" from "never read anything at all"."""
+        root = self._corpus(("01-alpha.md", self._contract("alpha")))
+        self.assertIn("alpha", forge_vocabulary.forge_section_ids(root))
+
+    def test_an_undecodable_contract_grants_nothing_and_does_not_raise(
+            self) -> None:
+        root = self._corpus(("01-bad.md", b'---\n{"section": "\xe2\x28\xa1"}\n---\n'))
+        try:
+            ids = forge_vocabulary.forge_section_ids(root)
+        except UnicodeDecodeError as exc:  # the defect, named
+            self.fail(
+                "forge_section_ids promises to fail closed on an unreadable "
+                f"file and instead took the guard down: {exc}")
+        self.assertEqual(ids, set())
+
+    def test_one_undecodable_contract_does_not_cost_its_readable_siblings(
+            self) -> None:
+        """The consequence that makes this worth a test rather than a note:
+        a single malformed file used to stop every other section's id from
+        being derived, so Rule B's denylist lost exemptions it had earned."""
+        root = self._corpus(
+            ("01-alpha.md", self._contract("alpha")),
+            ("02-bad.md", b'---\n{"section": "\xff\xfe"}\n---\n'),
+            ("03-beta.md", self._contract("beta")),
+        )
+        self.assertEqual(
+            forge_vocabulary.forge_section_ids(root), {"alpha", "beta"})
 
 
 if __name__ == "__main__":

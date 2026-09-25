@@ -195,7 +195,16 @@ def forge_section_ids(root=None) -> set:
     for entry in sorted(sections_dir.glob("*.md")):
         try:
             parts = entry.read_text(encoding="utf-8").split("---", 2)
-        except OSError:
+        except (OSError, UnicodeDecodeError):
+            # `UnicodeDecodeError` is a `ValueError`, not an `OSError`, so a
+            # `sections/*.md` that is not valid UTF-8 used to take this whole
+            # derivation down instead of degrading through the `continue`
+            # below. A crash is not the closed direction this function's
+            # docstring promises -- it is no direction at all, and it cost
+            # every OTHER section's id too, so rule B's denylist lost
+            # exemptions it had earned. Named beside `OSError` rather than
+            # widened to `ValueError`, which would also swallow a genuine
+            # programming error from the `split` above.
             continue
         if len(parts) < 3:
             continue
