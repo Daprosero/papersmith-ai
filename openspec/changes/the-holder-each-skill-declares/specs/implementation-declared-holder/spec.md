@@ -129,16 +129,34 @@ holder, with its declared heading scaffold, and with zero checklist items.
 
 ### Requirement: Declared-Name Identity Is Independent Of The Item-Holding Test
 
-A holder identified by its declared name MUST be reported as present by
-every consumer that reads `agreements_state`'s `holders` list, regardless of
-whether it currently holds any checklist item. `_chosen_holder` and
-`cmd_settle` MUST resolve a freshly created, item-less declared holder
-without raising an absence refusal.
+A holder identified by its declared name MUST be resolvable without passing
+the item-holding test, so that `_chosen_holder` and `cmd_settle` resolve a
+freshly created, item-less declared holder without raising an absence
+refusal. That identity lives in `holder_resolution` ALONE.
 
-#### Scenario: A freshly created holder appears in `holders`
+`agreements_state`'s `holders` list MUST NOT be widened to carry it, and
+`agreements_state`'s return key set MUST NOT gain a key for it. This is a
+correction to an earlier wording of this requirement, which demanded the
+declared holder "appear in the `holders` list" — measured consequence of
+doing that: `status` derives from the same list
+(`implementation_engine.py:487-493`, `:497`), so an item-less created holder
+listed there reports `settled` over a document where nothing was settled — a
+false green in the one function whose own docstring insists it is
+"deliberately not a plan of work". The uniform-key-set doctrine also puts any
+added key on every branch and moves digests in BOTH seals, for a value three
+write sites read.
+
+#### Scenario: A freshly created holder is resolvable but stays out of `holders`
 - GIVEN the declared holder was just created with zero checklist items
 - WHEN `agreements_state` is computed
-- THEN the declared holder appears in the `holders` list
+- THEN the declared holder does NOT appear in the `holders` list
+- AND `status` therefore does not report the document as settled
+
+#### Scenario: A nonexistent declared name is never listed
+- GIVEN a target where the declared holder does not exist on disk
+- WHEN `agreements_state` is computed
+- THEN nothing is listed for the declared name
+- AND the `verify-t` seal fixture, which writes no holder, keeps its digests
 
 #### Scenario: `_chosen_holder` resolves the freshly created holder
 - GIVEN the same freshly created, item-less declared holder
