@@ -88,7 +88,17 @@ def _cut2_fields_src(tmp_dir: Path) -> str:
         # resolved 5d42dd7): a single-document splice has no OTHER label
         # to cross against -- `None` here, the leaf's own legal declared
         # absence.
-        "'cross_citation': None}]")
+        "'cross_citation': None}], "
+        # `the-holder-each-skill-declares` (design.md D1, tasks.md 1.3):
+        # the 8th top-level `PROFILE` section -- spliced in here for the
+        # same reason every other Cut-2 leaf is: every Cut-1-focused
+        # fixture below that splices this fragment would otherwise trip
+        # the NEW `..._INCOMPLETE` (missing `holder.*`) before ever
+        # reaching the behaviour it actually tests, the instant the
+        # presence tier lands.
+        "'holder': {'filename': 'Fixture_AGREED.md', "
+        "'headings': ('# Agreed', '## Ladder'), "
+        "'scaffold': '# Agreed\\n\\n## Ladder\\n'}")
 
 
 _counter = itertools.count()

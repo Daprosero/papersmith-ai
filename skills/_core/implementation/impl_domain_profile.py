@@ -87,6 +87,17 @@ _REQUIRED_PRESENCE: tuple[tuple[str, str], ...] = (
     # a LIST, validated per entry by its own indexed walk below --
     # `documents[N].label`, never the bare `documents.label` pair a flat
     # tuple entry would produce.
+    # `the-holder-each-skill-declares` (design.md D1, tasks.md 1.3): the 8th
+    # top-level `PROFILE` section -- the checklist holder this skill owns
+    # the name of. Presence only, checked by the existing loop below;
+    # `_REQUIRED_NESTED` is deliberately NOT used here -- its
+    # `..._UNSAFE_PATH` check demands absolute-and-existing, the exact
+    # inverse of a relative, usually non-existent holder filename. A
+    # separate shape tier (`..._INVALID_HOLDER`, task 1.4) validates
+    # `filename`/`headings`/`scaffold` together once all three are present.
+    ("holder", "filename"),
+    ("holder", "headings"),
+    ("holder", "scaffold"),
 )
 
 #: `documents[N].directory` gets its OWN validation tier per index (design.md
