@@ -207,6 +207,23 @@ PROFILE = {
             "mathematics", "matemática", "formulation",
         ],
     },
+    # `the-holder-each-skill-declares` (design.md D1/D4, tasks.md 1.5): the
+    # 8th top-level `PROFILE` section -- this skill's own declared
+    # checklist holder. `AGREED.md` is not a new choice: it is the name
+    # already in use by the live target and by `tests/seal/corpus.py:272`,
+    # so this leaf is a zero-behavioural-delta declaration of today's
+    # fact, the same discipline `block_locator` (task 1.7) already keeps.
+    # Placed BEFORE `documents` deliberately: `documents` must stay the
+    # LAST top-level key, or its own closing `],\n}` bytes stop being the
+    # unique anchor `tests/test_implementation_domain_mutation.py::
+    # OrFoldIndexHardcodeMutationTests` splices its own second document
+    # into (measured, not assumed -- moving `holder` after `documents`
+    # broke exactly that anchor on the first apply attempt).
+    "holder": {
+        "filename": "AGREED.md",
+        "headings": ("# Agreed", "## Ladder"),
+        "scaffold": "# Agreed\n\n## Ladder\n",
+    },
     # Cut 3 (`a-revision-is-two-documents`, design.md D4): `documents` is a
     # LIST. This skill declares exactly ONE entry, so every byte the engine
     # emits from it -- `DOCUMENTS_DIRECTORY`, `DOCUMENTS_LABEL`, both derived
@@ -254,15 +271,4 @@ PROFILE = {
             "cross_citation": None,
         },
     ],
-    # `the-holder-each-skill-declares` (design.md D1/D4, tasks.md 1.5): the
-    # 8th top-level `PROFILE` section -- this skill's own declared
-    # checklist holder. `AGREED.md` is not a new choice: it is the name
-    # already in use by the live target and by `tests/seal/corpus.py:272`,
-    # so this leaf is a zero-behavioural-delta declaration of today's
-    # fact, the same discipline `block_locator` (task 1.7) already keeps.
-    "holder": {
-        "filename": "AGREED.md",
-        "headings": ("# Agreed", "## Ladder"),
-        "scaffold": "# Agreed\n\n## Ladder\n",
-    },
 }
