@@ -117,14 +117,14 @@ Spec: `implementation-declared-holder` (resolution/write-refusal/doctrine requir
 `implementation-holder-repair` ("The Document-Count Comparison Is A Named, Shared
 Predicate"), `implementation-engine-neutrality`, `implementation-cli-seal`.
 
-- [ ] 2.1 RED: one test per `holder_resolution`'s 5 `action` outcomes, from a built product
+- [x] 2.1 RED: one test per `holder_resolution`'s 5 `action` outcomes, from a built product
       folder: declared file exists → `"declared"`; declared absent + no by-shape candidate +
       `product.is_dir()` → `"create"`; declared absent + no candidate + not
       `product.is_dir()` → `"absent"`; declared absent + `byShape >= 1` → `"undeclared"`; more
       than one candidate for the caller's own question → `"ambiguous"`. Verification:
       `.venv/bin/python -m pytest tests/test_proposal_implementation.py -k holder_resolution -v`
       (expect failure — function does not exist yet, RED).
-- [ ] 2.2 GREEN: `skills/_core/implementation/engine/implementation_engine.py` — implement
+- [x] 2.2 GREEN: `skills/_core/implementation/engine/implementation_engine.py` — implement
       `holder_resolution(target: Path, name: str) -> dict`, placed immediately after
       `agreements_state` (after `:510`). Total, never-raising, uniform key set on every
       branch: `{"declared": str, "path": Path|None, "byShape": list[str], "read": Path|None,
@@ -136,13 +136,13 @@ Predicate"), `implementation-engine-neutrality`, `implementation-cli-seal`.
       (load-bearing for `tests/seal/`'s `verify-t` case, `corpus.py:283-295`). Acceptance:
       2.1's 5 RED tests now GREEN. Verification:
       `.venv/bin/python -m pytest tests/test_proposal_implementation.py -k holder_resolution -v`.
-- [ ] 2.3 RED: `_header_document_count_detail` asymmetry, asserted in **both** directions so a
+- [x] 2.3 RED: `_header_document_count_detail` asymmetry, asserted in **both** directions so a
       symmetric "fix" reddens this test — group-present-under-1-document-profile returns a
       detail string; group-absent-under-2-document-profile (the deliberate silent migration,
       `:12116-12125`) returns `None`. Verification:
       `.venv/bin/python -m pytest tests/test_proposal_implementation.py -k header_document_count_detail -v`
       (RED — function does not exist yet).
-- [ ] 2.4 GREEN: `implementation_engine.py` — extract `_header_document_count_detail(block: dict) -> str | None`,
+- [x] 2.4 GREEN: `implementation_engine.py` — extract `_header_document_count_detail(block: dict) -> str | None`,
       placed beside `_bound_to` (`:538-551`). Encodes exactly today's condition —
       `block.get("documents") is not None and len(DOCUMENTS) <= 1` — and nothing more.
       Repoint `cmd_position`'s inline check at `:12126` to call this helper instead of
@@ -150,19 +150,19 @@ Predicate"), `implementation-engine-neutrality`, `implementation-cli-seal`.
       `POSITION_HEADER_DOCUMENT_COUNT_MISMATCH` still fires exactly as today (spec:
       "The existing check is unaffected by the extraction"). Verification:
       `.venv/bin/python -m pytest tests/test_proposal_implementation.py -k "header_document_count_detail or HEADER_DOCUMENT_COUNT_MISMATCH" -v`.
-- [ ] 2.5 GREEN: repoint `position_state` (`:648-660`) to read through `holder_resolution`'s
+- [x] 2.5 GREEN: repoint `position_state` (`:648-660`) to read through `holder_resolution`'s
       read path (declared-first, by-shape fallback). Code repoint only — doctrine text moves
       in 2.12 (B1). Acceptance: an arbitrarily-named existing checklist (e.g. `TASKS.md`) is
       still found and read (spec: "Read Falls Back To The By-Shape Scan"). Verification:
       `.venv/bin/python -m pytest tests/test_proposal_implementation.py -k position_state -v`.
-- [ ] 2.6 RED: the D3 middle row — no file matches the declared filename, an item-holding
+- [x] 2.6 RED: the D3 middle row — no file matches the declared filename, an item-holding
       `TASKS.md` exists → a write (`position` and `settle`, one test each) refuses with the
       new `HOLDER_UNDECLARED`, naming both exits (rename `TASKS.md` to the declared name, or
       declare `TASKS.md`'s own name in `PROFILE["holder"]["filename"]`); no write lands in
       `TASKS.md`. Verification:
       `.venv/bin/python -m pytest tests/test_proposal_implementation.py -k HOLDER_UNDECLARED -v`
       (RED — code not yet raised).
-- [ ] 2.7 GREEN: repoint `_chosen_holder` (`:11830-11856`) to dispatch on
+- [x] 2.7 GREEN: repoint `_chosen_holder` (`:11830-11856`) to dispatch on
       `holder_resolution(target, name)["action"]`: `"declared"`/`"create"` resolve directly;
       `"undeclared"` raises `HOLDER_UNDECLARED` (`WORK_STATE`) naming both exits;
       `"absent"` narrows `POSITION_HOLDER_ABSENT` to "no product folder" only (D9);
@@ -170,13 +170,13 @@ Predicate"), `implementation-engine-neutrality`, `implementation-cli-seal`.
       cross-reference ("`:11839-11840`, lines 140-145") at `agreements_state`'s real doctrine
       lines and at `holder_resolution`. Verification:
       `.venv/bin/python -m pytest tests/test_proposal_implementation.py -k "chosen_holder or HOLDER_UNDECLARED or HOLDER_ABSENT" -v`.
-- [ ] 2.8 GREEN: repoint `cmd_position`'s holder sweep (`:12090-12142`) — declared-name lookup
+- [x] 2.8 GREEN: repoint `cmd_position`'s holder sweep (`:12090-12142`) — declared-name lookup
       runs ahead of the `*.md` glob (the glob itself survives: `holder_digests` still needs a
       pre-image per candidate, `:12095-12108`, a different requirement from choosing a
       holder). Write path raises `HOLDER_UNDECLARED` for `"undeclared"`; narrows
       `POSITION_HOLDER_ABSENT` to "no product dir". Verification:
       `.venv/bin/python -m pytest tests/test_proposal_implementation.py -k "cmd_position and (HOLDER_UNDECLARED or HOLDER_ABSENT)" -v`.
-- [ ] 2.9 GREEN: repoint `cmd_settle` (`:14368-14373`, `:14380-14398`, `:14552-14570`) per
+- [x] 2.9 GREEN: repoint `cmd_settle` (`:14368-14373`, `:14380-14398`, `:14552-14570`) per
       D10 — all five `settle` modes (create, `--attach`, `--remove`, `--reverse`, `--done`)
       resolve through `holder_resolution` and search exactly `[resolution["write"]]`. Narrow
       `SETTLE_HOLDER_ABSENT` to "no product dir"; new `HOLDER_UNDECLARED` for the undeclared
@@ -187,13 +187,13 @@ Predicate"), `implementation-engine-neutrality`, `implementation-cli-seal`.
       stated cost of D10: on a target adopted with `TASKS.md`, `settle --done` can no longer
       tick an existing item (refuses `HOLDER_UNDECLARED`). Verification:
       `.venv/bin/python -m pytest tests/test_proposal_implementation.py -k settle -v`.
-- [ ] 2.10 GREEN: `GATING_REFUSALS` (`:18402-18521`) — classify `HOLDER_UNDECLARED` as
+- [x] 2.10 GREEN: `GATING_REFUSALS` (`:18402-18521`) — classify `HOLDER_UNDECLARED` as
       `WORK_STATE`. Question/command table (`:19274-19347`) — add `HOLDER_UNDECLARED`'s
       question naming both exits; re-author A5 (`SETTLE_HOLDER_ABSENT`, `:19284-19287`) and
       A6 (`POSITION_HOLDER_ABSENT`, `:19334-19337`) for the narrowed "no product folder"
       case — neither is retired. Verification:
       `.venv/bin/python -m pytest tests/test_proposal_implementation.py -k "refusal_question or GATING_REFUSALS" -v`.
-- [ ] 2.11 Doctrine amendments — A-series (D12 table). A1 `agreements_state` root doctrine
+- [x] 2.11 Doctrine amendments — A-series (D12 table). A1 `agreements_state` root doctrine
       (`:381-385`): **narrowed** — keep "found by shape, never by name" verbatim as the READ
       rule with its stated reason; add one paragraph that the declared name owns WRITES and
       the engine invents no filename because it holds none. A2 `_chosen_holder` docstring
@@ -209,7 +209,7 @@ Predicate"), `implementation-engine-neutrality`, `implementation-cli-seal`.
       to write anything" is false after D5; edited in detail at task 2.20. Verification:
       `.venv/bin/python -m pytest tests/test_implementation_pair.py -v`; manual read of each
       doctrine site against the D12 table in `design.md`.
-- [ ] 2.12 Doctrine amendments — B-series + literal-filename prose sweep. B1 `position_state`
+- [x] 2.12 Doctrine amendments — B-series + literal-filename prose sweep. B1 `position_state`
       comment (`:644-646`): **narrowed**, gains a pointer to the declared-name write rule. B2
       `cmd_position` sweep comment (`:12090-12092`): **amended** — the sweep gains the
       declared lookup ahead of the glob. B3 `cmd_position` docstring (`:12036-12041`):
@@ -227,13 +227,13 @@ Predicate"), `implementation-engine-neutrality`, `implementation-cli-seal`.
       skills/_core/implementation/impl_position.py` — confirm the amend/leave-standing split
       matches the 7/9/2 counts named above; `.venv/bin/python -m pytest
       tests/test_implementation_seal.py -x` immediately after the `:4887`/`:5029` edit.
-- [ ] 2.13 RED: collision reproduction — run the experimental profile against a target
+- [x] 2.13 RED: collision reproduction — run the experimental profile against a target
       already holding the proposal's declared `AGREED.md`; assert the experimental write can
       no longer land a `documents=` group into it. Verification:
       `.venv/bin/python -m pytest tests/test_proposal_implementation.py -k collision -v`
       (expect RED before 2.7–2.9 land; re-run after — expect GREEN, confirming the measured
       defect is now reproduced and closed as a test).
-- [ ] 2.14 Mutation tests — reachability proof for `HOLDER_UNDECLARED` and for the
+- [x] 2.14 Mutation tests — reachability proof for `HOLDER_UNDECLARED` and for the
       declared-name lookup itself. (a) Invert the write-refusal guard; the mutated build must
       write into the undeclared candidate, proving the restored guard is what prevents it.
       (b) Delete the declared-name lookup at exactly **one** of the five repointed sites
@@ -241,13 +241,13 @@ Predicate"), `implementation-engine-neutrality`, `implementation-cli-seal`.
       `implementation-block-locator` precedent this design cites. Beware the same-size
       `.pyc` trap: assert the mutated anchor count, never `git diff --stat`. Verification:
       manual guard-invert + targeted `.venv/bin/python -m pytest` re-run per mutated site.
-- [ ] 2.15 `tests/experiments_seal/corpus.py:344` — rename `Trial/AGREED.md` to
+- [x] 2.15 `tests/experiments_seal/corpus.py:344` — rename `Trial/AGREED.md` to
       `Trial/Experimental_AGREED.md`. **This MUST land in the same commit as tasks 2.1–2.14**
       (D11 step 2) — landing the resolution alone makes every experiments-seal write case
       refuse `HOLDER_UNDECLARED` against its own now-undeclared fixture name, producing an
       intermediate digest set nobody wants captured. Verification: `git diff --stat` confirms
       this edit is part of the same commit as tasks 2.1–2.14's diff.
-- [ ] 2.16 D11 step 3 — at the state after 2.15 lands (**unrecaptured**), run
+- [x] 2.16 D11 step 3 — at the state after 2.15 lands (**unrecaptured**), run
       `.venv/bin/python -m pytest tests/test_experiments_seal.py`. Record the exact failing
       case IDs plus the fingerprint failure into a delta document (per
       `implementation-cli-seal`'s "The Experiments-Seal Holder Rename Is A Declared,
@@ -258,11 +258,11 @@ Predicate"), `implementation-engine-neutrality`, `implementation-cli-seal`.
       `.venv/bin/python -m pytest tests/test_experiments_seal.py -v` (capture output to the
       scratchpad, e.g. `/private/tmp/claude-501/.../scratchpad/experiments-seal-pre-recapture.txt`);
       the delta document lists exactly these case IDs.
-- [ ] 2.17 D11 step 4 — the zero-delta gate on the **proposal** seal, at the same unrecaptured
+- [x] 2.17 D11 step 4 — the zero-delta gate on the **proposal** seal, at the same unrecaptured
       state, and **at every subsequent commit through the end of Phase 5** — never run only
       once at the end. Verification: `.venv/bin/python -m pytest tests/test_implementation_seal.py -x`
       — MUST be green; `git diff --stat tests/seal/digests.json` MUST be empty.
-- [ ] 2.18 **PROHIBITION — standing for the remainder of this change (Phases 2 through 6):
+- [x] 2.18 **PROHIBITION — standing for the remainder of this change (Phases 2 through 6):
       `tests/seal_capture.py` MUST NOT be run at any point.** It is the only mechanism that
       could silently absorb a proposal-side (`tests/seal/`) digest movement; its own docstring
       says it is invoked by hand "only when the roster or the sealed behaviour has genuinely
@@ -271,27 +271,27 @@ Predicate"), `implementation-engine-neutrality`, `implementation-cli-seal`.
       regenerated. (`tests/experiments_seal_capture.py` at task 2.19 is the distinct,
       permitted script — do not confuse the two.) Verification: review shell history / task
       log for this change confirms `tests/seal_capture.py` was never invoked.
-- [ ] 2.19 D11 step 5 — recapture the **experiments** seal only. Verification:
+- [x] 2.19 D11 step 5 — recapture the **experiments** seal only. Verification:
       `.venv/bin/python tests/experiments_seal_capture.py`; `git diff --stat
       tests/experiments_seal/digests.json` non-empty (expected); `git diff --stat
       tests/seal/digests.json` stays empty.
-- [ ] 2.20 D11 step 6 — assert the recaptured moved set equals the list recorded in 2.16. Add
+- [x] 2.20 D11 step 6 — assert the recaptured moved set equals the list recorded in 2.16. Add
       a new test in `tests/test_experiments_seal.py`: every case whose output carries a
       holder path carries `Trial/Experimental_AGREED.md` and never `Trial/AGREED.md` (turns
       "the digests moved" into a checked claim, not an unexplained fact). Verification:
       `.venv/bin/python -m pytest tests/test_experiments_seal.py -x` (green, post-recapture).
-- [ ] 2.21 Update `tests/test_proposal_implementation.py`'s 6 `*_HOLDER_ABSENT` assertion
+- [x] 2.21 Update `tests/test_proposal_implementation.py`'s 6 `*_HOLDER_ABSENT` assertion
       sites (`:20061`, `:22968`, `:23510`, `:23756`, `:24008`, `:24281`) — each moves to the
       narrow "no product folder" case, or is repointed to assert `HOLDER_UNDECLARED`, per
       which condition each fixture actually now exercises. Verification:
       `.venv/bin/python -m pytest tests/test_proposal_implementation.py -x`.
-- [ ] 2.22 `tests/test_implementation_pair.py:477-485` (A7) — amend the comment per 2.11's
+- [x] 2.22 `tests/test_implementation_pair.py:477-485` (A7) — amend the comment per 2.11's
       verdict, and move the fixture's pre-written checklist from `AGREED.md` to
       `Experimental_AGREED.md` (it encodes the two-document/experimental profile's collision
       case). Verification: `.venv/bin/python -m pytest tests/test_implementation_pair.py -x`.
-- [ ] 2.23 Update the 2 `AGREED` references in `tests/test_implementation_core.py`.
+- [x] 2.23 Update the 2 `AGREED` references in `tests/test_implementation_core.py`.
       Verification: `.venv/bin/python -m pytest tests/test_implementation_core.py -x`.
-- [ ] 2.24 Re-measure the pinned reachable-refusal-code count (interim, this phase adds
+- [x] 2.24 Re-measure the pinned reachable-refusal-code count (interim, this phase adds
       `HOLDER_UNDECLARED` only — Phase 4 adds 2 more). Run `reachable_refusal_codes()`'s
       derivation against the shipped engine; rename
       `test_the_derivation_finds_the_measured_one_hundred_and_thirteen`
@@ -302,7 +302,7 @@ Predicate"), `implementation-engine-neutrality`, `implementation-cli-seal`.
       (`:32242-32247`) to classify `HOLDER_UNDECLARED`. This pin is re-measured again at task
       4.11 once the two D4 codes land. Verification:
       `.venv/bin/python -m pytest tests/test_proposal_implementation.py -k "reachable_refusal_codes or roster" -v`.
-- [ ] 2.25 Full-suite + zero-delta seal gate for Phase 2. Verification: `npm run test:all`;
+- [x] 2.25 Full-suite + zero-delta seal gate for Phase 2. Verification: `npm run test:all`;
       `.venv/bin/python -m pytest tests/test_implementation_seal.py -x` (zero-delta, still
       green); `.venv/bin/python -m pytest tests/test_experiments_seal.py -x` (green,
       post-recapture). Acceptance: only the environmental failures named at 1.8 remain;
