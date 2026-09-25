@@ -12479,6 +12479,43 @@ def cmd_position(args: argparse.Namespace) -> dict:
             ((path, block) for path, block in holders_with_block
              if path == holder_resolution_result["path"]),
             (None, None))
+    elif holder_resolution_result["action"] == "undeclared":
+        # Verified CRITICAL defect (`sdd/the-holder-each-skill-declares/
+        # verify-critical`, Engram obs 2139): this dispatch used to
+        # branch on `["path"]` alone, so under "undeclared" (declared
+        # absent, `agreements_state`'s own item-holding `byShape` finds
+        # exactly one OTHER candidate) it fell into the `else` below and
+        # -- whenever that candidate happened to already carry a block
+        # -- silently adopted it as "existing" for a refresh, a fresh
+        # `--sequence` install, or a `--reconcile` merge belonging to
+        # THIS skill. `holder_resolution`'s own contract already says
+        # `write` is `None` for "undeclared" (D3's middle row); refusing
+        # here, in front of that adoption, is what closes the defect.
+        # Calls `_chosen_holder` itself -- mirroring its identical
+        # dispatch (D9) and `cmd_settle`'s identical ordering (D10)
+        # rather than re-deriving its message, so the two can never read
+        # as two different sentences for the same condition -- and never
+        # returns (this action always raises there).
+        #
+        # Deliberately narrower than "every action `holder_resolution`
+        # ever reports besides 'declared'": `agreements_state`'s
+        # `byShape` scan excludes a position block's own items
+        # (`agreements_state`'s documented "a located position block
+        # never counts as an agreement"), so a file carrying ONLY a
+        # position block -- no separate checklist line outside it --
+        # is invisible to `byShape` and resolves "create" or "absent"
+        # here, never "undeclared", even when `holders_with_block`
+        # (this sweep's OWN, unrelated block scan, a few lines up) finds
+        # it. That is a real, pre-existing gap in `holder_resolution`'s
+        # own classification -- untouched by this fix, and reported
+        # rather than silently widened here: measured directly against
+        # `tests/test_implementation_pair.py::TwoDocumentLifecycleTests`,
+        # whose own fixture writes such a block-only file under a name
+        # its OWN profile does not declare, and whose `close`/`gate`
+        # sites depend on the `else` branch below still adopting it for
+        # exactly that "create"/"absent" shape -- widening this guard to
+        # cover them regresses that already-shipped, unrelated test.
+        _chosen_holder(target, name, product)
     else:
         if len(holders_with_block) > 1:
             raise Refused(

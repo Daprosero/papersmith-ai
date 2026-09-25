@@ -3134,6 +3134,101 @@ class HolderUndeclaredMutationTests(unittest.TestCase):
         self.assertIn("chosen_holder:HOLDER_UNDECLARED", proc.stdout)
         self.assertIn("settle_resolution_holders:['Method/TASKS.md']", proc.stdout)
 
+    def test_inverting_cmd_positions_own_undeclared_guard_lets_a_sequence_write_into_it(self):
+        """Verified CRITICAL defect (`sdd/the-holder-each-skill-declares/
+        verify-critical`, Engram obs 2139), reachability proof for
+        `cmd_position`'s OWN dispatch (as distinct from
+        `_chosen_holder`'s, already proven above): invert the guard back
+        to its pre-fix shape -- `elif` becomes `if False`, so the
+        `else` below runs instead -- and the mutated build must silently
+        adopt `TASKS.md` (item-holding outside its own block, AND
+        already carrying a `<!-- position -->` block) as "existing" for
+        a fresh `--sequence --replace` call, proving the restored `elif`
+        is what prevents it. `TASKS.md` here plays the role the sibling
+        skill's own declared holder played in the real reproduction --
+        the guard does not care whose name it is, only that it is not
+        this skill's own declared one. `--sequence`, not `--reconcile`:
+        reconcile discovery loads `remote_cli.py` via a path relative to
+        `FORGE_ROOT`, which the scratch copy below does not carry."""
+        def mutate(source: str) -> str:
+            anchor = (
+                '    elif holder_resolution_result["action"] == "undeclared":\n')
+            self.assertEqual(source.count(anchor), 1)
+            replacement = (
+                '    elif False and holder_resolution_result["action"] == "undeclared":\n')
+            self.assertEqual(source.count(replacement), 0)
+            return source.replace(anchor, replacement, 1)
+
+        engine_dir = self._scratch_engine(mutate)
+
+        # `impl.FORGE_ROOT` differs between the scratch copy (its own
+        # `impl_layout.py` derives it from ITS OWN `__file__`, a few
+        # directories deeper under the scratch tempdir) and the real
+        # shipped tree, so each run's own box lives under that SAME run's
+        # own `impl.FORGE_ROOT / "implementations"` -- computed and
+        # created by the script itself, never assumed from this process's
+        # own `FORGE`.
+        box_setup = (
+            "box = impl.FORGE_ROOT / 'implementations' / 'HolderUndeclaredMutation'\n"
+            "import shutil, subprocess\n"
+            "shutil.rmtree(box, ignore_errors=True)\n"
+            "(box / 'Method').mkdir(parents=True)\n"
+            "subprocess.run(['git', 'init', '-q', str(box)], check=True, "
+            "capture_output=True)\n"
+            "(box / 'TASKS_revision.md').write_text('## 1\\ntexto\\n', encoding='utf-8')\n"
+            "import hashlib\n"
+            "revision_sha = hashlib.sha256(b'## 1\\ntexto\\n').hexdigest()\n"
+            "header = ('<!-- position revision=TASKS_revision.md sha256=' "
+            "+ revision_sha + ' derivedAt=2026-08-27T00:00:00Z session=s0 "
+            "target=final -->\\n')\n"
+            "(box / 'Method' / 'TASKS.md').write_text(\n"
+            "    '# Agreed\\n\\n## Ladder\\n- [ ] an existing settled agreement\\n\\n'\n"
+            "    + header\n"
+            "    + '- [ ] 1. a positioned agreement `@rehearsal jobX`\\n'\n"
+            "    '<!-- /position -->\\n',\n"
+            "    encoding='utf-8')\n"
+            "before = (box / 'Method' / 'TASKS.md').read_bytes()\n"
+            "import argparse, os\n"
+            "args = argparse.Namespace(\n"
+            "    target=str(box), name='Method', revision='TASKS_revision.md',\n"
+            "    session='s1', sequence='[{\"text\": \"fresh\", \"witness\": "
+            "{\"kind\": \"rehearsal\", \"operand\": \"jobY\"}}]',\n"
+            "    replace=True, reconcile=False,\n"
+            "    repair_header=False, target_level='final', shards=None)\n"
+            "os.environ['IMPLEMENTATION_PROPOSALS'] = str(box)\n")
+
+        mutated_code = box_setup + (
+            "result = impl.cmd_position(args)\n"
+            "print('holder:' + str(result['holder']))\n"
+            "print('status:' + str(result['status']))\n"
+            "shutil.rmtree(box, ignore_errors=True)\n")
+        proc = self._run(engine_dir, mutated_code)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("holder:Method/TASKS.md", proc.stdout)
+        self.assertIn("status:written", proc.stdout)
+
+        # The unmutated build (the shipped fix) refuses instead, for the
+        # identical target shape, and never touches `TASKS.md` at all.
+        unmutated_code = box_setup + (
+            "try:\n"
+            "    result = impl.cmd_position(args)\n"
+            "    print('unexpected-success:' + str(result))\n"
+            "except impl.Refused as refused:\n"
+            "    print('refused:' + refused.code)\n"
+            "print('unchanged:' + str((box / 'Method' / 'TASKS.md').read_bytes() == before))\n"
+            "shutil.rmtree(box, ignore_errors=True)\n")
+        env = os.environ.copy()
+        env["IMPLEMENTATION_DOMAIN_PROFILE"] = str(self.PROFILE)
+        script2 = (
+            "import sys\n"
+            f"sys.path.insert(0, {str(FORGE / 'skills/_core/implementation/engine')!r})\n"
+            "import implementation_engine as impl\n" + unmutated_code)
+        proc2 = subprocess.run([sys.executable, "-c", script2],
+                              capture_output=True, text=True, env=env)
+        self.assertEqual(proc2.returncode, 0, proc2.stdout + proc2.stderr)
+        self.assertIn("refused:HOLDER_UNDECLARED", proc2.stdout)
+        self.assertIn("unchanged:True", proc2.stdout)
+
 
 class HolderRepairAmbiguousMutationTests(unittest.TestCase):
     """`implementation-holder-repair` spec, "The Stop Is Reachable By

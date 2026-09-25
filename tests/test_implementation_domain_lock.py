@@ -557,7 +557,7 @@ def build_denylist(profiles: list[dict[str, Any]]) -> dict[str, str]:
 #: 91->92, `against` 195->196. None left the denylist; `test_2` confirms
 #: no new unpinned leak either.
 M5_PINNED_RESIDUE: dict[str, int] = {
-    "actually": 83, "admissible": 3, "after": 92, "against": 196,
+    "actually": 83, "admissible": 3, "after": 92, "against": 197,
     "agreed": 16, "answered": 95, "answers": 107, "approved": 47,
     "audit": 19, "before": 259, "benchmark": 108, "beside": 109,
     "check": 158, "checkable": 3, "claim": 36, "command": 277,
@@ -566,13 +566,13 @@ M5_PINNED_RESIDUE: dict[str, int] = {
     "experiments": 6, "implementations": 4, "incomplete": 28,
     "invariant": 22, "isolated": 5, "leave": 11, "leaves": 38,
     "local": 37, "longer": 54, "makes": 47, "materialized": 12,
-    "measured": 144, "measurement": 43, "module": 195, "notebooks": 110,
+    "measured": 145, "measurement": 43, "module": 195, "notebooks": 110,
     "object": 33, "pilot": 123, "place": 58, "produces": 51,
-    "rather": 378, "recorded": 80, "remedy": 56, "remote": 65,
-    "reported": 147, "resolves": 33, "ruled": 9, "runnable": 15,
+    "rather": 380, "recorded": 80, "remedy": 56, "remote": 65,
+    "reported": 148, "resolves": 34, "ruled": 9, "runnable": 15,
     "scaffolded": 12, "sitting": 9, "small": 8, "something": 77,
-    "steps": 139, "sweep": 11, "validated": 9, "value": 243, "whose": 155,
-    "write": 151, "wrong": 52
+    "steps": 139, "sweep": 12, "validated": 9, "value": 243, "whose": 157,
+    "write": 152, "wrong": 52
 }
 #: Unit 6b (Part B, the transitions): thirteen pins grew from the new
 #: engine prose alone (`_comparison_reuses_acid_test_question`,
@@ -597,6 +597,14 @@ M5_PINNED_RESIDUE: dict[str, int] = {
 #: `command`, `empty`, `place`, `rather`, `recorded`, `resolves`,
 #: `something`, `sweep`, `whose`, `write`. Zero admissions, zero removals;
 #: the same restraint every prior unit's changelog block states.
+#: `the-holder-each-skill-declares` Phase 7 (operator-authorized post-verify
+#: extension closing the CRITICAL defect: one new `elif` branch in
+#: `cmd_position`'s holder-sweep dispatch, comments only -- no new
+#: function, no new refusal code): eight pins grew by their comment's own
+#: prose alone -- `against` (+1), `measured` (+1), `rather` (+2),
+#: `reported` (+1), `resolves` (+1), `sweep` (+1), `whose` (+2), `write`
+#: (+1). Zero admissions, zero removals; the same restraint every prior
+#: unit's changelog block states.
 
 
 class DerivedDenylistTests(unittest.TestCase):

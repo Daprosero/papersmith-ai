@@ -714,7 +714,17 @@ class TwoDocumentAmbiguousFamilyRefusesTests(unittest.TestCase):
         env["GIT_AUTHOR_EMAIL"] = env["GIT_COMMITTER_EMAIL"] = "pair-ambiguous@example.invalid"
         subprocess.run(["git", "init", "-q", str(self.box)], check=True, capture_output=True)
         (self.box / self.PACKAGE).mkdir(parents=True)
-        (self.box / self.PACKAGE / "AGREED.md").write_text(
+        # `the-holder-each-skill-declares` (verify-critical follow-up):
+        # this fixture's own point is document-family ambiguity (D5),
+        # unrelated to holder resolution -- it must use the pair
+        # profile's OWN declared holder name (`Fixture_AGREED.md`,
+        # `tests/fixtures/two_documents/impl_profile.py`), never a bare
+        # `AGREED.md` this profile does not declare. Measured: with the
+        # bare name, `position` refused `HOLDER_UNDECLARED` before ever
+        # reaching the document-family check this test exists to prove,
+        # once `cmd_position` stopped silently adopting an undeclared
+        # candidate that happened to carry a block.
+        (self.box / self.PACKAGE / "Fixture_AGREED.md").write_text(
             "# Agreed\n\n## Ladder\n\n- [ ] First measurable claim.\n",
             encoding="utf-8")
         subprocess.run(["git", "add", "-A"], cwd=self.box, env=env, check=True,
@@ -840,7 +850,11 @@ class AmbiguousFamilyMutationProvesReachabilityTests(unittest.TestCase):
         env["GIT_AUTHOR_EMAIL"] = env["GIT_COMMITTER_EMAIL"] = "pair-d5@example.invalid"
         subprocess.run(["git", "init", "-q", str(self.box)], check=True, capture_output=True)
         (self.box / "PACKAGE").mkdir(parents=True)
-        (self.box / "PACKAGE" / "AGREED.md").write_text(
+        # `the-holder-each-skill-declares` (verify-critical follow-up):
+        # same correction as `TwoDocumentAmbiguousFamilyRefusesTests`
+        # above -- this profile's own declared holder, never a bare
+        # `AGREED.md` name it does not declare.
+        (self.box / "PACKAGE" / "Fixture_AGREED.md").write_text(
             "# Agreed\n\n## Ladder\n\n- [ ] First measurable claim.\n",
             encoding="utf-8")
         subprocess.run(["git", "add", "-A"], cwd=self.box, env=env, check=True,

@@ -1942,16 +1942,33 @@ class HolderCollisionTests(unittest.TestCase):
         """A fresh, uncached load of the shared engine under the
         EXPERIMENTAL profile -- `_load_module`'s own discipline, so this
         module's `HOLDER_FILENAME` (`Experimental_AGREED.md`) never leaks
-        into or from any other test file's cached `sys.modules` entry."""
+        into or from any other test file's cached `sys.modules` entry.
+
+        `impl_domain_profile` is evicted from `sys.modules` before AND
+        after the load -- the sibling helper `_engine_with_documents`'s
+        own discipline, a few hundred lines up in this same file, and
+        its own docstring names the reason: the engine's import is a
+        plain `from impl_domain_profile import PROFILE` (fixed module
+        name), cached process-wide, so a prior test FILE's own already-
+        resolved profile survives here otherwise and this class ends up
+        testing the collision against the WRONG profile -- measured
+        directly: `pytest test_proposal_implementation.py
+        test_experimental_implementation.py -k HolderCollisionTests`
+        read `engine.HOLDER_FILENAME == 'AGREED.md'` under this method
+        (the proposal's own name, leaked in from the first file) before
+        this eviction existed, with no eviction at all guarding this
+        specific helper."""
         env = os.environ.copy()
         env_backup = dict(os.environ)
         os.environ["IMPLEMENTATION_DOMAIN_PROFILE"] = str(PROFILE_FILE)
+        sys.modules.pop("impl_domain_profile", None)
         try:
             sys.path.insert(0, str(ENGINE_DIR))
             return _load_module(
                 ENGINE_DIR / "implementation_engine.py", "experimental_engine_probe")
         finally:
             sys.path.remove(str(ENGINE_DIR))
+            sys.modules.pop("impl_domain_profile", None)
             os.environ.clear()
             os.environ.update(env_backup)
 
@@ -1984,6 +2001,143 @@ class HolderCollisionTests(unittest.TestCase):
             self.assertEqual(
                 (root / "Method" / "AGREED.md").read_text(encoding="utf-8"),
                 "- [ ] an agreement the proposal skill settled here\n")
+
+    def _box(self, suffix: str = "") -> Path:
+        box = FORGE / "implementations" / f"_holder_collision_{os.getpid()}_{id(self)}{suffix}"
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        (box / "src" / "Method").mkdir(parents=True)
+        (box / "tests").mkdir(parents=True)
+        (box / "Method").mkdir(parents=True, exist_ok=True)
+        subprocess.run(["git", "init", "-q", str(box)], check=True, capture_output=True)
+        (box / "src" / "Method" / "__init__.py").write_text("", encoding="utf-8")
+        return box
+
+    def _tmp_dir(self, prefix: str) -> Path:
+        tmp_dir = Path(tempfile.mkdtemp(prefix=prefix))
+        self.addCleanup(shutil.rmtree, tmp_dir, ignore_errors=True)
+        return tmp_dir
+
+    def _install_siblings_holder(self, box: Path, proposals_root: Path) -> bytes:
+        """Real subprocesses, `proposal-implementation` only: `settle`
+        first, so `Method/AGREED.md` holds a checklist item OUTSIDE any
+        `<!-- position -->` block -- `agreements_state`'s own by-shape
+        scan excises a position block's items before it ever counts one
+        (`implementation_engine.py:406-410`), so a target whose ONLY
+        checklist items live inside a position block reports `byShape:
+        []` and resolves `"create"`, not `"undeclared"`, under the
+        experimental profile (measured directly against
+        `holder_resolution` while writing this test). Then `position
+        --sequence` adds a real block on top of that settled item --
+        the sibling's own declared holder, now both item-holding (by
+        `settle`'s line) and block-carrying (by `position`'s), which is
+        what actually reproduces the CRITICAL defect's D3 middle row
+        with a pre-existing block. Returns the bytes on disk right
+        after both writes."""
+        env = os.environ.copy()
+        env.pop("IMPLEMENTATION_DOMAIN_PROFILE", None)
+        discuss = subprocess.run(
+            [sys.executable, str(SIBLING_LAUNCHER), "discuss",
+             "--target", str(box), "--name", "Method", "--about", "record",
+             "--question", "Should this be settled?", "--answer", "Yes."],
+            capture_output=True, text=True, cwd=FORGE, env=env)
+        self.assertEqual(discuss.returncode, 0, discuss.stdout + discuss.stderr)
+        settle = subprocess.run(
+            [sys.executable, str(SIBLING_LAUNCHER), "settle",
+             "--target", str(box), "--name", "Method", "--session", "s0",
+             "--about", "record", "--text", "an existing settled agreement",
+             "--under", "## Ladder"],
+            capture_output=True, text=True, cwd=FORGE, env=env)
+        self.assertEqual(settle.returncode, 0, settle.stdout + settle.stderr)
+
+        env["IMPLEMENTATION_PROPOSALS"] = str(proposals_root)
+        sequence = json.dumps([{"text": "an agreement the sibling settled",
+                                "witness": {"kind": "rehearsal", "operand": "job1"}}])
+        install = subprocess.run(
+            [sys.executable, str(SIBLING_LAUNCHER), "position",
+             "--target", str(box), "--name", "Method", "--revision", "r1.md",
+             "--session", "s1", "--target-level", "final",
+             "--sequence", "-"],
+            input=sequence, capture_output=True, text=True, cwd=FORGE, env=env)
+        self.assertEqual(install.returncode, 0, install.stdout + install.stderr)
+        before = (box / "Method" / "AGREED.md").read_bytes()
+        self.assertIn(b"an existing settled agreement", before)
+        self.assertIn(b"an agreement the sibling settled", before)
+        self.assertNotIn(b"documents=", before)
+        return before
+
+    def test_reconcile_never_writes_into_the_siblings_declared_holder(self):
+        """The measured CRITICAL defect (`sdd/the-holder-each-skill-
+        declares/verify-critical`, Engram obs 2139): `cmd_position` used
+        to dispatch off `holder_resolution`'s `["path"]` alone, never its
+        `["action"]`/`["write"]` -- so an UNDECLARED candidate that
+        already carried a `<!-- position -->` block (written by the
+        sibling `proposal-implementation`) was silently adopted as
+        "existing" here, and `--reconcile` then merged the sibling's own
+        items and spliced a fresh `documents=` group straight into the
+        sibling's own file (this profile declares 2 documents; the
+        sibling's declares 1, so the merge poisons it). Real subprocesses
+        throughout, against the SAME target, exactly the reproduction the
+        CRITICAL verify finding recorded end-to-end."""
+        box = self._box()
+        proposals_root = self._tmp_dir("collision-proposals-")
+        (proposals_root / "r1.md").write_text("## 1\ntexto\n", encoding="utf-8")
+        before = self._install_siblings_holder(box, proposals_root)
+
+        doc1_root = self._tmp_dir("collision-doc1-")
+        (doc1_root / "p1.md").write_text("$$a = b \\tag{1}$$\n", encoding="utf-8")
+        env = os.environ.copy()
+        env.pop("IMPLEMENTATION_DOMAIN_PROFILE", None)
+        env["IMPLEMENTATION_PROPOSALS"] = str(proposals_root)
+        env["IMPLEMENTATION_PROPOSALS_1"] = str(doc1_root)
+
+        reconcile = subprocess.run(
+            [sys.executable, str(LAUNCHER), "position",
+             "--target", str(box), "--name", "Method", "--revision", "r1.md",
+             "--session", "s1", "--reconcile"],
+            capture_output=True, text=True, cwd=FORGE, env=env)
+
+        self.assertEqual(reconcile.returncode, 2,
+                         reconcile.stdout + reconcile.stderr)
+        payload = json.loads(reconcile.stdout)
+        self.assertEqual(payload["code"], "HOLDER_UNDECLARED")
+        self.assertIn("AGREED.md", payload["detail"])
+        self.assertEqual((box / "Method" / "AGREED.md").read_bytes(), before)
+        self.assertFalse((box / "Method" / "Experimental_AGREED.md").exists())
+
+    def test_sequence_replace_never_overwrites_the_siblings_declared_holder(self):
+        """The same collision through `--sequence --replace`: the exit
+        `POSITION_BLOCK_EXISTS` itself names ("pass --replace to
+        overwrite it") is precisely the remedy that would destroy the
+        sibling's own position history if a caller followed it here --
+        `HOLDER_UNDECLARED` must refuse before `--replace` is ever
+        consulted, and nothing may be written."""
+        box = self._box()
+        proposals_root = self._tmp_dir("collision-seq-proposals-")
+        (proposals_root / "r1.md").write_text("## 1\ntexto\n", encoding="utf-8")
+        before = self._install_siblings_holder(box, proposals_root)
+
+        doc1_root = self._tmp_dir("collision-seq-doc1-")
+        (doc1_root / "p1.md").write_text("$$a = b \\tag{1}$$\n", encoding="utf-8")
+        env = os.environ.copy()
+        env.pop("IMPLEMENTATION_DOMAIN_PROFILE", None)
+        env["IMPLEMENTATION_PROPOSALS"] = str(proposals_root)
+        env["IMPLEMENTATION_PROPOSALS_1"] = str(doc1_root)
+
+        fresh_sequence = json.dumps([{"text": "an experimental agreement",
+                                      "witness": {"kind": "rehearsal", "operand": "job2"}}])
+        install_experimental = subprocess.run(
+            [sys.executable, str(LAUNCHER), "position",
+             "--target", str(box), "--name", "Method", "--revision", "r1.md",
+             "--session", "s1", "--target-level", "final",
+             "--sequence", "-", "--replace"],
+            input=fresh_sequence, capture_output=True, text=True, cwd=FORGE, env=env)
+
+        self.assertEqual(install_experimental.returncode, 2,
+                         install_experimental.stdout + install_experimental.stderr)
+        payload = json.loads(install_experimental.stdout)
+        self.assertEqual(payload["code"], "HOLDER_UNDECLARED")
+        self.assertEqual((box / "Method" / "AGREED.md").read_bytes(), before)
+        self.assertFalse((box / "Method" / "Experimental_AGREED.md").exists())
 
 
 class ShippedHolderObligationsTests(unittest.TestCase):
