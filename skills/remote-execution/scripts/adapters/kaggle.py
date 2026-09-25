@@ -1109,26 +1109,21 @@ class KaggleAdapter(ADAPTER.Adapter):
         service) stays a generic `KaggleAdapterError` naming the remedy:
         retry, or let `packer.plan()`'s own ledger fallback answer instead.
 
-        Only a ref this call could actually confirm `queued` or `running`
-        for counts as active. `kaggle_driver.py::cmd_capacity` now reports
-        `unresolved` refs alongside `kernels` — a ref the service answered
-        404 for has no session at all, and a ref this driver could never
-        even address (see `unaddressable_ref` there) was never asked
-        about — neither shape is evidence of an in-flight job, so neither
-        is counted here.
+        Only a ref confirmed `queued`/`running` counts as CONFIRMED active.
+        `cmd_capacity` classifies each unresolved ref: `session_absent`
+        (exact 404 — definitive, no session exists), `unaddressable_ref`
+        (never asked), or `status_lookup_failed` (timeout/429/5xx — state
+        genuinely UNKNOWN). The first two are real evidence of NOT in
+        flight and are never counted. `status_lookup_failed` IS counted
+        active: dropping it would undercount a possibly-running kernel and
+        oversubscribe the worker, while counting it only delays a
+        submission — the conservative direction.
 
-        FAIL-CLOSED GUARD: if `list_kernels` enumerated at least one ref
-        and this call could not confirm the state of ANY of them (every
-        one unresolved), that is not the same fact as an idle account with
-        nothing running — it is a live read this call could not obtain at
-        all, and reading it as "zero active" would silently hide exactly
-        the misattribution this fix exists to close. Raising
-        `KaggleAdapterError` here lets it degrade through `packer.plan()`
-        exactly the way a structurally failed `list_kernels` already does.
-        An enumeration answering zero refs entirely (nothing in `kernels`,
-        nothing in `unresolved`) is a genuinely idle account and must NOT
-        raise — the two cases are told apart by whether anything was
-        enumerated at all, never by whether this call likes the result.
+        FAIL-CLOSED GUARD: raises only when NOTHING resolved and NO
+        definitive evidence exists either (no confirmed kernel, no
+        `session_absent`, no `unaddressable_ref`, at least one unknown). An
+        account whose refs are all 404 is an ordinary idle account and
+        returns `[]` — that IS evidence, never a missing read.
         """
         handle = self._credential_for(worker)
         argv = [sys.executable, str(self._driver_script), "capacity"]
@@ -1137,15 +1132,18 @@ class KaggleAdapter(ADAPTER.Adapter):
 
         kernels = payload.get("kernels", [])
         unresolved = payload.get("unresolved", [])
-        if not kernels and unresolved:
+        session_absent = [u for u in unresolved if u.get("reason") == "session_absent"]
+        unaddressable = [u for u in unresolved if u.get("reason") == "unaddressable_ref"]
+        unknown = [u for u in unresolved if u.get("reason") == "status_lookup_failed"]
+
+        if not kernels and not session_absent and not unaddressable and unknown:
             raise KaggleAdapterError(
-                f"capacity check for {worker!r} enumerated {len(unresolved)} "
-                "kernel ref(s) but resolved the state of none of them "
-                "(list_kernels succeeded; every per-ref status lookup either "
-                "failed or addressed an unaddressable ref) — this is not "
-                "evidence of an idle account, and packer.plan()'s own ledger "
-                "fold should answer instead of a live count built from zero "
-                "confirmed refs"
+                f"capacity check for {worker!r} enumerated {len(unknown)} "
+                "kernel ref(s) but resolved the state of none of them (every "
+                "per-ref status lookup failed with no definitive answer) — "
+                "this is not evidence of an idle account, and packer.plan()'s "
+                "own ledger fold should answer instead of a live count built "
+                "from zero confirmed refs"
             )
 
         active: list[str] = []
@@ -1157,6 +1155,7 @@ class KaggleAdapter(ADAPTER.Adapter):
             state = _KAGGLE_STATUS_TO_SEAM.get(raw_status.strip().lower(), "unknown")
             if state in ("queued", "running"):
                 active.append(ref)
+        active.extend(u["ref"] for u in unknown if u.get("ref"))
         return active
 
     @staticmethod

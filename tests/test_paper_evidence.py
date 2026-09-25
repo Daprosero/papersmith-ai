@@ -1180,6 +1180,22 @@ class ResolvedMetadataCarriesAuthorsTests(unittest.TestCase):
         self.assertNotIn("journal = ", text)
         self.assertNotIn("author = ", text)
 
+    def test_the_entry_text_escapes_latex_special_bytes(self) -> None:
+        """R3-unescaped-upstream-fields-reach-bbl: an unescaped `&` in
+        ordinary metadata breaks the compiled `.bbl`; all three fields
+        must escape it.
+        """
+        text = paper_bib._entry_text({
+            "cite_key": "amp2021", "title": "A & B Study", "doi": None, "year": 2021,
+            "authors": ["Smith & Jones"], "venue": "Journal of A & B",
+            "resolver": "openalex", "metadata_digest": "abc",
+        })
+
+        self.assertIn(r"author = {Smith \& Jones},", text)
+        self.assertIn(r"title = {A \& B Study},", text)
+        self.assertIn(r"journal = {Journal of A \& B},", text)
+        self.assertNotIn("A & B", text)
+
 
 class ResolvedAuthorsMutationProofTests(unittest.TestCase):
     """The capture must be load-bearing, not merely present: dropping the

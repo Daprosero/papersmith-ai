@@ -8090,7 +8090,7 @@ class WorkerSelectionAndMeteringTests(unittest.TestCase):
         self.assertEqual(len(result["unresolved"]), 1)
         unresolved = result["unresolved"][0]
         self.assertEqual(unresolved["ref"], "acct-1/b")
-        self.assertEqual(unresolved["reason"], "status_lookup_failed")
+        self.assertEqual(unresolved["reason"], "session_absent")
         self.assertIn("404", unresolved["detail"])
 
     def test_driver_capacity_reports_an_unaddressable_ref_without_a_request(self) -> None:
@@ -8190,7 +8190,7 @@ class WorkerSelectionAndMeteringTests(unittest.TestCase):
         self.assertNotIn("structurally", json.dumps(parsed))
         self.assertEqual([k["ref"] for k in parsed["kernels"]], ["acct-1/a"])
         self.assertEqual(parsed["unresolved"][0]["ref"], "acct-1/b")
-        self.assertEqual(parsed["unresolved"][0]["reason"], "status_lookup_failed")
+        self.assertEqual(parsed["unresolved"][0]["reason"], "session_absent")
 
     def test_list_active_raises_when_every_enumerated_ref_is_unresolved(self) -> None:
         """The fail-closed guard: `list_kernels` enumerated at least one
@@ -8235,6 +8235,30 @@ class WorkerSelectionAndMeteringTests(unittest.TestCase):
             adapter = KAGGLE.KaggleAdapter(credentials={"acct-1": handle}, driver_script=driver)
 
             self.assertEqual(adapter.list_active("acct-1"), [])
+
+    def test_list_active_reads_session_absent_as_evidence_and_unknown_as_active(self) -> None:
+        """Both R4 findings in one fixture. `session_absent` is definitive
+        negative evidence, not a missing read: it must not trip the
+        fail-closed guard and must not be counted. A `status_lookup_failed`
+        ref answered nothing, so it IS counted -- dropping it would
+        undercount a possibly-running kernel and oversubscribe the worker.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            driver = _write_fake_capacity_driver(
+                tmp_path / "driver",
+                kernels=[],
+                unresolved=[
+                    {"ref": "acct-1/a", "reason": "session_absent", "detail": "HTTP 404"},
+                    {"ref": "acct-1/b", "reason": "session_absent", "detail": "HTTP 404"},
+                    {"ref": "acct-1/c", "reason": "status_lookup_failed", "detail": "HTTP 429"},
+                ],
+            )
+            token_path = _write_fake_token(tmp_path / "creds")
+            handle = KAGGLE.CredentialHandle(worker_id="acct-1", token_path=token_path)
+            adapter = KAGGLE.KaggleAdapter(credentials={"acct-1": handle}, driver_script=driver)
+
+            self.assertEqual(adapter.list_active("acct-1"), ["acct-1/c"])
 
 
 def _installed_kaggle_client_source() -> str | None:

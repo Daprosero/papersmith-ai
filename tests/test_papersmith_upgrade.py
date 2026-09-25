@@ -66,6 +66,42 @@ class UpgradeTests(unittest.TestCase):
         expected = manifest.workspace_framework_files(workspace, Path(__file__).parents[1])
         assert stored["files"] == expected
 
+    def test_upgrade_on_an_old_layout_workspaces_journal_and_decisions(self) -> None:
+        """R3-preserve-contract-migration-unproved: `journal/**` and
+        `DECISIONS.md` were dropped from `PRESERVE_PATTERNS`; nothing proved
+        what an OLD-layout workspace's real `journal/` and `DECISIONS.md`
+        (from a kit version whose manifest once tracked them) do under
+        `upgrade`. MEASURED, not hoped: neither is in `KIT_ENTRIES` nor a
+        `DYNAMIC_PREFIXES` orphan target, so `upgrade`'s copy loop and its
+        orphan-removal loop never reach them -- both survive on disk with
+        their original bytes. They are simply dropped from the REWRITTEN
+        manifest's bookkeeping (no longer tracked as drift), never deleted
+        or overwritten. No data loss was observed.
+        """
+        tmp_path = self.new_tmp()
+        workspace = _workspace(tmp_path)
+        journal_file = workspace / "journal" / "2024-01-01.md"
+        journal_file.parent.mkdir()
+        journal_file.write_text("research log entry", encoding="utf-8")
+        decisions = workspace / "DECISIONS.md"
+        decisions.write_text("# Decisions\n\nUse method X.\n", encoding="utf-8")
+
+        manifest_path = workspace / ".papersmith" / "manifest.json"
+        stored = json.loads(manifest_path.read_text(encoding="utf-8"))
+        stored["files"]["journal/2024-01-01.md"] = manifest.sha256_file(journal_file)
+        stored["files"]["DECISIONS.md"] = manifest.sha256_file(decisions)
+        manifest_path.write_text(json.dumps(stored), encoding="utf-8")
+
+        result = upgrade_module.upgrade(workspace)
+
+        assert journal_file.read_text(encoding="utf-8") == "research log entry"
+        assert decisions.read_text(encoding="utf-8") == "# Decisions\n\nUse method X.\n"
+        assert "journal/2024-01-01.md" not in result["removed"]
+        assert "DECISIONS.md" not in result["removed"]
+        new_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        assert "journal/2024-01-01.md" not in new_manifest["files"]
+        assert "DECISIONS.md" not in new_manifest["files"]
+
     def test_upgrade_delivers_the_harness_projection_script(self) -> None:
         """A workspace made before the script shipped receives it on upgrade."""
         tmp_path = self.new_tmp()

@@ -987,9 +987,11 @@ class ProducesFactsSchemaTests(unittest.TestCase):
 #: Metodos. En cada archivo: la fila de insumos externos ya falsa se quito,
 #: se autoro la frase que respalda la cita, y se agrego la arista mas su
 #: fila de `### Internal chain` (`04` estrena tabla; antes decia "None").
-#: `01` sigue sin re-capturar: es una edicion del operador sin commitear.
+#: `01` re-capturado ahora (R3-stale-section-digest): el guard SI estaba
+#: vivo -- rojo antes de este cambio -- sobre la prosa nueva en :281-291
+#: y :406-410; el digest viejo quedaba de una edicion sin commitear.
 PRE_MIGRATION_BODY_DIGESTS: dict[str, str] = {
-    "01-materials-and-methods.md": "f8ac80bce7a17abb57f99b7be10345beebe1435763f7c5ac9158dda23261aca4"[:64],
+    "01-materials-and-methods.md": "094b1a32e6dee72eb41260d2b7a9426c1632bdd1f2e457b2f2b23f8c82459612"[:64],
     "02-experimental-setup.md": "bfd655f577c8f61802fc4c3d5280f5ada15b9342e11c6b941e75455c0d381960"[:64],
     "03-results-and-discussion.md": "5d32f19e4636fa5be6773fadee31d19019c02d06f312ebcfc8a0058a841795df"[:64],
     "04-limitations.md": "4048e92f81c6203aaa04c066696b90ac3219a3435ce636e7b9840c09a715e490"[:64],

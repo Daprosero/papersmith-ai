@@ -141,6 +141,20 @@ def entry_from_record(paper_dir: Path, record: dict, *, guidance_dir: Path) -> d
     }
 
 
+def _latex_escape(value: str) -> str:
+    """Escape LaTeX-special bytes `_entry_text` below emits verbatim from
+    connector-captured metadata: backslash FIRST (every other replacement
+    below adds one, so escaping it later would double-escape those), then
+    `&`, `%`, `$`, `#`, `_`. `{`/`}` are deliberately left UNESCAPED --
+    they are BibTeX-structural (they delimit the field value itself), and
+    escaping them would break brace matching, not protect anything.
+    """
+    text = value.replace("\\", r"\textbackslash{}")
+    for char in ("&", "%", "$", "#", "_"):
+        text = text.replace(char, f"\\{char}")
+    return text
+
+
 def _entry_text(entry: dict) -> str:
     # `@article` only when a venue was actually captured: the `plain` style
     # prints `journal` for an article and ignores it on a `@misc`, so an
@@ -148,12 +162,15 @@ def _entry_text(entry: dict) -> str:
     # with a blank journal.
     kind = "article" if entry.get("venue") else "misc"
     lines = [f"@{kind}{{{entry['cite_key']},"]
+    # `author`, `title` and `journal` share the identical exposure to raw,
+    # unescaped connector text; all three are escaped here.
     if entry.get("authors"):
-        lines.append(f"  author = {{{' and '.join(entry['authors'])}}},")
+        authors = " and ".join(_latex_escape(a) for a in entry["authors"])
+        lines.append(f"  author = {{{authors}}},")
     if entry.get("title"):
-        lines.append(f"  title = {{{entry['title']}}},")
+        lines.append(f"  title = {{{_latex_escape(entry['title'])}}},")
     if entry.get("venue"):
-        lines.append(f"  journal = {{{entry['venue']}}},")
+        lines.append(f"  journal = {{{_latex_escape(entry['venue'])}}},")
     if entry.get("doi"):
         lines.append(f"  doi = {{{entry['doi']}}},")
     if entry.get("year") is not None:

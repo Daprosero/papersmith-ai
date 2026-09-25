@@ -357,11 +357,11 @@ def cmd_capacity(client: "KernelsApiClient") -> dict:
     resolved — `status` is still the bare `KernelWorkerStatus` member name,
     the same shape `cmd_poll` already prints, so `adapters/kaggle.py`
     translates both through the one table it already owns. `reason` is one
-    of two machine-stable values: `"unaddressable_ref"` (the ref never
-    reached a request) or `"status_lookup_failed"` (the request was made
-    and failed); `detail` carries the HTTP status code when the exception
-    exposes one, so a reader does not have to parse the message text to
-    tell a 404 from a timeout. An unresolved ref is reported, never
+    of three machine-stable values: `"unaddressable_ref"` (never reached a
+    request), `"session_absent"` (HTTP 404 — definitive: no session
+    exists), or `"status_lookup_failed"` (failed any other way — timeout,
+    429, 5xx — state genuinely unknown); `detail` carries the HTTP status
+    code when the exception exposes one. An unresolved ref is reported, never
     dropped and never fabricated a status for — silently dropping it would
     make `list_active()` undercount a kernel that might still be running
     outside this function's view, and fabricating one would invent
@@ -403,7 +403,10 @@ def cmd_capacity(client: "KernelsApiClient") -> dict:
             http_response = getattr(exc, "response", None)
             status_code = getattr(http_response, "status_code", None)
             detail = f"HTTP {status_code}: {exc}" if status_code is not None else str(exc)
-            unresolved.append({"ref": ref, "reason": "status_lookup_failed", "detail": detail})
+            # A 404 is DEFINITIVE negative evidence (no session exists), not
+            # a lookup this driver merely failed to complete.
+            reason = "session_absent" if status_code == 404 else "status_lookup_failed"
+            unresolved.append({"ref": ref, "reason": reason, "detail": detail})
             continue
 
         kernels.append({"ref": ref, "status": status_response.status.name})

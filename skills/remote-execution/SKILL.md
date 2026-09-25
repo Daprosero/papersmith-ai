@@ -118,12 +118,15 @@ unreachable. `cmd_capacity` now guards a ref before using it (one with no
 itself so any exception it raises makes that one ref unresolved without
 interrupting the refs around it, returning `{"kernels": [...], "unresolved":
 [{"ref", "reason", "detail"}, ...]}` and exiting 0 whenever `list_kernels`
-itself succeeded. `adapters/kaggle.py::list_active()` counts only a ref
-this confirmed `queued`/`running` as active — an unresolved ref is neither
-counted active nor silently dropped from the record — and raises when
-`list_kernels` enumerated at least one ref and none of them resolved (no
-usable state evidence at all), while an enumeration answering zero refs
-stays the legitimately idle account it is.
+itself succeeded. `reason` is one of three facts: `session_absent` (404 —
+definitive, no session exists), `unaddressable_ref` (never asked), or
+`status_lookup_failed` (timeout/429/5xx — genuinely unknown).
+`adapters/kaggle.py::list_active()` counts a ref confirmed
+`queued`/`running` OR left `status_lookup_failed` as active (undercounting
+an unknown ref would oversubscribe a worker). `session_absent` and
+`unaddressable_ref` are real evidence of NOT in flight, so an all-404
+account is ordinary and idle and returns `[]`; the fail-closed raise fires
+only when nothing resolved and no definitive evidence exists either.
 
 **Any plan that reasons in weekly hours takes that number from the operator.**
 Ask; do not assume, and never read one out of this repository.
