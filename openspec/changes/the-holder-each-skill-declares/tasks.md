@@ -45,7 +45,7 @@ per `design.md`'s "Migration / Rollout" section.
 Spec: `implementation-declared-holder` — "The Declared Holder Is A Required PROFILE Leaf",
 "The Declared Holder Leaf Carries A Heading Scaffold".
 
-- [ ] 1.1 **(BLOCKING — nothing else in this change can run before this)** Add the
+- [x] 1.1 **(BLOCKING — nothing else in this change can run before this)** Add the
       `"holder": {"filename": ..., "headings": (...), "scaffold": ...}` section to every
       test-synthesized profile, before the requirement that would enforce it exists:
       `tests/test_implementation_profile.py` (`_cut2_profile` `:556-614`, `_CUT2_LEAVES`
@@ -57,7 +57,7 @@ Spec: `implementation-declared-holder` — "The Declared Holder Is A Required PR
       placeholder filename, e.g. `Fixture_AGREED.md`, is acceptable here). Verification:
       `.venv/bin/python -m pytest tests/test_implementation_profile.py tests/test_experimental_implementation.py tests/test_implementation_domain_mutation.py -x`
       (must stay exactly as green as before — no requirement enforces the leaf yet).
-- [ ] 1.2 RED: write failing tests for the required-leaf refusal (omitting `holder.filename` /
+- [x] 1.2 RED: write failing tests for the required-leaf refusal (omitting `holder.filename` /
       `holder.headings` / `holder.scaffold` each raises `IMPLEMENTATION_DOMAIN_PROFILE_INCOMPLETE`
       naming that exact dotted leaf, via the existing per-leaf walk pattern at
       `tests/test_implementation_profile.py:681-690`); the scaffold-heading agreement shape
@@ -69,14 +69,14 @@ Spec: `implementation-declared-holder` — "The Declared Holder Is A Required PR
       suffix) — each must raise `IMPLEMENTATION_DOMAIN_PROFILE_INVALID_HOLDER`. Verification:
       `.venv/bin/python -m pytest tests/test_implementation_profile.py -k holder -v` (expect
       failures — confirms RED).
-- [ ] 1.3 GREEN: `skills/_core/implementation/impl_domain_profile.py:67-90` — append
+- [x] 1.3 GREEN: `skills/_core/implementation/impl_domain_profile.py:67-90` — append
       `("holder", "filename")`, `("holder", "headings")`, `("holder", "scaffold")` to
       `_REQUIRED_PRESENCE`. Do **not** use `_REQUIRED_NESTED` (`:59`) — its
       `..._UNSAFE_PATH` check (`:483-485`) demands absolute-and-existing, the inverse of a
       relative, usually non-existent holder filename. Presence is validated by the existing
       loop `:238-241`. Acceptance: 1.2's presence-refusal RED tests now GREEN. Verification:
       `.venv/bin/python -m pytest tests/test_implementation_profile.py -k holder -v`.
-- [ ] 1.4 GREEN: `skills/_core/implementation/impl_domain_profile.py` — new shape tier after
+- [x] 1.4 GREEN: `skills/_core/implementation/impl_domain_profile.py` — new shape tier after
       the presence loop, refusing `IMPLEMENTATION_DOMAIN_PROFILE_INVALID_HOLDER` (joins
       `..._INVALID_CITATION_PATTERN` `:358-366`, `..._INVALID_BLOCK_LOCATOR` `:384-410`,
       `..._INVALID_CROSS_CITATION_PATTERN` `:433-442`). Four checks (D4): (1) `filename` is
@@ -88,16 +88,16 @@ Spec: `implementation-declared-holder` — "The Declared Holder Is A Required PR
       (`impl_domain_profile.py:20-25`) — this refusal is invisible to `reachable_refusal_codes()`
       and does **not** move the pinned count. Acceptance: 1.2's shape/threat-matrix RED tests
       now GREEN. Verification: `.venv/bin/python -m pytest tests/test_implementation_profile.py -k "holder or INVALID_HOLDER" -v`.
-- [ ] 1.5 GREEN: `skills/proposal-implementation/impl_profile.py` — declare
+- [x] 1.5 GREEN: `skills/proposal-implementation/impl_profile.py` — declare
       `"holder": {"filename": "AGREED.md", "headings": ("# Agreed", "## Ladder"), "scaffold": "# Agreed\n\n## Ladder\n"}`.
       Zero behavioural delta — this is the name already in use by the live target and by
       `tests/seal/corpus.py:272`. Verification:
       `.venv/bin/python -m pytest tests/test_proposal_implementation.py -x` (must stay fully
       green, no new failures).
-- [ ] 1.6 GREEN: `skills/experimental-implementation/impl_profile.py` — declare
+- [x] 1.6 GREEN: `skills/experimental-implementation/impl_profile.py` — declare
       `"holder": {"filename": "Experimental_AGREED.md", "headings": ("# Agreed", "## Ladder"), "scaffold": "# Agreed\n\n## Ladder\n"}`.
       Verification: `.venv/bin/python -m pytest tests/test_experimental_implementation.py -x`.
-- [ ] 1.7 Seal gate (D11 step 1) — both seals green, **no recapture of either**. Verification:
+- [x] 1.7 Seal gate (D11 step 1) — both seals green, **no recapture of either**. Verification:
       `.venv/bin/python -m pytest tests/test_implementation_seal.py tests/test_experiments_seal.py`.
       Acceptance: both green; `git diff --stat tests/seal/digests.json tests/experiments_seal/digests.json`
       is empty. Neither seal's fingerprint covers `impl_profile.py`, so this step cannot move
