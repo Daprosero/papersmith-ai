@@ -651,6 +651,16 @@ class LockAHonestyTests(unittest.TestCase):
     _SCRATCH_PROFILE_SRC = (
         "PROFILE = {\n"
         "    'kit': {'root': '/scratch/skill'},\n"
+        # `the-holder-each-skill-declares` (design.md D1): the 8th
+        # top-level `PROFILE` section, present here for the same
+        # "every synthesized profile carries it" reason as every other
+        # fixture in this suite (tasks.md 1.1) -- this scratch source is
+        # never resolved through `impl_domain_profile._resolve()`, only
+        # scanned as text by `_old_check`/`_new_check` below, so the
+        # section is inert to both checks but keeps the fixture honest.
+        "    'holder': {'filename': 'Fixture_AGREED.md', "
+        "'headings': ('# Agreed', '## Ladder'), "
+        "'scaffold': '# Agreed\\n\\n## Ladder\\n'},\n"
         "    'vocabulary': {\n"
         "        'subject_singular': 'widget',\n"
         "        'names': ['widget', 'zzz-nothing'],\n"

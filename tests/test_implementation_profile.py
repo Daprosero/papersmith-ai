@@ -514,6 +514,16 @@ _CUT2_LEAVES: tuple[str, ...] = (
     # `CrossCitationLeafOwnTierTests` below proves the sub-key shape and the
     # `None`-is-legal positive control.
     "documents[0].cross_citation",
+    # `the-holder-each-skill-declares` (design.md D1): an 8th top-level
+    # `holder` section, three leaves -- `filename`, `headings`, `scaffold`.
+    # A plain top-level `section.key` shape, exactly like `kit.root`/
+    # `cli.path` -- `_without_leaf` needs no indexed branch for these.
+    # Appended at task 1.2 (RED), not here: `_cut2_profile` already
+    # declares the section (task 1.1, behaviour-free), but adding these
+    # three dotted leaves to this walk is itself the RED step -- no
+    # requirement enforces `holder.*`'s presence until task 1.3 lands, so
+    # naming them here before 1.3 would fail this very test, not merely
+    # leave it uncovered.
 )
 
 #: `vocabulary.names` is declared at S13 (design.md D7), not S2 -- so a
@@ -605,6 +615,16 @@ def _cut2_profile(tmp_dir: Path, *, with_names: bool = True) -> dict:
              # against.
              "cross_citation": None},
         ],
+        # `the-holder-each-skill-declares` (design.md D1/D4): the 8th
+        # top-level `PROFILE` section -- the checklist holder this fixture
+        # declares its own name for. Phase 1 lands this leaf before the
+        # requirement that enforces it exists (tasks.md 1.1); the filename
+        # here is a legal placeholder, not either shipped skill's own name.
+        "holder": {
+            "filename": "Fixture_AGREED.md",
+            "headings": ("# Agreed", "## Ladder"),
+            "scaffold": "# Agreed\n\n## Ladder\n",
+        },
     }
     if with_names:
         profile["vocabulary"]["names"] = [

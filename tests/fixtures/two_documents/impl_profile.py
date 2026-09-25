@@ -125,6 +125,15 @@ PROFILE = {
          },
          "cross_citation": None},
     ],
+    # `the-holder-each-skill-declares` (design.md D1/D4): the 8th top-level
+    # `PROFILE` section this fixture must carry, or the suite dies at
+    # import once the required-leaf tier lands (tasks.md 1.1). A legal
+    # placeholder name, not either shipped skill's own declared filename.
+    "holder": {
+        "filename": "Fixture_AGREED.md",
+        "headings": ("# Agreed", "## Ladder"),
+        "scaffold": "# Agreed\n\n## Ladder\n",
+    },
 }
 
 # Cut 3 slice C (`the-second-document-verified-on-its-own-terms`, design.md
