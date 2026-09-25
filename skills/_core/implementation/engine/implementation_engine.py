@@ -12046,6 +12046,108 @@ def _chosen_holder(target: Path, name: str, product: Path) -> Path:
         "choosing.")
 
 
+def _holder_repair_ambiguous_detail(
+        path: Path, target: Path, block: dict | None,
+        declared_labels: set[str]) -> str:
+    """The `HOLDER_REPAIR_AMBIGUOUS` detail (design D7): names the decoded
+    group entries, which labels this profile declares, and asks the
+    question a human -- never a guess -- answers.
+
+    `block is None` (D7 precondition 2 failing outright, never raised: the
+    declared holder carries no `<!-- position -->` block at all, or one
+    `_header_document_count_detail` already reads as agreeing) and a
+    legacy block (D7 precondition 2's other failure -- `target` is `None`
+    there, and repair would have to invent a rung) are both named for what
+    they are, never mis-described as an entry list neither carries.
+    """
+    if block is None:
+        entries_text = "no `documents=` group this profile's own comparison reads as disagreeing"
+    elif block["legacy"]:
+        entries_text = ("a legacy header (no `target=` field at all) -- "
+                        "repair would have to invent a rung to re-render it")
+    else:
+        entries = block.get("documents") or []
+        entries_text = "; ".join(
+            f"{entry.get('label')!r} (revision {entry.get('revision')!r})"
+            for entry in entries) or "an empty `documents=` group"
+    return (
+        f"{path.relative_to(target)}'s position header carries {entries_text}; "
+        f"this skill's own declared documents are {sorted(declared_labels)!r}. "
+        "Does this header's recorded binding still mean something under "
+        "this profile -- repair it by dropping the group with `position "
+        "--repair-header` once that is safe, or should this target get its "
+        "own separate declared holder instead, and why?")
+
+
+def _cmd_position_repair(
+        target: Path, name: str, product: Path, resolution: dict,
+        blocks_by_path: dict[Path, dict],
+        repair_data: dict[Path, bytes]) -> dict:
+    """`--repair-header` (design D6/D7, `implementation-holder-repair`): a
+    poisoned target's forward path -- repair the existing declared holder's
+    header in place, create this skill's own separate declared holder when
+    the evidence unambiguously supports that instead, or stop with
+    `HOLDER_REPAIR_AMBIGUOUS` and write nothing when the evidence does not
+    determine which.
+
+    `resolution["action"] != "declared"` reuses `_chosen_holder`'s own
+    dispatch unchanged: `"create"` writes this skill's own scaffold (D7's
+    second scenario) and touches nothing else; `"undeclared"`/`"absent"`/
+    `"ambiguous"` raise the identical codes an ordinary `position` call
+    already raises for the identical target shape -- repair adds no new
+    answer for a target that was never the D3 middle row's write case to
+    begin with, and `POSITION_HOLDER_AMBIGUOUS` for "more than one `*.md`
+    carries a block" has already had its own unconditional chance to fire,
+    above, before this function is ever called (D7's third ambiguous
+    sub-case: repair must never become a second answer to that code).
+    """
+    if resolution["action"] != "declared":
+        path = _chosen_holder(target, name, product)
+        return {
+            "command": "position", "target": str(target), "name": name,
+            "status": "created", "holder": str(path.relative_to(target)),
+        }
+
+    declared_path = resolution["path"]
+    block = blocks_by_path.get(declared_path)
+    declared_labels = {doc["label"] for doc in DOCUMENTS}
+
+    # D7's four preconditions, all four required or this falls through to
+    # the named human decision: (1) already true here -- `action ==
+    # "declared"`; (2) `block` is not `None` and is not legacy; (3) this
+    # profile's own comparison actually reads it as disagreeing; (4) every
+    # decoded entry either carries no revision, or names a label this
+    # profile's own `DOCUMENTS` does not declare.
+    repairable = (
+        block is not None
+        and not block["legacy"]
+        and _header_document_count_detail(block) is not None
+        and all(not entry.get("revision")
+                or entry.get("label") not in declared_labels
+                for entry in (block.get("documents") or [])))
+
+    if not repairable:
+        raise Refused(
+            "HOLDER_REPAIR_AMBIGUOUS",
+            _holder_repair_ambiguous_detail(
+                declared_path, target, block, declared_labels))
+
+    data = repair_data[declared_path]
+    header = {"revision": block["revision"],
+              "revisionSha256": block["revisionSha256"],
+              "derivedAt": block["derivedAt"], "session": block["session"],
+              "target": block["target"]}
+    items = impl_position.parse_items(block["body"])
+    new_block = impl_position.render(header, items).encode("utf-8")
+    spliced = impl_position.splice(data, new_block, block)
+    impl_position.write_spliced(
+        declared_path, spliced, expect_digest=impl_position.digest_bytes(data))
+    return {
+        "command": "position", "target": str(target), "name": name,
+        "status": "repaired", "holder": str(declared_path.relative_to(target)),
+    }
+
+
 def _reconcile_discovered_witnesses(target: Path, name: str, args: argparse.Namespace) -> list:
     """Every witness `--reconcile` can build from what the target already
     has, in the order design §3.3 names them: the declared `@record`, one
@@ -12271,6 +12373,24 @@ def cmd_position(args: argparse.Namespace) -> dict:
             "builds one from what the target already has; only one of the "
             "two names this call's sequence.")
 
+    # `implementation-holder-repair` (design D6): the same shape as the
+    # guard just above -- `--repair-header` names one intent (repair a
+    # header already there, in place) and `--sequence`/`--reconcile`/
+    # `--replace` each name a fresh-or-reconstructed write; only one of
+    # these may describe a single call. `getattr`, not `args.repair_header`
+    # directly: several tests build `argparse.Namespace` by hand rather
+    # than through the real parser, the same reason `--target-level` and
+    # `--shards` are already read this way just below.
+    repair_header = getattr(args, "repair_header", False)
+    if repair_header and (
+            args.sequence is not None or args.reconcile or args.replace):
+        raise Refused(
+            "POSITION_REPAIR_CONFLICT",
+            "--repair-header repairs an existing poisoned header in place "
+            "and --sequence/--reconcile/--replace write a fresh or "
+            "reconstructed one; only one of these describes this call's "
+            "intent.")
+
     target = resolve_target(args.target)
     name = validate_name(args.name)
     require_named_product_dir(target, name)
@@ -12313,6 +12433,15 @@ def cmd_position(args: argparse.Namespace) -> dict:
     # `position_state`'s read side pass no such flag and keep refusing.
     holder_digests: dict[Path, str] = {}
     holders_with_block = []
+    # `implementation-holder-repair` (design D6/D7): under `--repair-header`
+    # a mismatched header is the exact condition this flag exists to answer,
+    # never raised mid-sweep here -- `_cmd_position_repair` below decides
+    # repair vs. create-new vs. a named human decision, once every
+    # candidate has been read and the ambiguity scan just below has had its
+    # ordinary chance to fire. `data` is kept here (never re-read) so the
+    # repair itself never risks a stale-offset splice against bytes read a
+    # second time.
+    repair_data: dict[Path, bytes] = {}
     for path in md_files:
         data = path.read_bytes()
         holder_digests[path] = impl_position.digest_bytes(data)
@@ -12330,9 +12459,11 @@ def cmd_position(args: argparse.Namespace) -> dict:
             # today, and gets the group added on the next write.
             count_detail = _header_document_count_detail(block)
             if count_detail is not None:
-                raise Refused(
-                    "POSITION_HEADER_DOCUMENT_COUNT_MISMATCH",
-                    f"{path.relative_to(target)}'s {count_detail}")
+                if not repair_header:
+                    raise Refused(
+                        "POSITION_HEADER_DOCUMENT_COUNT_MISMATCH",
+                        f"{path.relative_to(target)}'s {count_detail}")
+                repair_data[path] = data
             holders_with_block.append((path, block))
 
     if holder_resolution_result["path"] is not None:
@@ -12352,6 +12483,11 @@ def cmd_position(args: argparse.Namespace) -> dict:
                 "section this writes.")
         existing_path, existing_block = (
             holders_with_block[0] if holders_with_block else (None, None))
+
+    if repair_header:
+        return _cmd_position_repair(
+            target, name, product, holder_resolution_result,
+            dict(holders_with_block), repair_data)
 
     # `target` is filled in below, once every branch has produced `items` and
     # the section is confirmed actually about to be measured or written (the
@@ -18775,6 +18911,10 @@ GATING_REFUSALS: dict[str, str] = {
     "POSITION_SEQUENCE_UNREADABLE": INVOCATION_DEFECT,     # fix the JSON typed
     "POSITION_SEQUENCE_EMPTY": INVOCATION_DEFECT,          # pass a real sequence
     "POSITION_BLOCK_EXISTS": INVOCATION_DEFECT,            # pass --replace
+    # `implementation-holder-repair` (design D6): the identical shape as
+    # `POSITION_SEQUENCE_AND_RECONCILE` just above -- drop one of the two
+    # flags that named two different intents in the same call.
+    "POSITION_REPAIR_CONFLICT": INVOCATION_DEFECT,
     # The second arguable one, and it lands the other side of the line from
     # `GATE_AUTHORIZATION_REQUIRED`: the rung names are the target's own, so a
     # caller may have to go read `__levels__` before typing one -- but reading
@@ -18818,6 +18958,10 @@ GATING_REFUSALS: dict[str, str] = {
     # this is a work state, the identical reasoning `POSITION_STEP_UNKNOWN`
     # and `POSITION_RECORD_UNKNOWN` already state just above.
     "POSITION_HEADER_DOCUMENT_COUNT_MISMATCH": WORK_STATE,
+    # `implementation-holder-repair` (design D7): the evidence does not
+    # determine repair vs. create-new for a poisoned target, so a human
+    # decides -- no flag this command accepts resolves it on its own.
+    "HOLDER_REPAIR_AMBIGUOUS": WORK_STATE,
 
     # --- the guards every gating command runs before it does anything -------
     # `resolve_target`, `require_clean_worktree` and `require_non_forge_
@@ -19559,6 +19703,19 @@ _WORK_STATE_RESOLUTIONS = {
               "`<!-- position -->` block, and no argument this command takes "
               "can tell them apart; which file holds the section, and should "
               "the other block be removed, and why?"),
+    # `implementation-holder-repair` (design D7): both exits are named in
+    # the detail already (the decoded group entries, and this profile's
+    # own declared documents); the question repeats them because a human,
+    # not a flag, decides between them.
+    "HOLDER_REPAIR_AMBIGUOUS": lambda args: _refusal_question(
+        args, "this target's existing declared holder carries a "
+              "`documents=` group the evidence does not clearly resolve "
+              "(the refusal detail names the decoded entries and this "
+              "skill's own declared documents); does this header's "
+              "recorded binding still mean something under this profile "
+              "-- repair it by dropping the group with `position "
+              "--repair-header`, or give this target its own separate "
+              "declared holder instead, and why?"),
     "AGREEMENT_DISAGREES": lambda args: _refusal_question(
         args, "a ticked agreement names a witness function that is absent "
               "from a fully-parsed tests/ (the refusal detail names it); "
@@ -20098,6 +20255,20 @@ def main(argv: list[str] | None = None) -> int:
                                 "Existing items are matched by witness "
                                 "identity and kept untouched; only unmatched "
                                 "steps are appended")
+            p.add_argument("--repair-header", action="store_true",
+                           help="`implementation-holder-repair` (design D6): "
+                                "repair a poisoned target -- an existing "
+                                "holder whose `documents=` header group "
+                                "disagrees with this skill's own declared "
+                                "document count -- by dropping that group, "
+                                "or create this skill's own separate "
+                                "declared holder when the evidence "
+                                "unambiguously supports that instead. "
+                                "Refuses HOLDER_REPAIR_AMBIGUOUS and writes "
+                                "nothing when the evidence does not "
+                                "determine which action is correct. "
+                                "Mutually exclusive with --sequence, "
+                                "--reconcile and --replace")
             p.add_argument("--target-level", default=None,
                            help="the rung this pass is aiming at, one of "
                                 "this target's own __levels__ (see the "

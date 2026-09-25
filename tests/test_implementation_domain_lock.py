@@ -549,22 +549,22 @@ def build_denylist(profiles: list[dict[str, Any]]) -> dict[str, str]:
 #: measurements standing. None left the denylist; `test_2` confirms no
 #: new unpinned leak either.
 M5_PINNED_RESIDUE: dict[str, int] = {
-    "actually": 82, "admissible": 3, "after": 91, "against": 194,
-    "agreed": 16, "answered": 95, "answers": 106, "approved": 47,
-    "audit": 19, "before": 258, "benchmark": 108, "beside": 109,
-    "check": 158, "checkable": 3, "claim": 36, "command": 274,
+    "actually": 83, "admissible": 3, "after": 91, "against": 195,
+    "agreed": 16, "answered": 95, "answers": 107, "approved": 47,
+    "audit": 19, "before": 259, "benchmark": 108, "beside": 109,
+    "check": 158, "checkable": 3, "claim": 36, "command": 277,
     "commands": 18, "compares": 25, "declaration": 211,
-    "destinations": 39, "empty": 131, "established": 5, "experiment": 25,
+    "destinations": 39, "empty": 132, "established": 5, "experiment": 25,
     "experiments": 6, "implementations": 4, "incomplete": 28,
     "invariant": 22, "isolated": 5, "leave": 11, "leaves": 38,
     "local": 37, "longer": 54, "makes": 47, "materialized": 12,
     "measured": 144, "measurement": 43, "module": 195, "notebooks": 110,
-    "object": 33, "pilot": 123, "place": 55, "produces": 51,
-    "rather": 377, "recorded": 78, "remedy": 56, "remote": 65,
-    "reported": 147, "resolves": 32, "ruled": 9, "runnable": 15,
-    "scaffolded": 12, "sitting": 9, "small": 8, "something": 75,
-    "steps": 139, "sweep": 10, "validated": 9, "value": 243, "whose": 154,
-    "write": 147, "wrong": 52
+    "object": 33, "pilot": 123, "place": 58, "produces": 51,
+    "rather": 378, "recorded": 80, "remedy": 56, "remote": 65,
+    "reported": 147, "resolves": 33, "ruled": 9, "runnable": 15,
+    "scaffolded": 12, "sitting": 9, "small": 8, "something": 77,
+    "steps": 139, "sweep": 11, "validated": 9, "value": 243, "whose": 155,
+    "write": 151, "wrong": 52
 }
 #: Unit 6b (Part B, the transitions): thirteen pins grew from the new
 #: engine prose alone (`_comparison_reuses_acid_test_question`,
@@ -581,6 +581,14 @@ M5_PINNED_RESIDUE: dict[str, int] = {
 #: `command`, `empty`, `leaves`, `remedy`, `resolves`, `write`, `wrong`.
 #: Zero admissions, zero removals; the same restraint every prior unit's
 #: changelog block states.
+#: `the-holder-each-skill-declares` Phase 4 (`--repair-header`'s new
+#: functions, docstrings and comments alone, `_cmd_position_repair`/
+#: `_holder_repair_ambiguous_detail` beside the mutual-exclusivity guard
+#: and the two new `GATING_REFUSALS`/`_WORK_STATE_RESOLUTIONS` entries):
+#: fourteen pins grew -- `actually`, `against`, `answers`, `before`,
+#: `command`, `empty`, `place`, `rather`, `recorded`, `resolves`,
+#: `something`, `sweep`, `whose`, `write`. Zero admissions, zero removals;
+#: the same restraint every prior unit's changelog block states.
 
 
 class DerivedDenylistTests(unittest.TestCase):

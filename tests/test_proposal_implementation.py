@@ -2991,6 +2991,25 @@ class HeaderDocumentCountDetailTests(unittest.TestCase):
         block = {}
         self.assertIsNone(impl._header_document_count_detail(block))
 
+    def test_repair_calls_header_document_count_detail_not_a_re_derived_one(self):
+        """4.3, `implementation-holder-repair` spec, "The Document-Count
+        Comparison Is A Named, Shared Predicate": `_cmd_position_repair`
+        must call this exact helper, never re-derive
+        `block.get("documents") is not None and len(DOCUMENTS) <= 1`
+        itself. Read from source, not asserted by trust: a re-derived copy
+        would still pass every behavioral repair test above by construction
+        (it would decide the identical cases the same way today), so only a
+        second read of the source itself can tell the two apart."""
+        tree = ast.parse(ENGINE.read_text(encoding="utf-8"))
+        definition = next(
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef)
+            and node.name == "_cmd_position_repair")
+        called = {node.id for node in ast.walk(definition)
+                 if isinstance(node, ast.Name)
+                 and isinstance(node.ctx, ast.Load)}
+        self.assertIn("_header_document_count_detail", called)
+
 
 class HolderUndeclaredMutationTests(unittest.TestCase):
     """`the-holder-each-skill-declares` (design D2/D9, tasks.md 2.14):
@@ -3114,6 +3133,93 @@ class HolderUndeclaredMutationTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         self.assertIn("chosen_holder:HOLDER_UNDECLARED", proc.stdout)
         self.assertIn("settle_resolution_holders:['Method/TASKS.md']", proc.stdout)
+
+
+class HolderRepairAmbiguousMutationTests(unittest.TestCase):
+    """`implementation-holder-repair` spec, "The Stop Is Reachable By
+    Mutation" (design D7, tasks.md 4.10): the same reachability discipline
+    `HolderUndeclaredMutationTests` already proves for its own guard, held
+    here to `_cmd_position_repair`'s ambiguity-detection guard -- an anchor
+    that matches is not a mutation that ran; only the mutated build's
+    OBSERVED behavior proves the restored guard is what forces the stop.
+    """
+
+    CORE = FORGE / "skills" / "_core" / "implementation"
+    PROFILE = FORGE / "skills" / "proposal-implementation" / "impl_profile.py"
+
+    def _scratch_engine(self, mutate) -> Path:
+        scratch = Path(tempfile.mkdtemp(prefix="holder-repair-mutation-"))
+        self.addCleanup(shutil.rmtree, scratch, ignore_errors=True)
+        shutil.copytree(self.CORE, scratch / "core",
+                        ignore=shutil.ignore_patterns("__pycache__"),
+                        dirs_exist_ok=True)
+        engine_path = scratch / "core" / "engine" / "implementation_engine.py"
+        original = engine_path.read_text(encoding="utf-8")
+        mutated = mutate(original)
+        self.assertNotEqual(mutated, original,
+                            "the mutation string was not found -- the anchor "
+                            "drifted from the shipped source")
+        engine_path.write_text(mutated, encoding="utf-8")
+        return scratch / "core" / "engine"
+
+    def _run(self, engine_dir: Path, code: str):
+        env = os.environ.copy()
+        env["IMPLEMENTATION_DOMAIN_PROFILE"] = str(self.PROFILE)
+        script = (
+            "import sys\n"
+            f"sys.path.insert(0, {str(engine_dir)!r})\n"
+            "import implementation_engine as impl\n" + code)
+        return subprocess.run([sys.executable, "-c", script],
+                              capture_output=True, text=True, env=env)
+
+    def test_inverting_the_ambiguity_guard_picks_an_action_instead_of_stopping(self):
+        """D7's own stated mutation: disable the ambiguity-detection guard
+        and the mutated build must pick an action (here: repair, dropping
+        the group) rather than stop -- proving the restored guard, not
+        coincidence, is what forces `HOLDER_REPAIR_AMBIGUOUS` for a case
+        (a) fixture: a declared label carrying a real revision, which the
+        unmutated build refuses rather than silently dropping."""
+        def mutate(source: str) -> str:
+            anchor = (
+                '    if not repairable:\n'
+                '        raise Refused(\n'
+                '            "HOLDER_REPAIR_AMBIGUOUS",\n')
+            self.assertIn(anchor, source)
+            replacement = (
+                '    if not repairable and False:\n'
+                '        raise Refused(\n'
+                '            "HOLDER_REPAIR_AMBIGUOUS",\n')
+            return source.replace(anchor, replacement, 1)
+
+        engine_dir = self._scratch_engine(mutate)
+        with tempfile.TemporaryDirectory() as raw:
+            code = f'''
+from pathlib import Path
+root = Path({raw!r})
+(root / "Method").mkdir(parents=True, exist_ok=True)
+holder = root / "Method" / "AGREED.md"
+documents_field = impl.impl_position._encode_extra_documents(
+    [{{"label": "proposal", "revision": "r1.md",
+       "revisionSha256": "b" * 64}}]).decode("ascii")
+header = ("<!-- position revision=r1.md sha256=" + "a" * 64 +
+          " derivedAt=2026-08-27T00:00:00Z session=s0 target=final "
+          "documents=" + documents_field + " -->\\n")
+holder.write_text(
+    header + "- [ ] 1. Something. `@record`\\n<!-- /position -->\\n",
+    encoding="utf-8")
+data = holder.read_bytes()
+block = impl.impl_position.locate_block(data, allow_legacy=True)
+resolution = {{"action": "declared", "path": holder}}
+result = impl._cmd_position_repair(
+    root, "Method", root / "Method", resolution,
+    {{holder: block}}, {{holder: data}})
+print("status:" + result["status"])
+print(holder.read_text(encoding="utf-8"))
+'''
+            proc = self._run(engine_dir, code)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("status:repaired", proc.stdout)
+        self.assertNotIn("documents=", proc.stdout.split("\n", 1)[1])
 
 
 #: A position block header, held once so every test in
@@ -20901,6 +21007,198 @@ class PositionDocumentCountMismatchTests(unittest.TestCase):
                          "POSITION_HEADER_DOCUMENT_COUNT_MISMATCH")
 
 
+class PositionRepairHeaderTests(unittest.TestCase):
+    """`--repair-header` (design D6/D7, `implementation-holder-repair`): a
+    poisoned target's forward path -- repair the existing declared holder's
+    header in place, create this skill's own separate declared holder when
+    the evidence unambiguously supports that instead, or stop with
+    `HOLDER_REPAIR_AMBIGUOUS` and write nothing when the evidence does not
+    determine which. Runs against the real launcher, exactly
+    `PositionDocumentCountMismatchTests`' own convention, so `impl.DOCUMENTS`
+    never has to be faked -- this process's own real `proposal-
+    implementation` profile (one document, labeled `"proposal"`) decides
+    which labels count as declared for D7's fourth check.
+    """
+
+    PROPOSAL_TEXT = "## 1\ntexto\n"
+    PROPOSAL_SHA256 = hashlib.sha256(PROPOSAL_TEXT.encode("utf-8")).hexdigest()
+
+    def _proposals(self):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        (root / "r1.md").write_text(self.PROPOSAL_TEXT, encoding="utf-8")
+        return root
+
+    def _box(self):
+        box = FORGE / "implementations" / f"_e2e_position_repair_{os.getpid()}_{id(self)}"
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        (box / "src" / "Method").mkdir(parents=True)
+        (box / "src" / "Method_Benchmark").mkdir(parents=True)
+        (box / "tests").mkdir(parents=True)
+        (box / "Method").mkdir(parents=True, exist_ok=True)
+        subprocess.run(["git", "init", "-q", str(box)], check=True, capture_output=True)
+        (box / "src" / "Method" / "__init__.py").write_text("", encoding="utf-8")
+        (box / "src" / "Method_Benchmark" / "__init__.py").write_text("", encoding="utf-8")
+        return box
+
+    def run_cli(self, *args, proposals=None):
+        env = dict(os.environ)
+        if proposals is not None:
+            env["IMPLEMENTATION_PROPOSALS"] = str(proposals)
+        return subprocess.run([sys.executable, str(CLI), *args],
+                              capture_output=True, text=True, cwd=FORGE, env=env)
+
+    def _documents_field(self, entries):
+        return impl_position._encode_extra_documents(entries).decode("ascii")
+
+    def block_text(self, body, *, target="final", documents=None, legacy=False,
+                   sha256=None):
+        sha = sha256 or self.PROPOSAL_SHA256
+        if legacy:
+            return (f"<!-- position revision=r1.md sha256={sha} "
+                    f"derivedAt=2026-08-27T00:00:00Z session=s0 -->\n"
+                    f"{body}<!-- /position -->\n")
+        documents_field = (f" documents={self._documents_field(documents)}"
+                           if documents else "")
+        return (f"<!-- position revision=r1.md sha256={sha} "
+                f"derivedAt=2026-08-27T00:00:00Z session=s0 target={target}"
+                f"{documents_field} -->\n"
+                f"{body}<!-- /position -->\n")
+
+    def test_position_repair_conflict_with_sequence_reconcile_and_replace(self):
+        """4.1/4.2: same shape as `POSITION_SEQUENCE_AND_RECONCILE` --
+        `--repair-header` names one intent and a fresh/reconstructed write
+        names another; only one may describe a single call."""
+        box = self._box()
+        for combo in (["--sequence", "[]"], ["--reconcile"], ["--replace"]):
+            with self.subTest(combo=combo):
+                proc = self.run_cli(
+                    "position", "--target", str(box), "--name", "Method",
+                    "--revision", "r1.md", "--session", "s1",
+                    "--repair-header", *combo,
+                    proposals=self._proposals())
+                self.assertEqual(proc.returncode, 2, proc.stdout)
+                self.assertEqual(json.loads(proc.stdout)["code"],
+                                 "POSITION_REPAIR_CONFLICT")
+
+    def test_repair_unambiguous_drops_the_group_and_preserves_everything_else(self):
+        """4.4/4.5: D7's first scenario. One entry with no revision at all
+        (label IS declared -- dropping it discards nothing, because nothing
+        was ever bound), one entry with a revision under a label this
+        profile does not declare (`"experiments"`) -- both branches of
+        condition 4's OR, in the same header. Byte-compare, not `assertIn`:
+        revision, revisionSha256, derivedAt, session and target survive
+        verbatim, the body is untouched, and only the `documents=` group is
+        gone."""
+        box = self._box()
+        documents = [
+            {"label": "proposal", "revision": None, "revisionSha256": None},
+            {"label": "experiments", "revision": "r1.md",
+             "revisionSha256": "b" * 64},
+        ]
+        body = "- [ ] 1. Something. `@record`\n"
+        before = self.block_text(body, documents=documents)
+        holder = box / "Method" / "AGREED.md"
+        holder.write_text(before, encoding="utf-8")
+        proc = self.run_cli("position", "--target", str(box), "--name", "Method",
+                            "--revision", "r1.md", "--session", "s1",
+                            "--repair-header", proposals=self._proposals())
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["status"], "repaired")
+        after = holder.read_text(encoding="utf-8")
+        # `impl_position.splice`'s own documented boundary: the ONE byte
+        # after the closer that this fixture already carries (its own
+        # trailing "\n", never part of `BLOCK_CLOSE` itself) is preserved
+        # verbatim alongside `render`'s own trailing "\n" -- measured
+        # against the identical splice this engine's ordinary refresh path
+        # already runs, never assumed.
+        self.assertEqual(after, self.block_text(body, documents=None) + "\n")
+
+    def test_repair_create_new_leaves_the_existing_poisoned_holder_untouched(self):
+        """4.6/4.7: D7's second scenario. The declared name (`AGREED.md`) is
+        absent and this target holds no checklist item under it at all, so
+        the ordinary create-on-absent case applies (D5) -- and the OTHER
+        file's own poisoned header, which this skill's own declared name
+        never names, is left byte-for-byte untouched."""
+        box = self._box()
+        documents = [{"label": "proposal", "revision": "r1.md",
+                      "revisionSha256": "b" * 64}]
+        poisoned = self.block_text("", documents=documents)
+        other = box / "Method" / "Notes.md"
+        other.write_text(poisoned, encoding="utf-8")
+        proc = self.run_cli("position", "--target", str(box), "--name", "Method",
+                            "--revision", "r1.md", "--session", "s1",
+                            "--repair-header", proposals=self._proposals())
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["status"], "created")
+        self.assertEqual(other.read_text(encoding="utf-8"), poisoned)
+        created = box / "Method" / "AGREED.md"
+        self.assertTrue(created.is_file())
+        self.assertEqual(created.read_bytes(),
+                         impl.HOLDER_SCAFFOLD.encode("utf-8"))
+
+    def test_repair_ambiguous_declared_label_with_a_revision_stops(self):
+        """4.8(a): the entry names a label this profile DOES declare and
+        carries a real revision -- dropping it would discard a recorded
+        binding, so repair stops rather than guessing, and nothing is
+        written."""
+        box = self._box()
+        documents = [{"label": "proposal", "revision": "r1.md",
+                      "revisionSha256": "b" * 64}]
+        body = "- [ ] 1. Something. `@record`\n"
+        before = self.block_text(body, documents=documents)
+        holder = box / "Method" / "AGREED.md"
+        holder.write_text(before, encoding="utf-8")
+        proc = self.run_cli("position", "--target", str(box), "--name", "Method",
+                            "--revision", "r1.md", "--session", "s1",
+                            "--repair-header", proposals=self._proposals())
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"],
+                         "HOLDER_REPAIR_AMBIGUOUS")
+        self.assertEqual(holder.read_text(encoding="utf-8"), before)
+
+    def test_repair_ambiguous_legacy_block_stops_never_inventing_a_rung(self):
+        """4.8(b): `target` is `None` on a legacy block; repair would have
+        to invent a rung to re-render it, which no write path in this
+        engine does, so it stops rather than guessing, and nothing is
+        written."""
+        box = self._box()
+        body = "- [ ] 1. Something. `@record`\n"
+        before = self.block_text(body, legacy=True)
+        holder = box / "Method" / "AGREED.md"
+        holder.write_text(before, encoding="utf-8")
+        proc = self.run_cli("position", "--target", str(box), "--name", "Method",
+                            "--revision", "r1.md", "--session", "s1",
+                            "--repair-header", proposals=self._proposals())
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"],
+                         "HOLDER_REPAIR_AMBIGUOUS")
+        self.assertEqual(holder.read_text(encoding="utf-8"), before)
+
+    def test_repair_ambiguous_more_than_one_file_carrying_a_block_still_answers_holder_ambiguous(self):
+        """4.8(c): repair must not become a second answer to
+        `POSITION_HOLDER_AMBIGUOUS` -- when the declared name is absent and
+        more than one markdown file carries a `<!-- position -->` block,
+        that existing code fires exactly as it does for an ordinary
+        (non-repair) call, and nothing is written to either file."""
+        box = self._box()
+        body = "- [ ] 1. Something. `@record`\n"
+        one = self.block_text(body, target="final")
+        two = self.block_text(body, target="final", sha256="c" * 64)
+        first = box / "Method" / "First.md"
+        second = box / "Method" / "Second.md"
+        first.write_text(one, encoding="utf-8")
+        second.write_text(two, encoding="utf-8")
+        proc = self.run_cli("position", "--target", str(box), "--name", "Method",
+                            "--revision", "r1.md", "--session", "s1",
+                            "--repair-header", proposals=self._proposals())
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"],
+                         "POSITION_HOLDER_AMBIGUOUS")
+        self.assertEqual(first.read_text(encoding="utf-8"), one)
+        self.assertEqual(second.read_text(encoding="utf-8"), two)
+
+
 class PositionRecordMalformedTests(unittest.TestCase):
     """`__steps__` has a shape refusal; `__records__` had none.
 
@@ -32696,6 +32994,12 @@ _ENGLISH_COUNTS = {
     # by running the derivation, never predicted.
     70: "Seventy",
     119: "One hundred and nineteen",
+    # `the-holder-each-skill-declares` (design D9, Phase 4): the D4 repair
+    # path adds one more reachable work-state code, `HOLDER_REPAIR_
+    # AMBIGUOUS`, and one more reachable invocation-defect code,
+    # `POSITION_REPAIR_CONFLICT` -- both measured, never predicted.
+    71: "Seventy-one",
+    121: "One hundred and twenty-one",
 }
 
 
@@ -33054,7 +33358,7 @@ class GatingRefusalRosterTests(unittest.TestCase):
             {("implementation_engine.py", "cmd_name"),
              ("impl_steps.py", "_verdict_result")})
 
-    def test_the_derivation_finds_the_measured_one_hundred_and_nineteen(self):
+    def test_the_derivation_finds_the_measured_one_hundred_and_twenty_one(self):
         """Sanity check on the derivation itself, not on the roster: a change
         that adds, removes or renames a refusal anywhere a gating command can
         reach should move this number, never a typo in the walk above.
@@ -33096,12 +33400,17 @@ class GatingRefusalRosterTests(unittest.TestCase):
         design D9) is that reading plus `HOLDER_UNDECLARED`, reachable
         from `_chosen_holder`, `cmd_position`'s sweep and `cmd_settle` --
         the D3 middle row, a checklist found by shape but not by the name
-        this skill declares. Measured here, never predicted: design.md
-        itself predicts 121 only once Phase 4's two further codes
-        (`HOLDER_REPAIR_AMBIGUOUS`, `POSITION_REPAIR_CONFLICT`) also land;
-        this phase's own delta is +1.
+        this skill declares. One hundred and twenty-one (same change,
+        design D9, Phase 4) is that reading plus `HOLDER_REPAIR_AMBIGUOUS`
+        (raised inside `_cmd_position_repair`, reachable from `cmd_position`
+        via its `--repair-header` branch) and `POSITION_REPAIR_CONFLICT`
+        (raised inside `cmd_position`'s own mutual-exclusivity guard) --
+        measured here, exactly as design.md predicted (118 + 3 codes across
+        this whole change, minus the interim 119 already recorded above
+        leaves this phase's own delta at +2), never edited to match that
+        prediction.
         """
-        self.assertEqual(len(reachable_refusal_codes()), 119)
+        self.assertEqual(len(reachable_refusal_codes()), 121)
 
     def test_agree_joins_gating_commands_unconditionally_never_this_profiles_own_commands(self):
         """`the-agreement-nothing-computes` (Slice D, design.md D9, tasks.md
