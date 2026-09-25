@@ -102,7 +102,7 @@ Spec: `implementation-declared-holder` — "The Declared Holder Is A Required PR
       Acceptance: both green; `git diff --stat tests/seal/digests.json tests/experiments_seal/digests.json`
       is empty. Neither seal's fingerprint covers `impl_profile.py`, so this step cannot move
       either digest set — confirm by diff, not by assumption.
-- [ ] 1.8 Full-suite gate for Phase 1. Verification: `npm run test:all`. Acceptance: green
+- [x] 1.8 Full-suite gate for Phase 1. Verification: `npm run test:all`. Acceptance: green
       except these **named, pre-existing, dated 2026-09-24** environmental failures (do not
       chase): `test_forge_gate::GateInterpreterTests` ×3, `test_papersmith_kit::KitTests` ×3,
       `test_papersmith_bridges::BridgesTests::test_run_script_forwards_list_argv_and_environment`,
