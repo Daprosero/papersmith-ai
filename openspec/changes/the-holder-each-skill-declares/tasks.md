@@ -315,36 +315,36 @@ Spec: `implementation-declared-holder` — "Create-On-Absent When No Candidate E
 "Declared-Name Identity Is Independent Of The Item-Holding Test",
 "`SETTLE_HEADING_ABSENT` Still Fires For A Heading The Declaration Does Not Carry".
 
-- [ ] 3.1 RED: the High-risk creation test — declared absent, no candidate, product dir
+- [x] 3.1 RED: the High-risk creation test — declared absent, no candidate, product dir
       exists → after a write, the declared holder file is created with **exactly**
       `HOLDER_SCAFFOLD` bytes and zero checklist items, then **read back** through **both**
       `_chosen_holder` and `cmd_settle` without any absence refusal. Byte-equality assertion,
       not `assertIn`. Verification:
       `.venv/bin/python -m pytest tests/test_proposal_implementation.py -k create_on_absent -v`
       (RED — creation not implemented yet).
-- [ ] 3.2 GREEN: implement D5 in `implementation_engine.py` — when `action == "create"`, write
+- [x] 3.2 GREEN: implement D5 in `implementation_engine.py` — when `action == "create"`, write
       `HOLDER_SCAFFOLD` to `resolution["write"]` via
       `impl_position.write_spliced(path, scaffold_bytes, expect_digest=impl_position.digest_bytes(b""))`
       **before** any block or item splice. Creation gated on `product.is_dir()` only — the
       engine **never** calls `mkdir` on `<name>/` (this belongs to `materialize`/`structure`;
       see `require_named_product_dir`, `:2760-2779`). Acceptance: 3.1 GREEN. Verification:
       `.venv/bin/python -m pytest tests/test_proposal_implementation.py -k create_on_absent -v`.
-- [ ] 3.3 RED: creation-refused — declared absent, no candidate, product dir **absent** → the
+- [x] 3.3 RED: creation-refused — declared absent, no candidate, product dir **absent** → the
       narrowed `POSITION_HOLDER_ABSENT`/`SETTLE_HOLDER_ABSENT` fire (not create), and nothing
       is written to disk. Verification:
       `.venv/bin/python -m pytest tests/test_proposal_implementation.py -k create_refused -v`.
-- [ ] 3.4 GREEN: confirm/wire the `"absent"` action path (should already follow from 2.7/2.9's
+- [x] 3.4 GREEN: confirm/wire the `"absent"` action path (should already follow from 2.7/2.9's
       dispatch plus 3.2's `is_dir()` gate — add any missing wiring only if 3.3 does not pass
       immediately). Verification:
       `.venv/bin/python -m pytest tests/test_proposal_implementation.py -k create_refused -v`
       (GREEN).
-- [ ] 3.5 RED: declared-name identity independent of the item-holding test (High-risk item
+- [x] 3.5 RED: declared-name identity independent of the item-holding test (High-risk item
       5) — a freshly created, item-less declared holder appears in `agreements_state`'s
       `holders` list; `_chosen_holder` resolves it without raising absence; `cmd_settle`
       writes into it rather than raising `SETTLE_HOLDER_ABSENT`. Verification:
       `.venv/bin/python -m pytest tests/test_proposal_implementation.py -k declared_identity -v`
       (RED).
-- [ ] 3.6 GREEN: confirm/wire D3's identity rule. `holder_resolution`'s `"path"` key is
+- [x] 3.6 GREEN: confirm/wire D3's identity rule. `holder_resolution`'s `"path"` key is
       populated by `(product / HOLDER_FILENAME).is_file()` alone, independent of
       `agreements_state`'s item-holding `holders` scan (which stays exactly as it is — its
       code is not touched, per D2). If 3.5 is still RED after 3.2, the gap is in a consumer
@@ -352,17 +352,17 @@ Spec: `implementation-declared-holder` — "Create-On-Absent When No Candidate E
       into `agreements_state`. Verification:
       `.venv/bin/python -m pytest tests/test_proposal_implementation.py -k declared_identity -v`
       (GREEN).
-- [ ] 3.7 RED then GREEN: heading-doctrine proof — after a create, `settle --under "## Ladder"`
+- [x] 3.7 RED then GREEN: heading-doctrine proof — after a create, `settle --under "## Ladder"`
       succeeds; `settle --under "## Nope"` still refuses `SETTLE_HEADING_ABSENT` with the
       same question it asks today (unamended). Verification:
       `.venv/bin/python -m pytest tests/test_proposal_implementation.py -k SETTLE_HEADING_ABSENT -v`.
-- [ ] 3.8 Mutation tests — reachability proof. (a) Invert D5's `is_dir()` creation gate; the
+- [x] 3.8 Mutation tests — reachability proof. (a) Invert D5's `is_dir()` creation gate; the
       mutated build must then attempt a write outside an existing product dir — assert this
       is caught. (b) Invert `SETTLE_HEADING_ABSENT`'s guard; the mutated build writes under
       the undeclared heading, proving the restored guard is what prevents it. Assert the
       mutated anchor count, never `git diff --stat`. Verification: manual guard-invert +
       targeted `.venv/bin/python -m pytest` re-run per mutation.
-- [ ] 3.9 Full-suite + zero-delta seal gate for Phase 3. Verification: `npm run test:all`;
+- [x] 3.9 Full-suite + zero-delta seal gate for Phase 3. Verification: `npm run test:all`;
       `.venv/bin/python -m pytest tests/test_implementation_seal.py -x` (still zero-delta
       green).
 
