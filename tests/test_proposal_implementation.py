@@ -2870,6 +2870,99 @@ class HolderResolutionTests(unittest.TestCase):
             self.assertIsNone(resolution["write"])
 
 
+class CreateOnAbsentTests(unittest.TestCase):
+    """`the-holder-each-skill-declares` (design.md D5, tasks.md 3.1/3.2):
+    declared absent, no by-shape candidate, product dir exists -> a write
+    creates the declared holder with exactly `HOLDER_SCAFFOLD` bytes and
+    zero checklist items, and it is read back through both `_chosen_
+    holder` and `cmd_settle` without any absence refusal."""
+
+    def test_create_on_absent_creates_exactly_the_scaffold_bytes_with_zero_items(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / "Method").mkdir(parents=True, exist_ok=True)
+            resolution = impl.holder_resolution(root, "Method")
+            self.assertEqual(resolution["action"], "create")
+
+            chosen = impl._chosen_holder(root, "Method", root / "Method")
+
+            self.assertEqual(chosen, root / "Method" / "AGREED.md")
+            data = (root / "Method" / "AGREED.md").read_bytes()
+            self.assertEqual(data, impl.HOLDER_SCAFFOLD.encode("utf-8"),
+                              "byte-equality, not assertIn -- design D4/D5")
+            state = impl.agreements_state(root, "Method")
+            self.assertEqual(
+                state["holders"], [],
+                "design D2: agreements_state's holders stays the "
+                "item-holding scan, unwidened by creation")
+
+    def test_create_on_absent_is_read_back_through_chosen_holder(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / "Method").mkdir(parents=True, exist_ok=True)
+            impl._chosen_holder(root, "Method", root / "Method")  # creates it
+
+            chosen_again = impl._chosen_holder(root, "Method", root / "Method")
+
+            self.assertEqual(chosen_again, root / "Method" / "AGREED.md")
+            resolution = impl.holder_resolution(root, "Method")
+            self.assertEqual(resolution["action"], "declared")
+
+    def test_create_on_absent_never_calls_mkdir_and_is_gated_on_the_product_dir(self):
+        """Design D5: creation happens ONLY when `product.is_dir()` -- the
+        engine never creates `<Name>/` itself."""
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            # No `Method/` at all.
+            resolution = impl.holder_resolution(root, "Method")
+            self.assertEqual(resolution["action"], "absent")
+            with self.assertRaises(impl.Refused) as ctx:
+                impl._chosen_holder(root, "Method", root / "Method")
+            self.assertEqual(ctx.exception.code, "POSITION_HOLDER_ABSENT")
+            self.assertFalse((root / "Method").exists())
+
+
+class DeclaredIdentityTests(unittest.TestCase):
+    """`the-holder-each-skill-declares` (design.md D3, tasks.md 3.5/3.6):
+    declared-name identity is `name == declared and is_file()`, computed
+    entirely inside `holder_resolution` -- independent of `agreements_
+    state`'s item-holding test, which stays exactly as it is (design D2:
+    `holders` is NOT widened). A freshly created, item-less declared
+    holder is absent from `holders` and still resolved by every consumer
+    that now reads `holder_resolution` instead of that list."""
+
+    def test_declared_identity_a_freshly_created_item_less_holder_is_absent_from_holders(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / "Method").mkdir(parents=True, exist_ok=True)
+            impl._chosen_holder(root, "Method", root / "Method")  # creates it
+
+            state = impl.agreements_state(root, "Method")
+            self.assertEqual(
+                state["holders"], [],
+                "design D2: widening `holders` would manufacture a false "
+                "\"settled\" status over a document nothing was settled in")
+
+    def test_declared_identity_the_freshly_created_holder_is_present_by_declared_name(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / "Method").mkdir(parents=True, exist_ok=True)
+            impl._chosen_holder(root, "Method", root / "Method")  # creates it
+
+            resolution = impl.holder_resolution(root, "Method")
+            self.assertEqual(resolution["path"], root / "Method" / "AGREED.md")
+            self.assertEqual(resolution["action"], "declared")
+
+    def test_declared_identity_chosen_holder_resolves_the_freshly_created_holder_without_raising(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / "Method").mkdir(parents=True, exist_ok=True)
+            impl._chosen_holder(root, "Method", root / "Method")  # creates it
+
+            chosen = impl._chosen_holder(root, "Method", root / "Method")
+            self.assertEqual(chosen, root / "Method" / "AGREED.md")
+
+
 class HeaderDocumentCountDetailTests(unittest.TestCase):
     """`_header_document_count_detail` -- `design.md` D8: extracted verbatim
     from `cmd_position`'s inline check, and deliberately ASYMMETRIC. Asserted
@@ -2988,7 +3081,7 @@ class HolderUndeclaredMutationTests(unittest.TestCase):
         def mutate(source: str) -> str:
             anchor = (
                 '    resolution = holder_resolution(target, name)\n'
-                '    if resolution["action"] in ("absent", "create"):\n')
+                '    if resolution["action"] == "create":\n')
             self.assertIn(anchor, source)
             replacement = (
                 '    holders = agreements_state(target, name)["holders"]\n'
@@ -2996,7 +3089,7 @@ class HolderUndeclaredMutationTests(unittest.TestCase):
                 '        "action": "declared" if holders else "absent",\n'
                 '        "write": Path(target) / holders[0] if holders else None,\n'
                 "    }\n"
-                '    if resolution["action"] in ("absent", "create"):\n')
+                '    if resolution["action"] == "create":\n')
             return source.replace(anchor, replacement, 1)
 
         engine_dir = self._scratch_engine(mutate)
@@ -20542,6 +20635,30 @@ class PositionCommandTests(unittest.TestCase):
         self.assertIn("Something already settled.", on_disk)
         self.assertIn("<!-- position", on_disk)
 
+    def test_install_creates_the_declared_holder_when_no_md_file_exists_at_all(self):
+        """`the-holder-each-skill-declares` (design D5, tasks.md 3.1/3.2):
+        declared absent, no by-shape candidate, product dir exists (`Method/`
+        from `_box`, empty) -> a fresh `--sequence` install creates
+        `AGREED.md` with the declared scaffold FIRST (`_chosen_holder`), and
+        the position block is then spliced onto those exact bytes -- never
+        against a digest that assumes the file is still empty."""
+        box = self._box()
+        # No `AGREED.md`, no other `*.md` -- truly nothing in `Method/`.
+        sequence = json.dumps([
+            {"text": "Undercut search.", "witness": {"kind": "record"}},
+        ])
+        proc = self.run_cli("position", "--target", str(box), "--name", "Method",
+                            "--revision", "r1.md", "--session", "s1",
+                            "--target-level", "final",
+                            "--sequence", "-", stdin=sequence, proposals=self._proposals())
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        result = json.loads(proc.stdout)
+        self.assertEqual(result["status"], "written")
+        self.assertEqual(result["holder"], "Method/AGREED.md")
+        on_disk = (box / "Method" / "AGREED.md").read_text(encoding="utf-8")
+        self.assertTrue(on_disk.startswith("# Agreed\n\n## Ladder\n"))
+        self.assertIn("<!-- position", on_disk)
+
     def test_refuses_installing_over_an_existing_block_without_replace(self):
         box = self._box()
         (box / "Method" / "AGREED.md").write_text(
@@ -23170,8 +23287,9 @@ class SettleCommandTests(unittest.TestCase):
     mint from its own argv.
     """
 
-    def _box(self):
-        box = FORGE / "implementations" / f"_e2e_settle_cmd_{os.getpid()}_{id(self)}"
+    def _box(self, suffix=""):
+        box = (FORGE / "implementations"
+               / f"_e2e_settle_cmd_{os.getpid()}_{id(self)}{suffix}")
         self.addCleanup(shutil.rmtree, box, ignore_errors=True)
         (box / "src" / "Method").mkdir(parents=True)
         (box / "src" / "Method_Benchmark").mkdir(parents=True)
@@ -23284,19 +23402,48 @@ class SettleCommandTests(unittest.TestCase):
 
     # --- where the placement would even go ---
 
-    def test_settle_refuses_holder_absent(self):
-        """`the-holder-each-skill-declares` (D9): `Method/` is removed
-        before `discuss` so this fixture no longer exercises D3's middle
-        row (which has its own test below) -- `discuss` itself recreates
-        an empty `Method/` as a side effect of its own ledger write, so
-        this exercises the interim "create" handling this phase gives the
-        same refusal as "absent" (Phase 3 wires the actual creation)."""
+    def test_settle_create_refused_when_product_dir_absent(self):
+        """`the-holder-each-skill-declares` (D9): genuine absence -- `Method/`
+        itself does not exist. `--attach` is used so no `discuss` call (which
+        would recreate an empty `Method/` as a side effect of its own ledger
+        write) ever runs first, and nothing this call could resolve a holder
+        from is on disk."""
         box = self._box()
         shutil.rmtree(box / "Method")
-        self._discuss(box, "record", answer="Yes.")
-        proc = self._settle(box)
+        proc = self._settle(box, attach=True, witness="test_x", under=None,
+                            about=None, supersedes=None)
         self.assertEqual(proc.returncode, 2, proc.stdout)
         self.assertEqual(json.loads(proc.stdout)["code"], "SETTLE_HOLDER_ABSENT")
+        self.assertFalse((box / "Method").exists())
+
+    def test_settle_creates_the_declared_holder_on_first_write_and_places_the_item(self):
+        """`the-holder-each-skill-declares` (D5, tasks.md 3.1/3.2): declared
+        absent, no by-shape candidate, product dir exists (from `_box`) ->
+        settle creates `AGREED.md` with the declared scaffold before
+        splicing its own item in, and never raises `SETTLE_HOLDER_ABSENT`."""
+        box = self._box()
+        self._discuss(box, "record", answer="Yes.")
+        proc = self._settle(box, text="first agreement")
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        result = json.loads(proc.stdout)
+        self.assertEqual(result["holder"], "Method/AGREED.md")
+        data = (box / "Method" / "AGREED.md").read_bytes()
+        self.assertTrue(data.startswith(b"# Agreed\n\n## Ladder\n"))
+        self.assertIn(b"- [ ] first agreement", data)
+
+    def test_settle_writes_into_an_already_created_item_less_holder(self):
+        """Spec `implementation-declared-holder`, "Declared-Name Identity Is
+        Independent Of The Item-Holding Test", scenario 3: a declared holder
+        that already exists with zero checklist items (created outside this
+        call, exactly `HOLDER_SCAFFOLD`) is written into, not treated as
+        absent or as a fresh "create"."""
+        box = self._box()
+        (box / "Method" / "AGREED.md").write_text(
+            impl.HOLDER_SCAFFOLD, encoding="utf-8")
+        self._discuss(box, "record", answer="Yes.")
+        proc = self._settle(box, text="an agreement")
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["holder"], "Method/AGREED.md")
 
     def test_settle_refuses_into_an_item_holding_candidate_not_declared_by_name(self):
         """D3's middle row: `TASKS.md` holds a checklist item but is not
@@ -23317,6 +23464,56 @@ class SettleCommandTests(unittest.TestCase):
         self.assertEqual((box / "Method" / "TASKS.md").read_bytes(), before)
         self.assertFalse((box / "Method" / "AGREED.md").exists())
 
+    def test_settle_refuses_ambiguous_with_a_distinct_message_naming_the_right_remedy(self):
+        """Carried defect from Phase 2 review: `cmd_settle` used to collapse
+        `resolution["action"] in ("undeclared", "ambiguous")` into ONE
+        `HOLDER_UNDECLARED` message that names "create the skill's own
+        declared holder" as an exit -- the wrong remedy when the real
+        problem is that TWO shape-matching holders already exist. Same
+        code, distinct detail: the ambiguous case must name removing or
+        renaming one of the candidates, and must NEVER suggest creating a
+        holder, which would make three.
+        """
+        box = self._box()
+        (box / "Method" / "TASKS.md").write_text(
+            "# Agreed\n\n## Ladder\n\n- [ ] uno\n", encoding="utf-8")
+        (box / "Method" / "OTHER.md").write_text(
+            "# Agreed\n\n## Ladder\n\n- [ ] dos\n", encoding="utf-8")
+        self._discuss(box, "record", answer="Yes.")
+        proc = self._settle(box)
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        payload = json.loads(proc.stdout)
+        self.assertEqual(payload["code"], "HOLDER_UNDECLARED")
+        self.assertIn("TASKS.md", payload["detail"])
+        self.assertIn("OTHER.md", payload["detail"])
+        self.assertNotIn("create", payload["detail"].lower())
+
+    def test_settle_ambiguous_message_differs_from_undeclared_message(self):
+        """The reddening test carried item 2 asks for: the ambiguous case
+        and the undeclared case must not read as the same sentence -- they
+        name different remedies."""
+        ambiguous_box = self._box()
+        (ambiguous_box / "Method" / "TASKS.md").write_text(
+            "# Agreed\n\n## Ladder\n\n- [ ] uno\n", encoding="utf-8")
+        (ambiguous_box / "Method" / "OTHER.md").write_text(
+            "# Agreed\n\n## Ladder\n\n- [ ] dos\n", encoding="utf-8")
+        self._discuss(ambiguous_box, "record", answer="Yes.")
+        ambiguous_payload = json.loads(self._settle(ambiguous_box).stdout)
+
+        undeclared_box = self._box("_u")
+        (undeclared_box / "Method" / "TASKS.md").write_text(
+            "# Agreed\n\n## Ladder\n\n- [ ] an existing agreement\n",
+            encoding="utf-8")
+        self._discuss(undeclared_box, "record", answer="Yes.")
+        undeclared_payload = json.loads(self._settle(undeclared_box).stdout)
+
+        self.assertEqual(ambiguous_payload["code"], "HOLDER_UNDECLARED")
+        self.assertEqual(undeclared_payload["code"], "HOLDER_UNDECLARED")
+        self.assertNotEqual(
+            ambiguous_payload["detail"], undeclared_payload["detail"],
+            "the ambiguous case and the undeclared case must not read as "
+            "the same sentence -- they name different remedies")
+
     def test_settle_refuses_heading_absent(self):
         box = self._box()
         (box / "Method" / "AGREED.md").write_text(
@@ -23325,6 +23522,33 @@ class SettleCommandTests(unittest.TestCase):
         proc = self._settle(box, under="## Nowhere")
         self.assertEqual(proc.returncode, 2, proc.stdout)
         self.assertEqual(json.loads(proc.stdout)["code"], "SETTLE_HEADING_ABSENT")
+
+    def test_settle_succeeds_under_the_declared_heading_immediately_after_create(self):
+        """Spec `implementation-declared-holder`, "`SETTLE_HEADING_ABSENT`
+        Still Fires For A Heading The Declaration Does Not Carry": the
+        positive half -- after a create, the declared heading itself
+        (`## Ladder`) is placeable into on the very same call that created
+        the holder."""
+        box = self._box()
+        self._discuss(box, "record", answer="Yes.")
+        proc = self._settle(box, text="first agreement", under="## Ladder")
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+
+    def test_settle_still_refuses_heading_absent_for_an_undeclared_heading_after_create(self):
+        """The negative half, unamended: a heading the declared scaffold
+        does not carry still refuses `SETTLE_HEADING_ABSENT`, with the same
+        code and the same question as before this capability, even against
+        a holder this call itself just created. Design D5: creation is a
+        SEPARATE write from the item placement -- the scaffold lands on
+        disk (with zero items) even though this call's own placement then
+        refuses; nothing this refusal leaves behind is a checklist item."""
+        box = self._box()
+        self._discuss(box, "record", answer="Yes.")
+        proc = self._settle(box, text="first agreement", under="## Nope")
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "SETTLE_HEADING_ABSENT")
+        data = (box / "Method" / "AGREED.md").read_bytes()
+        self.assertEqual(data, impl.HOLDER_SCAFFOLD.encode("utf-8"))
 
     def test_settle_refuses_heading_ambiguous(self):
         box = self._box()
@@ -24278,6 +24502,152 @@ class SettleRemoveCommandTests(unittest.TestCase):
         state = impl.agreements_state(box, "Method")
         self.assertEqual(state["status"], "absent")
         self.assertEqual(state["open"], [])
+
+
+class CreateOnAbsentMutationTests(unittest.TestCase):
+    """`the-holder-each-skill-declares` (design D5, tasks.md 3.8a):
+    reachability proof for creation's own `product.is_dir()` gate -- invert
+    it in a scratch copy of the engine and observe the mutated build
+    attempt a write outside an existing product dir."""
+
+    CORE = FORGE / "skills" / "_core" / "implementation"
+    PROFILE = FORGE / "skills" / "proposal-implementation" / "impl_profile.py"
+
+    def _scratch_engine(self, mutate) -> Path:
+        scratch = Path(tempfile.mkdtemp(prefix="create-gate-mutation-"))
+        self.addCleanup(shutil.rmtree, scratch, ignore_errors=True)
+        shutil.copytree(self.CORE, scratch / "core",
+                        ignore=shutil.ignore_patterns("__pycache__"),
+                        dirs_exist_ok=True)
+        engine_path = scratch / "core" / "engine" / "implementation_engine.py"
+        original = engine_path.read_text(encoding="utf-8")
+        mutated = mutate(original)
+        self.assertNotEqual(mutated, original,
+                            "the mutation string was not found -- the anchor "
+                            "drifted from the shipped source")
+        engine_path.write_text(mutated, encoding="utf-8")
+        return scratch / "core" / "engine"
+
+    def _run(self, engine_dir: Path, code: str):
+        env = os.environ.copy()
+        env["IMPLEMENTATION_DOMAIN_PROFILE"] = str(self.PROFILE)
+        script = (
+            "import sys\n"
+            f"sys.path.insert(0, {str(engine_dir)!r})\n"
+            "import implementation_engine as impl\n" + code)
+        return subprocess.run([sys.executable, "-c", script],
+                              capture_output=True, text=True, env=env)
+
+    def test_inverting_the_is_dir_creation_gate_attempts_a_write_outside_the_product_dir(self):
+        def mutate(source: str) -> str:
+            anchor = '        action = "create" if product.is_dir() else "absent"\n'
+            self.assertIn(anchor, source)
+            replacement = '        action = "create"\n'
+            return source.replace(anchor, replacement, 1)
+
+        engine_dir = self._scratch_engine(mutate)
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            code = (
+                f"root = __import__('pathlib').Path({raw!r})\n"
+                "# `Method/` itself does not exist -- the mutated gate\n"
+                "# still resolves \"create\" over it.\n"
+                'resolution = impl.holder_resolution(root, "Method")\n'
+                'print(f"action:{resolution[\"action\"]}")\n'
+                "try:\n"
+                '    impl._chosen_holder(root, "Method", root / "Method")\n'
+                '    print("chosen_holder:did-not-raise")\n'
+                "except Exception as exc:\n"
+                '    print(f"chosen_holder:{type(exc).__name__}")\n')
+            proc = self._run(engine_dir, code)
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            self.assertIn("action:create", proc.stdout)
+            # The mutated build attempts the write anyway, and it fails
+            # LOUDLY (never a silent `mkdir`, never a silent no-op) --
+            # proving the restored `product.is_dir()` gate is what prevents
+            # this write from ever being attempted.
+            self.assertIn("chosen_holder:FileNotFoundError", proc.stdout)
+            self.assertFalse((root / "Method").exists())
+
+
+class SettleHeadingAbsentMutationTests(unittest.TestCase):
+    """`implementation-declared-holder` spec, "`SETTLE_HEADING_ABSENT` Still
+    Fires For A Heading The Declaration Does Not Carry" -- reachability
+    proof (tasks.md 3.8b). The shipped engine file is mutated in place and
+    restored via `addCleanup` (the accepted "single-file git stash" shape),
+    because `cmd_settle` calls `resolve_target`, which requires the real
+    `WORKSPACE`/`FORGE_ROOT` -- a scratch-copied tree computes a bogus one.
+    """
+
+    ENGINE = (FORGE / "skills" / "_core" / "implementation" / "engine"
+              / "implementation_engine.py")
+    CLI = (FORGE / "skills" / "proposal-implementation" / "scripts"
+           / "implementation_cli.py")
+
+    def _mutate_shipped_engine(self, mutate) -> None:
+        original = self.ENGINE.read_text(encoding="utf-8")
+        mutated = mutate(original)
+        self.assertNotEqual(mutated, original,
+                            "the mutation string was not found -- the anchor "
+                            "drifted from the shipped source")
+        self.ENGINE.write_text(mutated, encoding="utf-8")
+        self.addCleanup(self.ENGINE.write_text, original, encoding="utf-8")
+
+    def _box(self):
+        box = FORGE / "implementations" / f"_e2e_heading_mutation_{os.getpid()}_{id(self)}"
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        (box / "src" / "Method").mkdir(parents=True)
+        (box / "src" / "Method_Benchmark").mkdir(parents=True)
+        (box / "tests").mkdir(parents=True)
+        (box / "Method").mkdir(parents=True, exist_ok=True)
+        subprocess.run(["git", "init", "-q", str(box)], check=True, capture_output=True)
+        (box / "src" / "Method" / "__init__.py").write_text("", encoding="utf-8")
+        (box / "src" / "Method_Benchmark" / "__init__.py").write_text("", encoding="utf-8")
+        return box
+
+    def run_cli(self, *args):
+        return subprocess.run([sys.executable, str(self.CLI), *args],
+                              capture_output=True, text=True, cwd=FORGE)
+
+    def test_inverting_the_settle_heading_absent_guard_lets_the_write_proceed(self):
+        def mutate(source: str) -> str:
+            anchor = (
+                '        if not candidates:\n'
+                '            raise Refused(\n'
+                '                "SETTLE_HEADING_ABSENT",\n'
+                "                f\"{heading!r} occurs in none of {holders[0]}'s own \"\n"
+                '                "headings.")\n')
+            self.assertIn(anchor, source)
+            replacement = (
+                '        if not candidates:\n'
+                "            holder_path = target / holders[0]\n"
+                "            holder_data = holder_path.read_bytes()\n"
+                "            candidates = [(holder_path, holder_data,\n"
+                '                          {"start": len(holder_data), '
+                '"end": len(holder_data)})]\n')
+            return source.replace(anchor, replacement, 1)
+
+        self._mutate_shipped_engine(mutate)
+        box = self._box()
+        discuss_proc = self.run_cli(
+            "discuss", "--target", str(box), "--name", "Method",
+            "--about", "record", "--question", "Should this be settled?",
+            "--answer", "Yes.")
+        self.assertEqual(discuss_proc.returncode, 0, discuss_proc.stdout)
+
+        proc = self.run_cli(
+            "settle", "--target", str(box), "--name", "Method",
+            "--session", "s1", "--about", "record",
+            "--text", "an agreement under an undeclared heading",
+            "--under", "## Nope")
+        # With the guard removed, the mutated build writes anyway --
+        # proving the restored guard (raising `SETTLE_HEADING_ABSENT`
+        # instead) is what prevents it.
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        payload = json.loads(proc.stdout)
+        self.assertEqual(payload["status"], "written")
+        data = (box / "Method" / "AGREED.md").read_text(encoding="utf-8")
+        self.assertIn("an agreement under an undeclared heading", data)
 
 
 class SettleReverseCommandTests(unittest.TestCase):

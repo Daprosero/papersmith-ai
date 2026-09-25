@@ -11965,6 +11965,29 @@ def _position_write_evidence(
 POSITION_PLACEHOLDER_TEXT = "TODO: describe this step."
 
 
+def _create_declared_holder(write: Path) -> None:
+    """The scaffold write design D5 requires before any block or item
+    splice runs: `HOLDER_SCAFFOLD`, verbatim, written to the resolved
+    `"create"` write target -- zero checklist items, no name
+    interpolation, no title composition (`the-holder-each-skill-declares`,
+    tasks.md 3.2).
+
+    Reuses `impl_position.write_spliced` with the absent-path digest
+    (`digest_bytes(b"")`) it already tolerates (design D5's rationale):
+    creation needs no new write primitive and inherits the same
+    compare-and-swap, same-directory-temp-file, `os.replace` guarantees a
+    concurrent writer racing to create the identical file is caught by
+    (`POSITION_HOLDER_MOVED`), never silently overwritten.
+
+    Gating on `product.is_dir()` lives in `holder_resolution` alone
+    (`action == "create"` already implies it) -- this function never calls
+    `mkdir`.
+    """
+    impl_position.write_spliced(
+        write, HOLDER_SCAFFOLD.encode("utf-8"),
+        expect_digest=impl_position.digest_bytes(b""))
+
+
 def _chosen_holder(target: Path, name: str, product: Path) -> Path:
     """Which markdown file receives a FRESH block, dispatched off
     `holder_resolution`'s own `action` (`the-holder-each-skill-declares`,
@@ -11975,9 +11998,12 @@ def _chosen_holder(target: Path, name: str, product: Path) -> Path:
     reconstruction: both write into a product folder that carries no
     position block yet.
 
-    `"declared"`/`"create"` resolve directly to the declared write target
-    (present or, for `"create"`, not yet on disk -- `cmd_position`'s own
-    write already tolerates a brand-new path, see its docstring).
+    `"declared"` resolves directly to the declared write target, already
+    on disk. `"create"` writes the declared heading scaffold first (design
+    D5, `_create_declared_holder`) so the write target exists, with its
+    declared heading(s) and zero checklist items, before the caller's own
+    block splice ever runs against it -- never a bare position block with
+    no heading at all.
     `"undeclared"` -- the D3 middle row, a candidate found by shape but not
     by name -- refuses the new `HOLDER_UNDECLARED`, naming both exits.
     `"absent"` narrows `POSITION_HOLDER_ABSENT` to "no product folder"
@@ -11988,7 +12014,10 @@ def _chosen_holder(target: Path, name: str, product: Path) -> Path:
     """
     resolution = holder_resolution(target, name)
     action = resolution["action"]
-    if action in ("declared", "create"):
+    if action == "create":
+        _create_declared_holder(resolution["write"])
+        return resolution["write"]
+    if action == "declared":
         return resolution["write"]
     if action == "undeclared":
         raise Refused(
@@ -12376,6 +12405,18 @@ def cmd_position(args: argparse.Namespace) -> dict:
         items = impl_position.parse_items(
             impl_position.locate_block(rendered.encode("utf-8"))["body"])
         target_path = existing_path or _chosen_holder(target, name, product)
+        if target_path not in holder_digests:
+            # `_chosen_holder` may have just run design D5's creation write
+            # (`the-holder-each-skill-declares`, `action == "create"`) --
+            # `holder_digests` was built from the glob ABOVE, before that
+            # write could have happened, so a freshly created file is not a
+            # key in it yet. The empty-digest fallback this dict lookup
+            # otherwise carries (`write_spliced`'s own absent-path rule) is
+            # only ever correct for a path that is STILL absent; reading the
+            # pre-image fresh, right now, is what keeps this splice's own
+            # compare-and-swap honest about bytes this same call just wrote.
+            holder_digests[target_path] = impl_position.digest_bytes(
+                target_path.read_bytes() if target_path.exists() else b"")
     elif args.reconcile:
         existing = (impl_position.parse_items(existing_block["body"])
                    if existing_block else [])
@@ -12394,6 +12435,18 @@ def cmd_position(args: argparse.Namespace) -> dict:
         for ordinal, item in enumerate(items, start=1):
             item["ordinal"] = ordinal
         target_path = existing_path or _chosen_holder(target, name, product)
+        if target_path not in holder_digests:
+            # `_chosen_holder` may have just run design D5's creation write
+            # (`the-holder-each-skill-declares`, `action == "create"`) --
+            # `holder_digests` was built from the glob ABOVE, before that
+            # write could have happened, so a freshly created file is not a
+            # key in it yet. The empty-digest fallback this dict lookup
+            # otherwise carries (`write_spliced`'s own absent-path rule) is
+            # only ever correct for a path that is STILL absent; reading the
+            # pre-image fresh, right now, is what keeps this splice's own
+            # compare-and-swap honest about bytes this same call just wrote.
+            holder_digests[target_path] = impl_position.digest_bytes(
+                target_path.read_bytes() if target_path.exists() else b"")
     elif existing_block is None:
         # Nothing to refresh is a state, not a failure -- the same doctrine
         # `agreements_state` and `position_state` already report absence
@@ -12574,9 +12627,13 @@ def cmd_position(args: argparse.Namespace) -> dict:
     # `existing_block`'s own offsets above -- never a digest of
     # `before_bytes`, which is itself a second, later read and exactly
     # the read a stale-offset corruption would have already used. A
-    # candidate `write_spliced` never saw during the holder search (a
-    # brand-new file `_chosen_holder` could in principle name) falls back
-    # to the empty digest, matching `write_spliced`'s own absent-path rule.
+    # candidate `write_spliced` never saw during the holder search (a file
+    # `_chosen_holder` names fresh, either because it was still absent then
+    # or because design D5's creation write just put scaffold bytes there)
+    # is digested right after that call, above -- never blindly assumed
+    # empty, which `write_spliced`'s own compare-and-swap would otherwise
+    # catch as a false `POSITION_HOLDER_MOVED` against the scaffold this
+    # very call just wrote.
     impl_position.write_spliced(
         target_path, spliced,
         expect_digest=holder_digests.get(target_path, impl_position.digest_bytes(b"")))
@@ -14342,7 +14399,12 @@ def cmd_settle(args: argparse.Namespace) -> dict:
         create path still needs a folder to create the file in);
         `HOLDER_UNDECLARED` is new, for a checklist found by shape but not
         by the declared name -- the same doctrine `_chosen_holder` already
-        states for a fresh position block. Checked in every mode.
+        states for a fresh position block. Also raised, same code, when
+        MORE than one such shape-matching candidate exists (Phase 3 review
+        finding): the detail differs, because the remedy differs -- one
+        candidate names a rename-or-declare choice, more than one names
+        removing or renaming all but one, never creating a third file.
+        Checked in every mode.
     13. Create path: `SETTLE_HEADING_ABSENT` / `SETTLE_HEADING_AMBIGUOUS` --
         every holder's own `impl_position.locate_headings` hits, concatenated
         across all of them: zero, or more than one anywhere (two hits in
@@ -14562,22 +14624,22 @@ def cmd_settle(args: argparse.Namespace) -> dict:
     # into a holder this skill did not declare is the D3 middle row, and
     # narrows `SETTLE_HOLDER_ABSENT` to "no product folder" only (D9).
     resolution = holder_resolution(target, name)
-    if resolution["action"] in ("absent", "create"):
-        # `"create"` is interim-refused here, exactly like `"absent"`: D5's
-        # actual scaffold write (`the-holder-each-skill-declares`, Phase 3)
-        # has not landed yet in this phase, so a `"create"` resolution has
-        # no existing file this loop could search. Phase 3 replaces this
-        # branch with the real create-on-absent wiring; until then, an
-        # empty-but-present product folder is refused the same as an
-        # absent one.
+    if resolution["action"] == "create":
+        # Design D5 (Phase 3): the declared holder does not exist yet, but
+        # its product folder does -- write the scaffold before this
+        # command's own splice ever runs against it. Never `mkdir`; that
+        # gate lives in `holder_resolution` alone.
+        _create_declared_holder(resolution["write"])
+    elif resolution["action"] == "absent":
         raise Refused(
             "SETTLE_HOLDER_ABSENT",
-            f"{name}/ does not exist, or holds no file this skill "
-            "declares or finds by shape; settle never invents a file to "
-            "write into.")
-    if resolution["action"] in ("undeclared", "ambiguous"):
-        candidate = (resolution["byShape"][0] if resolution["action"] == "undeclared"
-                    else resolution["byShape"])
+            f"{name}/ does not exist; settle never invents a product "
+            "folder to create its declared holder in.")
+    elif resolution["action"] == "undeclared":
+        # The D3 middle row: exactly one shape-matching candidate, not the
+        # declared name. Both exits fork nothing -- renaming or declaring
+        # the SAME file leaves a single holder standing.
+        candidate = resolution["byShape"][0]
         raise Refused(
             "HOLDER_UNDECLARED",
             f"{candidate!r} holds checklist items under {name}/, but this "
@@ -14586,7 +14648,26 @@ def cmd_settle(args: argparse.Namespace) -> dict:
             "repository, or declare its own name in this skill's own "
             "PROFILE[\"holder\"][\"filename\"] if that name should become "
             "this skill's convention for every target.")
-    # action == "declared": `resolution["write"]` exists on disk.
+    elif resolution["action"] == "ambiguous":
+        # A defect found reviewing Phase 2: this used to share the
+        # undeclared branch's message verbatim, which names "create the
+        # skill's own declared holder" as an exit -- the WRONG remedy here.
+        # Two (or more) shape-matching candidates already exist; the fix is
+        # to remove or rename all but one, never to create a third file.
+        # Same code as "undeclared" (no new refusal code -- the pinned
+        # reachable-refusal count does not move for this), distinct detail.
+        candidates = resolution["byShape"]
+        listed = ", ".join(repr(candidate) for candidate in candidates)
+        raise Refused(
+            "HOLDER_UNDECLARED",
+            f"{len(candidates)} markdown files under {name}/ hold "
+            f"checklist items ({listed}) and none is this skill's declared "
+            f"holder {resolution['declared']}; remove or rename all but "
+            "one of them so a single holder remains under this name -- "
+            "creating another declared holder would not decide which "
+            "existing file this skill should write into.")
+    # action == "declared" or "create": `resolution["write"]` exists on
+    # disk (the "create" branch above just put it there).
     holders = [str(resolution["write"].relative_to(target))]
 
     heading = None

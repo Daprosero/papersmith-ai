@@ -549,22 +549,22 @@ def build_denylist(profiles: list[dict[str, Any]]) -> dict[str, str]:
 #: measurements standing. None left the denylist; `test_2` confirms no
 #: new unpinned leak either.
 M5_PINNED_RESIDUE: dict[str, int] = {
-    "actually": 82, "admissible": 3, "after": 90, "against": 191,
+    "actually": 82, "admissible": 3, "after": 91, "against": 194,
     "agreed": 16, "answered": 95, "answers": 106, "approved": 47,
-    "audit": 19, "before": 253, "benchmark": 108, "beside": 109,
-    "check": 158, "checkable": 3, "claim": 36, "command": 273,
+    "audit": 19, "before": 258, "benchmark": 108, "beside": 109,
+    "check": 158, "checkable": 3, "claim": 36, "command": 274,
     "commands": 18, "compares": 25, "declaration": 211,
-    "destinations": 39, "empty": 130, "established": 5, "experiment": 25,
+    "destinations": 39, "empty": 131, "established": 5, "experiment": 25,
     "experiments": 6, "implementations": 4, "incomplete": 28,
-    "invariant": 22, "isolated": 5, "leave": 11, "leaves": 37,
+    "invariant": 22, "isolated": 5, "leave": 11, "leaves": 38,
     "local": 37, "longer": 54, "makes": 47, "materialized": 12,
     "measured": 144, "measurement": 43, "module": 195, "notebooks": 110,
     "object": 33, "pilot": 123, "place": 55, "produces": 51,
-    "rather": 377, "recorded": 78, "remedy": 54, "remote": 65,
-    "reported": 147, "resolves": 31, "ruled": 9, "runnable": 15,
+    "rather": 377, "recorded": 78, "remedy": 56, "remote": 65,
+    "reported": 147, "resolves": 32, "ruled": 9, "runnable": 15,
     "scaffolded": 12, "sitting": 9, "small": 8, "something": 75,
     "steps": 139, "sweep": 10, "validated": 9, "value": 243, "whose": 154,
-    "write": 134, "wrong": 51
+    "write": 147, "wrong": 52
 }
 #: Unit 6b (Part B, the transitions): thirteen pins grew from the new
 #: engine prose alone (`_comparison_reuses_acid_test_question`,
@@ -575,6 +575,12 @@ M5_PINNED_RESIDUE: dict[str, int] = {
 #: zero removals; `SKILL.md`/`references/usage.md` are outside
 #: `_engine_files()`'s own scan, the identical restraint every prior
 #: unit's changelog block already states.
+#: `the-holder-each-skill-declares` Phase 3 (create-on-absent + the two
+#: carried-item fixes, `cmd_settle`/`cmd_position`/`_chosen_holder` docstring
+#: and comment growth alone): ten pins grew -- `after`, `against`, `before`,
+#: `command`, `empty`, `leaves`, `remedy`, `resolves`, `write`, `wrong`.
+#: Zero admissions, zero removals; the same restraint every prior unit's
+#: changelog block states.
 
 
 class DerivedDenylistTests(unittest.TestCase):
