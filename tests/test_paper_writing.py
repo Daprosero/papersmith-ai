@@ -3,7 +3,7 @@
 Stdlib-only `unittest`. Every fixture lives under a `TemporaryDirectory`; the
 real `paper/` at the forge root is never touched by this suite outside the
 one CLI subprocess test, which scaffolds under the already-gitignored
-`implementations/` tree and cleans up after itself. Every
+`.scratch/` tree and cleans up after itself. Every
 `paper_scaffold.resolve_paper_dir` call below passes an injected
 `forge_root` for exactly this reason.
 """
@@ -215,9 +215,9 @@ class ScaffoldTests(unittest.TestCase):
 
     def test_cli_scaffold_verb_runs_and_emits_json(self) -> None:
         # Real FORGE_ROOT (the CLI's own default), scaffolded under the
-        # already-gitignored `implementations/` tree and removed afterward —
+        # already-gitignored `.scratch/` tree and removed afterward —
         # the one place in this test class allowed to touch the real repo.
-        test_root = FORGE_ROOT / "implementations" / f".paper-writing-cli-test-{os.getpid()}"
+        test_root = FORGE_ROOT / ".scratch" / f".paper-writing-cli-test-{os.getpid()}"
         self.addCleanup(shutil.rmtree, test_root, ignore_errors=True)
         paper_dir = test_root / "paper"
 
@@ -727,14 +727,14 @@ class CLIWiringTests(unittest.TestCase):
     through the CLI, unlike `paper_scaffold.resolve_paper_dir`'s own
     `forge_root` kwarg), so — like
     `ScaffoldTests.test_cli_scaffold_verb_runs_and_emits_json` — every
-    fixture here lives under the already-gitignored `implementations/` tree
+    fixture here lives under the already-gitignored `.scratch/` tree
     and is removed afterward, never under a system temp directory outside
     the repository, which `PAPER_OUTSIDE_REPOSITORY` would correctly refuse."""
 
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
-        test_root = FORGE_ROOT / "implementations" / f".paper-writing-cli-wiring-{os.getpid()}-{uuid.uuid4().hex[:8]}"
+        test_root = FORGE_ROOT / ".scratch" / f".paper-writing-cli-wiring-{os.getpid()}-{uuid.uuid4().hex[:8]}"
         self.addCleanup(shutil.rmtree, test_root, ignore_errors=True)
         self.paper_dir = test_root / "paper"
 
@@ -3409,7 +3409,7 @@ class SecondProseRootWriteGateTests(unittest.TestCase):
 
     def setUp(self) -> None:
         self.test_root = (
-            FORGE_ROOT / "implementations"
+            FORGE_ROOT / ".scratch"
             / f".paper-writing-second-root-write-gate-test-{os.getpid()}-{uuid.uuid4().hex[:8]}"
         )
         self.addCleanup(shutil.rmtree, self.test_root, ignore_errors=True)
@@ -7238,10 +7238,10 @@ class CouplingVerifyCLITests(unittest.TestCase):
     (`paper_scaffold.FORGE_ROOT`), so -- the same convention
     `ScaffoldTests.test_cli_scaffold_verb_runs_and_emits_json` already
     established -- this fixture lives under the already-gitignored
-    `implementations/` tree, never an arbitrary tempdir outside it."""
+    `.scratch/` tree, never an arbitrary tempdir outside it."""
 
     def setUp(self) -> None:
-        test_root = FORGE_ROOT / "implementations" / f".paper-writing-verify-cli-test-{os.getpid()}"
+        test_root = FORGE_ROOT / ".scratch" / f".paper-writing-verify-cli-test-{os.getpid()}"
         self.addCleanup(shutil.rmtree, test_root, ignore_errors=True)
         self.paper_dir = test_root / "paper"
         self.sections_dir = test_root / "sections"
@@ -8813,12 +8813,12 @@ class OptionalVerifyWiringTests(unittest.TestCase):
     `cmd_verify` resolves `--paper`/`--sections` against the REAL
     repository root (`paper_scaffold.FORGE_ROOT`), so -- the same
     convention `CouplingVerifyCLITests` already established -- this
-    fixture lives under the already-gitignored `implementations/` tree,
+    fixture lives under the already-gitignored `.scratch/` tree,
     never an arbitrary tempdir outside it.
     """
 
     def setUp(self) -> None:
-        test_root = FORGE_ROOT / "implementations" / f".paper-writing-9b-verify-wiring-{os.getpid()}"
+        test_root = FORGE_ROOT / ".scratch" / f".paper-writing-9b-verify-wiring-{os.getpid()}"
         self.addCleanup(shutil.rmtree, test_root, ignore_errors=True)
         self.paper_dir = test_root / "paper"
         self.sections_dir = test_root / "sections"
@@ -9513,14 +9513,14 @@ class ReadinessPhasesEndToEndTests(unittest.TestCase):
     recording a fact with `declare` must be SEEN by `readiness --paper`
     and by `phases`, not only by `plan`. `paper_cli.py` always resolves
     `--paper`/`--sections` against the real repository root, so this lives
-    under the already-gitignored `implementations/` tree, the same shape
+    under the already-gitignored `.scratch/` tree, the same shape
     `CLIWiringTests` already establishes."""
 
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         test_root = (
-            FORGE_ROOT / "implementations"
+            FORGE_ROOT / ".scratch"
             / f".paper-writing-phases-e2e-{os.getpid()}-{uuid.uuid4().hex[:8]}"
         )
         self.addCleanup(shutil.rmtree, test_root, ignore_errors=True)
@@ -9747,7 +9747,7 @@ class WriteGateTests(unittest.TestCase):
 
     Runs under a real `paper_dir`/`sections_dir` rooted under `FORGE_ROOT`
     -- `paper_scaffold.resolve_paper_dir`'s own containment requirement,
-    the same already-gitignored `implementations/` convention
+    the same already-gitignored `.scratch/` convention
     `test_cli_scaffold_verb_runs_and_emits_json` above uses -- because
     `cmd_write` resolves both through the real, non-injectable
     `FORGE_ROOT` default, unlike `compute_phases`, which `PhasesTests`
@@ -9762,7 +9762,7 @@ class WriteGateTests(unittest.TestCase):
 
     def setUp(self) -> None:
         self.test_root = (
-            FORGE_ROOT / "implementations"
+            FORGE_ROOT / ".scratch"
             / f".paper-writing-write-gate-test-{os.getpid()}-{uuid.uuid4().hex[:8]}"
         )
         self.addCleanup(shutil.rmtree, self.test_root, ignore_errors=True)
@@ -9870,7 +9870,7 @@ class SourceSectionBindingWriteGateTests(unittest.TestCase):
 
     def setUp(self) -> None:
         self.test_root = (
-            FORGE_ROOT / "implementations"
+            FORGE_ROOT / ".scratch"
             / f".paper-writing-binding-write-gate-test-{os.getpid()}-{uuid.uuid4().hex[:8]}"
         )
         self.addCleanup(shutil.rmtree, self.test_root, ignore_errors=True)
@@ -10114,7 +10114,7 @@ class SourceSectionBindingWriteGateScopeTests(unittest.TestCase):
 
     def setUp(self) -> None:
         self.test_root = (
-            FORGE_ROOT / "implementations"
+            FORGE_ROOT / ".scratch"
             / f".paper-writing-binding-scope-test-{os.getpid()}-{uuid.uuid4().hex[:8]}"
         )
         self.addCleanup(shutil.rmtree, self.test_root, ignore_errors=True)
@@ -10294,7 +10294,7 @@ class SourceRevisionsUndeclaredByteIdentityTests(unittest.TestCase):
 
     def setUp(self) -> None:
         self.test_root = (
-            FORGE_ROOT / "implementations"
+            FORGE_ROOT / ".scratch"
             / f".paper-writing-undeclared-byte-identity-{os.getpid()}-{uuid.uuid4().hex[:8]}"
         )
         self.addCleanup(shutil.rmtree, self.test_root, ignore_errors=True)
@@ -10377,14 +10377,14 @@ class BindCliEndToEndTests(unittest.TestCase):
     full worked session a `SECTION_BINDING_ABSENT` refusal exists to
     enable -- `write` refuses, `bind` answers it (never a hand edit to
     `sections/*.md`), `write` reaches the readiness stage. Rooted under
-    `FORGE_ROOT/implementations/`, the same containment
+    `FORGE_ROOT/.scratch/`, the same containment
     `SourceSectionBindingWriteGateTests` already requires -- `cmd_bind`
     and `cmd_write` both resolve `--paper`/`--sections` against the real,
     non-injectable `FORGE_ROOT` default."""
 
     def setUp(self) -> None:
         self.test_root = (
-            FORGE_ROOT / "implementations"
+            FORGE_ROOT / ".scratch"
             / f".paper-writing-bind-cli-test-{os.getpid()}-{uuid.uuid4().hex[:8]}"
         )
         self.addCleanup(shutil.rmtree, self.test_root, ignore_errors=True)
@@ -10948,12 +10948,12 @@ class SkeletonPathContainmentTests(unittest.TestCase):
     scaffold.resolve_paper_dir` / `paper_contract.resolve_sections_dir`
     verbatim -- never a new containment check (design.md; tasks.md 7.14).
     Runs under the real, non-injectable `FORGE_ROOT` default, the same
-    `implementations/` convention `WriteGateTests` uses, because `cmd_
+    `.scratch/` convention `WriteGateTests` uses, because `cmd_
     skeleton` resolves both `--paper`/`--sections` through it."""
 
     def setUp(self) -> None:
         self.test_root = (
-            FORGE_ROOT / "implementations"
+            FORGE_ROOT / ".scratch"
             / f".paper-writing-skeleton-containment-test-{os.getpid()}-{uuid.uuid4().hex[:8]}"
         )
         self.addCleanup(shutil.rmtree, self.test_root, ignore_errors=True)
@@ -11401,11 +11401,11 @@ class PacketWriteGateTests(unittest.TestCase):
     reference guidance corpus is caught here, before any judge-cycle
     attempt is spent, rather than surfacing only later inside `resolve_
     style_set`. Runs under the real, non-injectable `FORGE_ROOT` default,
-    the same `implementations/` convention `WriteGateTests` uses."""
+    the same `.scratch/` convention `WriteGateTests` uses."""
 
     def setUp(self) -> None:
         self.test_root = (
-            FORGE_ROOT / "implementations"
+            FORGE_ROOT / ".scratch"
             / f".paper-writing-packet-write-gate-test-{os.getpid()}-{uuid.uuid4().hex[:8]}"
         )
         self.addCleanup(shutil.rmtree, self.test_root, ignore_errors=True)
@@ -11491,9 +11491,9 @@ class PacketCorpusReuseTests(unittest.TestCase):
         # `cmd_bind`/`cmd_write` both resolve `--paper`/`--sections` through
         # the real, non-injectable `FORGE_ROOT` default (the same
         # containment `BindCliEndToEndTests` requires), so this fixture
-        # lives under the already-gitignored `implementations/` tree.
+        # lives under the already-gitignored `.scratch/` tree.
         self.tmp_path = (
-            FORGE_ROOT / "implementations"
+            FORGE_ROOT / ".scratch"
             / f".paper-writing-packet-corpus-reuse-test-{os.getpid()}-{uuid.uuid4().hex[:8]}"
         )
         self.addCleanup(shutil.rmtree, self.tmp_path, ignore_errors=True)
@@ -11689,7 +11689,7 @@ class SourceSectionVerbatimFalsifierTests(unittest.TestCase):
         # through the real, non-injectable `FORGE_ROOT` default, the same
         # containment `BindCliEndToEndTests` requires.
         self.tmp_path = (
-            FORGE_ROOT / "implementations"
+            FORGE_ROOT / ".scratch"
             / f".paper-writing-verbatim-falsifier-test-{os.getpid()}-{uuid.uuid4().hex[:8]}"
         )
         self.addCleanup(shutil.rmtree, self.tmp_path, ignore_errors=True)
@@ -11808,7 +11808,7 @@ class CitationReadinessGateTests(unittest.TestCase):
     while a citing block's own section citation folder
     (`guidance/<section-id>/`) is not fully ready -- PDFs downloaded,
     ingested, and the folder classified. Runs under the real,
-    non-injectable `FORGE_ROOT` default, the same `implementations/`
+    non-injectable `FORGE_ROOT` default, the same `.scratch/`
     convention `WriteGateTests`/`PacketWriteGateTests` use.
 
     RED-first: before `_guard_section_citations_ready` existed, every
@@ -11818,7 +11818,7 @@ class CitationReadinessGateTests(unittest.TestCase):
 
     def setUp(self) -> None:
         self.test_root = (
-            FORGE_ROOT / "implementations"
+            FORGE_ROOT / ".scratch"
             / f".paper-writing-citation-gate-test-{os.getpid()}-{uuid.uuid4().hex[:8]}"
         )
         self.addCleanup(shutil.rmtree, self.test_root, ignore_errors=True)
@@ -12006,11 +12006,11 @@ class PacketPathContainmentTests(unittest.TestCase):
     resolve_sections_dir` / `paper_guidance.resolve_guidance_dir`
     verbatim -- never a new containment check (design.md; tasks.md 8.6).
     Runs under the real, non-injectable `FORGE_ROOT` default, the same
-    `implementations/` convention `SkeletonPathContainmentTests` uses."""
+    `.scratch/` convention `SkeletonPathContainmentTests` uses."""
 
     def setUp(self) -> None:
         self.test_root = (
-            FORGE_ROOT / "implementations"
+            FORGE_ROOT / ".scratch"
             / f".paper-writing-packet-containment-test-{os.getpid()}-{uuid.uuid4().hex[:8]}"
         )
         self.addCleanup(shutil.rmtree, self.test_root, ignore_errors=True)
@@ -12052,7 +12052,7 @@ class PacketPaperFlagTests(unittest.TestCase):
 
     def setUp(self) -> None:
         self.test_root = (
-            FORGE_ROOT / "implementations"
+            FORGE_ROOT / ".scratch"
             / f".paper-writing-packet-paper-flag-test-{os.getpid()}-{uuid.uuid4().hex[:8]}"
         )
         self.addCleanup(shutil.rmtree, self.test_root, ignore_errors=True)
@@ -13345,13 +13345,13 @@ class SeparateNeverRecordsABindingEndToEndTests(unittest.TestCase):
     """Task 3.16/3.17 (Decision G): a settled `separate` cut exits 0,
     names the exact `bind` invocation for its one assignment, and records
     no `binding` -- `write` still refuses `SECTION_BINDING_ABSENT` until
-    an operator actually runs `bind`. Rooted under `FORGE_ROOT/
-    implementations/`, the same containment `BindCliEndToEndTests`
+    an operator actually runs `bind`. Rooted under
+    `FORGE_ROOT/.scratch/`, the same containment `BindCliEndToEndTests`
     already requires."""
 
     def setUp(self) -> None:
         self.test_root = (
-            FORGE_ROOT / "implementations"
+            FORGE_ROOT / ".scratch"
             / f".paper-writing-separate-e2e-test-{os.getpid()}-{uuid.uuid4().hex[:8]}"
         )
         self.addCleanup(shutil.rmtree, self.test_root, ignore_errors=True)
@@ -13454,7 +13454,7 @@ class WriteGateReturnsCorpusTests(unittest.TestCase):
 
     def setUp(self) -> None:
         self.test_root = (
-            FORGE_ROOT / "implementations"
+            FORGE_ROOT / ".scratch"
             / f".paper-writing-write-gate-return-test-{os.getpid()}-{uuid.uuid4().hex[:8]}"
         )
         self.addCleanup(shutil.rmtree, self.test_root, ignore_errors=True)
@@ -13497,7 +13497,7 @@ class ResolveBoundSectionsTests(unittest.TestCase):
 
     def setUp(self) -> None:
         self.test_root = (
-            FORGE_ROOT / "implementations"
+            FORGE_ROOT / ".scratch"
             / f".paper-writing-resolve-bound-sections-test-{os.getpid()}-{uuid.uuid4().hex[:8]}"
         )
         self.addCleanup(shutil.rmtree, self.test_root, ignore_errors=True)
@@ -13574,7 +13574,7 @@ class CmdWriteSourceSectionsWiringTests(unittest.TestCase):
 
     def setUp(self) -> None:
         self.test_root = (
-            FORGE_ROOT / "implementations"
+            FORGE_ROOT / ".scratch"
             / f".paper-writing-cmd-write-source-sections-test-{os.getpid()}-{uuid.uuid4().hex[:8]}"
         )
         self.addCleanup(shutil.rmtree, self.test_root, ignore_errors=True)
@@ -13759,7 +13759,7 @@ class MarkRevisionsCliWholeLoopTests(unittest.TestCase):
 
     def setUp(self) -> None:
         self.test_root = (
-            FORGE_ROOT / "implementations"
+            FORGE_ROOT / ".scratch"
             / f".paper-writing-mark-revisions-loop-test-{os.getpid()}-{uuid.uuid4().hex[:8]}"
         )
         self.addCleanup(shutil.rmtree, self.test_root, ignore_errors=True)
@@ -14888,7 +14888,7 @@ class CmdWriteGroundingWiringTests(unittest.TestCase):
 
     def setUp(self) -> None:
         self.test_root = (
-            FORGE_ROOT / "implementations"
+            FORGE_ROOT / ".scratch"
             / f".paper-writing-cmd-write-grounding-test-{os.getpid()}-{uuid.uuid4().hex[:8]}"
         )
         self.addCleanup(shutil.rmtree, self.test_root, ignore_errors=True)
@@ -15099,7 +15099,7 @@ class WriteSubstitutesTheQualifiedBlockTests(unittest.TestCase):
 
     def setUp(self) -> None:
         self.test_root = (
-            FORGE_ROOT / "implementations"
+            FORGE_ROOT / ".scratch"
             / f".paper-writing-qualified-id-test-{os.getpid()}-{uuid.uuid4().hex[:8]}"
         )
         self.addCleanup(shutil.rmtree, self.test_root, ignore_errors=True)

@@ -55,6 +55,22 @@ experiments/*
 implementations/*
 !implementations/.gitkeep
 
+# Scratch space for tests/test_paper_writing.py's own fixtures. The path
+# containment guard in paper_cli.py (_resolve_repo_path / PAPER_OUTSIDE_
+# REPOSITORY) only requires the scratch root to resolve inside FORGE_ROOT —
+# it never required implementations/ specifically — so the tests do not need
+# to share a directory with the operator's real research target. Sharing it
+# was the defect: a killed or crashed test run left orphaned
+# implementations/_e2e_* directories sitting beside the operator's curated
+# work in implementations/Domain_Adaptation/, which later collided with a
+# fresh fixture run (reused id(self) addresses) and produced failures that
+# looked like real regressions and were not. Same convention this repo
+# already generates for downstream workspaces (see
+# src/papersmith/templates/gitignore.tpl and papersmith.yaml.tpl's
+# scratch_dir), just rooted at the forge itself. Test-only; never read by
+# any skill or CLI verb, so it is safe to keep uncommitted and disposable.
+.scratch/
+
 # Pesos de modelos usados solo para pruebas locales de proposal-implementation: se
 # copian al repo destino tras clonarlo para no volver a descargarlos por LFS.
 # Es material de prueba del usuario, no un artefacto de la forja.
