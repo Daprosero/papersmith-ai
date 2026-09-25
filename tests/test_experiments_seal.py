@@ -155,6 +155,54 @@ class DigestComparisonTests(unittest.TestCase):
             "recapturing digests.json")
 
 
+class HolderRenameDeclaredDeltaTests(unittest.TestCase):
+    """`the-holder-each-skill-declares` (design D11 step 6, tasks.md 2.20):
+    turns "the digests moved" from an unexplained fact into a checked
+    claim. Every case whose captured stdout embeds the holder path
+    carries `Trial/Experimental_AGREED.md`, and never the pre-rename
+    `Trial/AGREED.md` -- exactly the cases named in this change's own
+    declared-delta document (`openspec/changes/the-holder-each-skill-
+    declares/experiments-seal-delta.md`)."""
+
+    #: The cases the delta document names as moved because their stdout
+    #: embeds the holder path (`position_state`'s `holder` key;
+    #: `cmd_position`/`cmd_settle`'s printed `holder` field).
+    HOLDER_PATH_CASE_IDS = (
+        "position-e1", "verify-a", "verify-a-declared", "verify-b",
+        "verify-b-declared", "verify-b-undeclared", "verify-t",
+    )
+
+    @classmethod
+    def setUpClass(cls):
+        cls._tmp = tempfile.mkdtemp(prefix="experiments-seal-delta-")
+        cls._roots = ec.build(Path(cls._tmp) / "corpus")
+        cls._scratch_root = FORGE / "implementations" / f"_experiments_seal_delta_{os.getpid()}"
+        cls._scratch_root.mkdir(parents=True, exist_ok=True)
+        cases_by_id = {case["id"]: case for case in CASES}
+        cls._stdout_by_id = {}
+        with eh.cli_invocation():
+            for case_id in cls.HOLDER_PATH_CASE_IDS:
+                result = eh.run_case(cases_by_id[case_id], cls._roots,
+                                     scratch_root=cls._scratch_root)
+                cls._stdout_by_id[case_id] = result.stdout_text
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls._scratch_root, ignore_errors=True)
+        shutil.rmtree(cls._tmp, ignore_errors=True)
+
+    def test_every_holder_path_case_names_the_declared_rename(self):
+        for case_id in self.HOLDER_PATH_CASE_IDS:
+            with self.subTest(case=case_id):
+                stdout = self._stdout_by_id[case_id]
+                self.assertIn("Trial/Experimental_AGREED.md", stdout,
+                             f"{case_id}: expected the renamed holder path "
+                             "in captured stdout")
+                self.assertNotIn("Trial/AGREED.md", stdout,
+                                 f"{case_id}: the pre-rename holder path "
+                                 "must never appear")
+
+
 class ThreatMatrixTests(unittest.TestCase):
     """Task 2.7: the same three threat-matrix RED tests
     `tests/test_implementation_seal.py` proves for the sibling, proven here

@@ -1562,9 +1562,10 @@ class LocateHeadingsTests(unittest.TestCase):
         self.assertEqual(spliced, b"## Heading\n\n- [ ] new item\n- item\n")
 
     # --- prose-first sections (defect measured 2026-08-29 against the
-    # operator's real AGREED.md: 17 `## ` sections, 15 open with a bullet,
-    # 2 open with prose -- the first real `settle` landed its bullet
-    # between the heading and the paragraph that introduces the section) ---
+    # operator's real declared holder (`AGREED.md` at the time): 17 `## `
+    # sections, 15 open with a bullet, 2 open with prose -- the first real
+    # `settle` landed its bullet between the heading and the paragraph
+    # that introduces the section) ---
 
     def test_a_section_that_opens_with_prose_inserts_before_the_first_bullet(self):
         """`heading / blank / prose / blank / bullets` is a real shape, not
@@ -1652,7 +1653,11 @@ class WriteSplicedCasTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
-        self.path = self.tmp / "AGREED.md"
+        # `impl_position`'s primitives are domain-neutral and know no
+        # declared holder name -- this filename is an arbitrary fixture
+        # path for the compare-and-swap test below, not a claim about
+        # which name any skill declares.
+        self.path = self.tmp / "Holder.md"
         self.path.write_bytes(b"original content\n")
 
     def test_matching_pre_image_writes_normally(self):

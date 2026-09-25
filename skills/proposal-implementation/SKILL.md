@@ -3055,7 +3055,7 @@ me to do that now?". That is the failure this section exists to make
 impossible. **The engine publishes what happens next. The agent never composes
 it.**
 
-One hundred and eighteen distinct codes are reachable from the ten gating
+One hundred and nineteen distinct codes are reachable from the ten gating
 commands — `apply`, `admit`, `gate`, `offer`, `close`, `step`, `settle`,
 `materialize`, `position`, `agree` (`GATING_COMMANDS`). **Reachable from, not
 raised inside**, and the difference cost a live session: the roster was first
@@ -3077,7 +3077,7 @@ decision somebody made rather than a shape somebody noticed:
   flag, the token or the mutual exclusion. Nothing is published beside it: a
   `resolve` key on every refusal is the shape a reader learns to skip, and that
   is how a real one stops being read.
-- **No — a *work state*** (69 codes). Somebody must act on the repository, so
+- **No — a *work state*** (70 codes). Somebody must act on the repository, so
   the refused payload carries `resolve`: `{kind: "command", command}` when the
   engine can name the whole exit, or `{kind: "question", question, command}`
   when the next act is a decision, where `command` is the runnable `discuss`

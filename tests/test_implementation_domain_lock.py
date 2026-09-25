@@ -533,23 +533,38 @@ def build_denylist(profiles: list[dict[str, Any]]) -> dict[str, str]:
 #: (engine port + fork adopt deltas + both sides' prose). Every value below is
 #: taken from the merged tree, never assumed; pinned == every denylist word the
 #: engine actually spells, by construction.
+#: `the-holder-each-skill-declares` (Phase 2, design D2/D3/D8/D9/D12):
+#: `holder_resolution`, `_header_document_count_detail`, the five
+#: repointed call sites, the new `HOLDER_UNDECLARED` refusal and its
+#: doctrine/prose sweep are all new engine prose, not a domain word:
+#: thirteen words already exempted here read naturally inside it and
+#: grew. `before` 252->253, `beside` 104->109, `check` 157->158, `command`
+#: 272->273, `declaration` 209->211, `empty` 129->130, `module` 194->195,
+#: `rather` 376->377, `reported` 146->147, `something` 74->75, `sweep`
+#: 7->10, `validated` 8->9, `write` 110->134 (the settle-mode ambiguity
+#: messages moved to `write` into a single holder). One SHRANK,
+#: deliberately: `agreed` 27->16 -- the D12 prose sweep amends every
+#: engine-voice/fact assertion of the literal `AGREED.md` to name the
+#: declared holder leaf instead, leaving only the dated/target-specific
+#: measurements standing. None left the denylist; `test_2` confirms no
+#: new unpinned leak either.
 M5_PINNED_RESIDUE: dict[str, int] = {
     "actually": 82, "admissible": 3, "after": 90, "against": 191,
-    "agreed": 27, "answered": 95, "answers": 106, "approved": 47,
-    "audit": 19, "before": 252, "benchmark": 108, "beside": 104,
-    "check": 157, "checkable": 3, "claim": 36, "command": 272,
-    "commands": 18, "compares": 25, "declaration": 209,
-    "destinations": 39, "empty": 129, "established": 5, "experiment": 25,
+    "agreed": 16, "answered": 95, "answers": 106, "approved": 47,
+    "audit": 19, "before": 253, "benchmark": 108, "beside": 109,
+    "check": 158, "checkable": 3, "claim": 36, "command": 273,
+    "commands": 18, "compares": 25, "declaration": 211,
+    "destinations": 39, "empty": 130, "established": 5, "experiment": 25,
     "experiments": 6, "implementations": 4, "incomplete": 28,
     "invariant": 22, "isolated": 5, "leave": 11, "leaves": 37,
     "local": 37, "longer": 54, "makes": 47, "materialized": 12,
-    "measured": 144, "measurement": 43, "module": 194, "notebooks": 110,
+    "measured": 144, "measurement": 43, "module": 195, "notebooks": 110,
     "object": 33, "pilot": 123, "place": 55, "produces": 51,
-    "rather": 376, "recorded": 78, "remedy": 54, "remote": 65,
-    "reported": 146, "resolves": 31, "ruled": 9, "runnable": 15,
-    "scaffolded": 12, "sitting": 9, "small": 8, "something": 74,
-    "steps": 139, "sweep": 7, "validated": 8, "value": 243, "whose": 154,
-    "write": 110, "wrong": 51
+    "rather": 377, "recorded": 78, "remedy": 54, "remote": 65,
+    "reported": 147, "resolves": 31, "ruled": 9, "runnable": 15,
+    "scaffolded": 12, "sitting": 9, "small": 8, "something": 75,
+    "steps": 139, "sweep": 10, "validated": 9, "value": 243, "whose": 154,
+    "write": 134, "wrong": 51
 }
 #: Unit 6b (Part B, the transitions): thirteen pins grew from the new
 #: engine prose alone (`_comparison_reuses_acid_test_question`,
@@ -788,7 +803,15 @@ L1_DELIBERATE_SHRINK = 3  # documents.label's ARMS_UNDECLARED_CONSEQUENCE conver
 #: A shrink in this count is the direction this pin wants -- it is recorded
 #: rather than absorbed because an unexplained MOVE is the defect, in either
 #: direction: a rename campaign looks exactly like this from outside.
-L1_EXPECTED_COUNT = L1_BASELINE_AT_S0 - L1_DELIBERATE_SHRINK
+#: `the-holder-each-skill-declares` (Phase 2, design D12): +2, deliberate and
+#: recorded -- `position_state`'s and `cmd_position`'s docstrings, amended to
+#: stop asserting the literal `AGREED.md` as fact, each name the actual skill
+#: by its real name ("for `proposal-implementation`") as a qualified example.
+#: Naming the real skill is not a rename campaign or an accidental sweep --
+#: it is the opposite of what this lock guards against.
+L1_HOLDER_DECLARES_GROWTH = 2
+L1_EXPECTED_COUNT = (
+    L1_BASELINE_AT_S0 - L1_DELIBERATE_SHRINK + L1_HOLDER_DECLARES_GROWTH)
 L1_EXPECTED_FILES = ["implementation_engine.py"]
 
 #: L2 (design.md D6): each of these must still resolve, spelled exactly --

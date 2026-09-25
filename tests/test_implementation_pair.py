@@ -474,13 +474,15 @@ class TwoDocumentPositionWriteTests(unittest.TestCase):
         env["GIT_AUTHOR_EMAIL"] = env["GIT_COMMITTER_EMAIL"] = "pair-position@example.invalid"
         subprocess.run(["git", "init", "-q", str(self.box)], check=True, capture_output=True)
         (self.box / self.PACKAGE).mkdir(parents=True)
-        # A candidate holder, exactly `tests/seal/corpus.py`'s own fixture
-        # placeholder: `_chosen_holder` (used by a fresh `--sequence`
-        # install) never invents a checklist file, it only ever picks
-        # among candidates `agreements_state` already found -- an empty
-        # product dir refuses `POSITION_HOLDER_ABSENT` before the install
-        # below ever gets to write anything.
-        (self.box / self.PACKAGE / "AGREED.md").write_text(
+        # `the-holder-each-skill-declares` (design D3/A7): this fixture's
+        # own two-document profile (`pair_corpus`/`tests/fixtures/
+        # two_documents/impl_profile.py`) declares `Fixture_AGREED.md` as
+        # its holder, so the pre-written candidate must carry that exact
+        # name -- an undeclared name (e.g. plain `AGREED.md`) is now the
+        # D3 middle row and `_chosen_holder` refuses `HOLDER_UNDECLARED`
+        # rather than picking it, which the stale comment here used to
+        # (wrongly, after D5) attribute to `POSITION_HOLDER_ABSENT`.
+        (self.box / self.PACKAGE / "Fixture_AGREED.md").write_text(
             "# Agreed\n\n## Ladder\n\n- [ ] First measurable claim.\n",
             encoding="utf-8")
         subprocess.run(["git", "add", "-A"], cwd=self.box, env=env, check=True,
@@ -545,7 +547,8 @@ class TwoDocumentPositionWriteTests(unittest.TestCase):
                 install_result["documents"],
                 [{"label": "experiments", "revision": self.REVISION_1,
                   "revisionSha256": self._doc1_sha256()}])
-            agreed = (self.box / self.PACKAGE / "AGREED.md").read_text(encoding="utf-8")
+            agreed = (self.box / self.PACKAGE / "Fixture_AGREED.md").read_text(
+                encoding="utf-8")
             self.assertIn("documents=", agreed)
             events = [json.loads(line) for line in
                      ledger.read_text(encoding="utf-8").splitlines()]
@@ -611,7 +614,11 @@ class DocumentOneBoundToTests(unittest.TestCase):
         env["GIT_AUTHOR_EMAIL"] = env["GIT_COMMITTER_EMAIL"] = "pair-boundto@example.invalid"
         subprocess.run(["git", "init", "-q", str(self.box)], check=True, capture_output=True)
         (self.box / self.PACKAGE).mkdir(parents=True)
-        (self.box / self.PACKAGE / "AGREED.md").write_text(
+        # `the-holder-each-skill-declares` (design D3): this fixture's
+        # own two-document profile declares `Fixture_AGREED.md` as its
+        # holder -- an undeclared candidate name refuses `HOLDER_UNDECLARED`
+        # rather than being picked for a fresh install.
+        (self.box / self.PACKAGE / "Fixture_AGREED.md").write_text(
             "# Agreed\n\n## Ladder\n\n- [ ] First measurable claim.\n",
             encoding="utf-8")
         subprocess.run(["git", "add", "-A"], cwd=self.box, env=env, check=True,

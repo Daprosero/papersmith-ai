@@ -1,6 +1,6 @@
 {
   "__corpus_fingerprint__": {
-    "sha256": "aa8a6335756a63e841fe7630f7d24911cd9b48c1e5240d557a7d6c8c9d507bf8"
+    "sha256": "eca20d71ad4cfd1cd74d86e37132502d6ae0aabbea64f0c3af4fcea3f4eecf10"
   },
   "admit-t": {
     "bytes": 310,
@@ -93,9 +93,9 @@
     "sha256": "f1cfeb9a45cc24f36cf21f80228befb9b23cfdfacdd72bcaacb21cebe61e43b3"
   },
   "position-e1": {
-    "bytes": 892,
+    "bytes": 905,
     "exit": 0,
-    "sha256": "eae0ea68991005cb29f80ec6db41dc74eba78cf7a0cac63512456e52fe868e63"
+    "sha256": "f8a8854767c70e20501e7a2c708507f6813d1946215d76453530178110e1d0ec"
   },
   "probe": {
     "bytes": 9169,
@@ -105,7 +105,7 @@
   "propose": {
     "bytes": 405,
     "exit": 0,
-    "sha256": "aa69ceaf8ac8fa7c201c00639f76b7ec8f8ba12899e0962ee87f1942933e5a98"
+    "sha256": "d11ad50cfe0b6e0a226e83ae1a43d9a40b7524a67d46222105c687b537df95fa"
   },
   "settle": {
     "bytes": 2906,
@@ -118,34 +118,34 @@
     "sha256": "7e960858b5902ea2e9ec5317064ac1cbfb1a6147833ef319a1638360b87d184e"
   },
   "verify-a": {
-    "bytes": 20669,
+    "bytes": 20682,
     "exit": 0,
-    "sha256": "6b4bf2ff5d356aa24840779cf26c6d8fe560cffdbd543dae02a69100299273c8"
+    "sha256": "456807526d9bf22c43a18f64af65389ec25f2e06282d10e4fb1664dd9de93c3c"
   },
   "verify-a-declared": {
-    "bytes": 21236,
+    "bytes": 21249,
     "exit": 0,
-    "sha256": "bd1bc6c536bcc162a1e544880780ac1eef3fe3dfcdabcef2c522ff6c04c0e31b"
+    "sha256": "89e4ef73d76ef180c2f4f501eba75f0c5f2f298c254cf389b9ee1fee29b93f12"
   },
   "verify-b": {
-    "bytes": 20669,
+    "bytes": 20682,
     "exit": 0,
-    "sha256": "6b4bf2ff5d356aa24840779cf26c6d8fe560cffdbd543dae02a69100299273c8"
+    "sha256": "456807526d9bf22c43a18f64af65389ec25f2e06282d10e4fb1664dd9de93c3c"
   },
   "verify-b-declared": {
-    "bytes": 21260,
+    "bytes": 21273,
     "exit": 0,
-    "sha256": "d32ac3721a9a5e55b507b0b493b2fb633c822ed3a78448279ddae2e5f74646ab"
+    "sha256": "2dfef619a07011f744b4f0ae1991cf3617af0ba224982db3c22e9c9ad8e8ccb6"
   },
   "verify-b-undeclared": {
-    "bytes": 21236,
+    "bytes": 21249,
     "exit": 0,
-    "sha256": "16e1ecf91481eafd6f83b9926dbdf33bd05d389e56fcedf2bcd8f302fc7f9ed4"
+    "sha256": "6fe3b1bd112608391cb9601b56696954e935129d813b44125c090c1cc67b1221"
   },
   "verify-t": {
-    "bytes": 18495,
+    "bytes": 18508,
     "exit": 0,
-    "sha256": "d7962aa7c0113c3984be8b15bf25c7ff8db4f58598232966c71a1f65a208bcad"
+    "sha256": "7ce86dcfeb6163403ad580d4275219c8ecd3473a917dd20dd4a294cedf74174c"
   },
   "walk": {
     "bytes": 814,

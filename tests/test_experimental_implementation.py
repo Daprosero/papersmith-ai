@@ -1925,5 +1925,66 @@ class DeadImportAndStaleCallerCitationTests(unittest.TestCase):
         self.assertEqual(callers, [])
 
 
+class HolderCollisionTests(unittest.TestCase):
+    """`the-holder-each-skill-declares` (design D3, tasks.md 2.13): the
+    measured defect this change closes. `proposal-implementation` and
+    `experimental-implementation` share one engine and one product folder
+    shape, so a target already holding the proposal's declared `AGREED.md`
+    used to be picked up by the experimental skill too (the by-shape scan
+    alone, `agreements_state`'s `holders`), and a `documents=` header group
+    written by one profile permanently poisoned that holder for the other.
+    Reproduced directly against `holder_resolution`/`_chosen_holder` --
+    lighter than a full `position --sequence` CLI round trip, and it proves
+    the identical resolution a write would go through.
+    """
+
+    def _load_engine(self):
+        """A fresh, uncached load of the shared engine under the
+        EXPERIMENTAL profile -- `_load_module`'s own discipline, so this
+        module's `HOLDER_FILENAME` (`Experimental_AGREED.md`) never leaks
+        into or from any other test file's cached `sys.modules` entry."""
+        env = os.environ.copy()
+        env_backup = dict(os.environ)
+        os.environ["IMPLEMENTATION_DOMAIN_PROFILE"] = str(PROFILE_FILE)
+        try:
+            sys.path.insert(0, str(ENGINE_DIR))
+            return _load_module(
+                ENGINE_DIR / "implementation_engine.py", "experimental_engine_probe")
+        finally:
+            sys.path.remove(str(ENGINE_DIR))
+            os.environ.clear()
+            os.environ.update(env_backup)
+
+    def test_the_declared_names_differ(self):
+        engine = self._load_engine()
+        self.assertEqual(engine.HOLDER_FILENAME, "Experimental_AGREED.md")
+
+    def test_a_target_holding_the_proposals_declared_holder_is_undeclared_here(self):
+        """The measured collision, closed: a target already holding an
+        item-holding `AGREED.md` (the proposal's own declared name, not
+        this skill's) resolves `"undeclared"` under the experimental
+        profile -- `_chosen_holder` refuses `HOLDER_UNDECLARED` rather
+        than writing a fresh block (and, eventually, a `documents=`
+        group) straight into it."""
+        engine = self._load_engine()
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / "Method").mkdir(parents=True, exist_ok=True)
+            (root / "Method" / "AGREED.md").write_text(
+                "- [ ] an agreement the proposal skill settled here\n",
+                encoding="utf-8")
+            resolution = engine.holder_resolution(root, "Method")
+            self.assertEqual(resolution["action"], "undeclared")
+            self.assertEqual(resolution["byShape"], ["Method/AGREED.md"])
+            with self.assertRaises(engine.Refused) as caught:
+                engine._chosen_holder(root, "Method", root / "Method")
+            self.assertEqual(caught.exception.code, "HOLDER_UNDECLARED")
+            # No `documents=` group -- no write at all -- lands in the
+            # proposal's own file.
+            self.assertEqual(
+                (root / "Method" / "AGREED.md").read_text(encoding="utf-8"),
+                "- [ ] an agreement the proposal skill settled here\n")
+
+
 if __name__ == "__main__":
     unittest.main()

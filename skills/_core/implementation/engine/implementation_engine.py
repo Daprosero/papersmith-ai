@@ -176,6 +176,17 @@ CITATION_PATTERN = PROFILE["findings"]["citation_pattern"]  # S8
 DOCUMENTS = PROFILE["documents"]  # S9, Cut 3
 DOCUMENTS_DIRECTORY = DOCUMENTS[0]["directory"]  # S9
 DOCUMENTS_LABEL = DOCUMENTS[0]["label"]  # S9
+
+# `the-holder-each-skill-declares` (design.md D1/D2): the skill's own
+# declared checklist holder -- filename, the heading(s) a freshly created
+# holder is born with, and the scaffold bytes themselves. No default or
+# fallback of the engine's own; every read of these three names comes
+# straight off `PROFILE["holder"]`, validated complete and shape-checked by
+# `impl_domain_profile.py` before this module ever runs.
+HOLDER_FILENAME = PROFILE["holder"]["filename"]
+HOLDER_HEADINGS = tuple(PROFILE["holder"]["headings"])
+HOLDER_SCAFFOLD = PROFILE["holder"]["scaffold"]
+
 SUBJECT_SINGULAR = PROFILE["vocabulary"]["subject_singular"]  # S10.1
 SUBJECT_PLURAL = PROFILE["vocabulary"]["subject_plural"]  # S10.2
 SUBJECT_SINGULAR_ES = PROFILE["vocabulary"]["subject_singular_es"]  # S10.3
@@ -384,6 +395,14 @@ def agreements_state(target: Path, name: str) -> dict:
     whatever the repository actually called it — which is not a missing file, it
     is an absence nobody went looking for, dressed as a finding.
 
+    **This is the READ rule, and it stays true of every read.**
+    `the-holder-each-skill-declares` narrows only the WRITE side: each skill
+    declares its own holder filename (`holder_resolution`, beside this
+    function), and that declared name owns where a write lands. The engine
+    still invents no *filename* of its own — it holds none to invent, the
+    skill's own `PROFILE["holder"]["filename"]` does — and this function's
+    own code, the by-shape scan above, is untouched by that change.
+
     **A located position block never counts as an agreement.** Its own
     sequence items are excluded before this scan sees a single line
     (`_agreement_scan_text`, above); a holder whose only checklist items
@@ -510,6 +529,74 @@ def agreements_state(target: Path, name: str) -> dict:
     }
 
 
+def holder_resolution(target: Path, name: str) -> dict:
+    """Which file this skill reads and writes as its checklist holder.
+
+    Total. Never raises. Uniform key set on every branch --
+    `agreements_state`'s own doctrine, one function up.
+
+    `the-holder-each-skill-declares` (design.md D2/D3): the declared name
+    (`HOLDER_FILENAME`) owns identity for a WRITE, independent of whether the
+    file holds any checklist item yet -- `path` is populated by
+    `is_file()` alone, never by `agreements_state`'s item-holding test.
+    `agreements_state`'s own `holders` list (`byShape`) is read verbatim and
+    is what a READ falls back to when the declared name is absent; that
+    function's code is not touched by this one at all.
+
+    Five outcomes, decided in this order:
+      declared file exists                          -> "declared"
+      declared absent, byShape == 0, product is_dir  -> "create"
+      declared absent, byShape == 0, not is_dir      -> "absent"
+      declared absent, byShape == 1                  -> "undeclared"
+      declared absent, byShape > 1                   -> "ambiguous"
+
+    `read`: the declared path when found; else the single by-shape
+    candidate when there is exactly one; else `None` -- there is nothing a
+    caller may read without a human choosing (`undeclared` needs a rename
+    or a declaration; `ambiguous` needs a human pick).
+
+    `write`: the declared path, present or not -- the file a caller may
+    write into, or create. `None` for every action a write must instead
+    refuse for (`absent`, `undeclared`, `ambiguous`).
+
+    `create`: `True` exactly when `action == "create"` -- the write target
+    named above does not exist yet and a caller that means to write here
+    creates it first (design D5), never via `product.mkdir()`.
+    """
+    product = target / name
+    declared_path = product / HOLDER_FILENAME
+    declared_is_file = declared_path.is_file()
+    by_shape = agreements_state(target, name)["holders"]
+
+    if declared_is_file:
+        action = "declared"
+    elif not by_shape:
+        action = "create" if product.is_dir() else "absent"
+    elif len(by_shape) == 1:
+        action = "undeclared"
+    else:
+        action = "ambiguous"
+
+    if action == "declared":
+        read = write = declared_path
+    elif action == "create":
+        read, write = None, declared_path
+    elif action == "undeclared":
+        read, write = target / by_shape[0], None
+    else:  # "absent" or "ambiguous"
+        read, write = None, None
+
+    return {
+        "declared": HOLDER_FILENAME,
+        "path": declared_path if declared_is_file else None,
+        "byShape": by_shape,
+        "read": read,
+        "write": write,
+        "create": action == "create",
+        "action": action,
+    }
+
+
 def sequence_block_detail(position: dict, advances: int) -> str:
     """What to add to a sequence refusal when the blocking item can never tick.
 
@@ -551,6 +638,40 @@ def _bound_to(revision: str | None, source: str | None,
     return "current" if block_sha256 == current_sha else "stale"
 
 
+def _header_document_count_detail(block: dict) -> str | None:
+    """The refusal detail for `cmd_position`'s holder sweep, or `None` when
+    the header's own `documents=` group agrees with this profile's declared
+    document count.
+
+    Extracted verbatim from `cmd_position`'s inline check (`design.md` D8):
+    `block.get("documents") is not None and len(DOCUMENTS) <= 1` -- a header
+    written under a two-or-more-document profile, read back under a
+    single-document one. Encodes exactly today's condition and nothing more.
+
+    Deliberately ASYMMETRIC. The opposite direction -- no `documents=` group
+    at all, read under a two-or-more-document profile -- is the deliberate
+    silent migration `cmd_position`'s own sweep already tolerates: it still
+    opens, with `revision`/`revisionSha256` meaning document 0 exactly as
+    today, and gains the group on the next write. A symmetric helper would
+    make that migration start refusing, a behavior change
+    `implementation-document-binding`'s standing "reported, never refused"
+    position forbids. Callers: `cmd_position`'s sweep, and D7's repair-decision
+    path (`implementation-holder-repair`), which calls this SAME helper
+    rather than re-deriving the comparison.
+
+    Returns a fragment meant to follow `f"{path}'s "` at the call site
+    (`cmd_position`'s own composition, unchanged) -- never a path itself,
+    since this function is handed only the decoded block.
+    """
+    if block.get("documents") is not None and len(DOCUMENTS) <= 1:
+        return (
+            "position header carries a `documents=` group naming more "
+            "than one document, but this target's own profile declares "
+            "only one; the header was written under a different document "
+            "count than this invocation is running with.")
+    return None
+
+
 def _document_extra_sources(revision: str | None) -> list[str | None] | None:
     """`extra_sources` for `position_state` (D7): document 1's, 2's, ...
     own already-resolved text, parallel to `source` (document 0's, always
@@ -572,7 +693,9 @@ def _document_extra_sources(revision: str | None) -> list[str | None] | None:
 def position_state(target: Path, name: str, evidence: dict,
                    revision: str | None, source: str | None,
                    extra_sources: list[str | None] | None = None) -> dict:
-    """The execution sequence's current state, read from `<Name>/AGREED.md`.
+    """The execution sequence's current state, read from this skill's own
+    declared holder leaf (`PROFILE["holder"]["filename"]`, e.g.
+    `<Name>/AGREED.md` for `proposal-implementation`).
 
     Every mark reported here is derived, never read as an asserted claim —
     see `impl_position.derive`. `evidence` is a plain dict of already-computed
@@ -641,25 +764,38 @@ def position_state(target: Path, name: str, evidence: dict,
     if not product.is_dir():
         return empty
 
-    # Found by shape, exactly like `agreements_state` two functions up: every
-    # markdown file at the top of the product folder is a candidate holder,
-    # never a fixed filename that would decide for the repository.
-    holders = []
-    for path in sorted(p for p in product.glob("*.md") if p.is_file()):
-        block = impl_position.locate_block(path.read_bytes())
-        if block is not None:
-            holders.append((path, block))
+    # Declared-name lookup runs ahead of the by-shape scan (`the-holder-
+    # each-skill-declares`, design D3): the file this skill declared, when
+    # present, is the holder for a read regardless of any other candidate
+    # also carrying a block -- see `holder_resolution` beside
+    # `agreements_state`. Read falls back to the by-shape scan below,
+    # UNCHANGED, only when the declared name is absent.
+    declared_path = holder_resolution(target, name)["path"]
+    declared_block = (impl_position.locate_block(declared_path.read_bytes())
+                      if declared_path is not None else None)
+    if declared_block is not None:
+        path, block = declared_path, declared_block
+    else:
+        # Found by shape, exactly like `agreements_state` two functions up:
+        # every markdown file at the top of the product folder is a
+        # candidate holder, never a fixed filename that would decide for
+        # the repository.
+        holders = []
+        for candidate in sorted(p for p in product.glob("*.md") if p.is_file()):
+            candidate_block = impl_position.locate_block(candidate.read_bytes())
+            if candidate_block is not None:
+                holders.append((candidate, candidate_block))
 
-    if not holders:
-        return empty
-    if len(holders) > 1:
-        raise Refused(
-            "POSITION_HOLDER_AMBIGUOUS",
-            "more than one markdown file under "
-            f"{product.relative_to(target)}/ carries a `<!-- position -->` "
-            "block; only one may hold the section this reads.")
+        if not holders:
+            return empty
+        if len(holders) > 1:
+            raise Refused(
+                "POSITION_HOLDER_AMBIGUOUS",
+                "more than one markdown file under "
+                f"{product.relative_to(target)}/ carries a `<!-- position -->` "
+                "block; only one may hold the section this reads.")
 
-    path, block = holders[0]
+        path, block = holders[0]
     items = impl_position.parse_items(block["body"])
     # `evidence` is copied, never mutated in place: a caller (`cmd_gate`,
     # `cmd_discuss`) that built it once and keeps reading it after this call
@@ -2385,7 +2521,8 @@ def undeclared_step_notebooks_state(target: Path, name: str,
     the step's `advances` ordinal when that item witnesses a notebook. Only
     the first is read here, and a step reached only the second way is named
     anyway. That is not an oversight and it is the price of the question being
-    answerable at all from zero: a sequence witness is a mark in `AGREED.md`,
+    answerable at all from zero: a sequence witness is a mark in this
+    skill's own declared holder,
     which a repository that has run nothing has not written, so a check that
     consulted it would go quiet on exactly the repository it exists for. The
     cost is the false positive, and it is bounded and cheap -- the exit is to
@@ -4884,7 +5021,7 @@ _DEFAULT_PACKAGE_DECLARATIONS = (
     "# own, only the arithmetic that compares two of these names by position\n"
     "# (see `impl_position.level_index`). A step earns a rung by naming this\n"
     "# file's own ladder explicitly on its witness (`` `@rehearsal:level <job>`\n"
-    "# `` in `AGREED.md`'s position section); a step with no `:level` marker is\n"
+    f"# `` in `{HOLDER_FILENAME}`'s position section); a step with no `:level` marker is\n"
     "# two-state and never reads this list at all. Left empty until named -- a\n"
     "# repository whose position items are entirely two-state needs no ladder\n"
     "# here, and one is never invented on its behalf. A second, independent\n"
@@ -5026,7 +5163,7 @@ _DEFAULT_PACKAGE_DECLARATIONS = (
     "__steps__: dict = {}\n"
     "\n"
     "# A target-chosen name mapped to the record it addresses -- a leveled\n"
-    "# `@record:level <name>` witness in AGREED.md's position section reaches\n"
+    f"# `@record:level <name>` witness in {HOLDER_FILENAME}'s position section reaches\n"
     "# exactly one entry here, deriving its rung through the identical\n"
     "# arithmetic the benchmark's own `search` block already uses\n"
     "# (`impl_position._record_scale_level`). A fourth, independent top-level\n"
@@ -11080,7 +11217,8 @@ WALK_ORDER = ("notWalked", "unfinished", "walked")
 #:
 #: **It is not the agreements and does not replace them.** What the content
 #: says lives in the managed revision; what was settled about this repository
-#: lives in its `AGREED.md`. This says only what the skill is FOR, which is the
+#: lives in this skill's own declared holder. This says only what the skill
+#: is FOR, which is the
 #: one thing neither of those states and no artefact implies.
 #:
 #: Each stage names what it establishes and how a reader knows it is behind
@@ -11828,32 +11966,55 @@ POSITION_PLACEHOLDER_TEXT = "TODO: describe this step."
 
 
 def _chosen_holder(target: Path, name: str, product: Path) -> Path:
-    """Which markdown file receives a FRESH block, chosen from
-    `agreements_state`'s own already-computed `holders` — never a fixed
-    filename, and never a guess between two candidates.
+    """Which markdown file receives a FRESH block, dispatched off
+    `holder_resolution`'s own `action` (`the-holder-each-skill-declares`,
+    design D2/D9) — never a fixed filename, and never a guess between two
+    candidates.
 
     Shared by `--sequence`'s fresh install and `--reconcile`'s fresh
     reconstruction: both write into a product folder that carries no
-    position block yet, and both refuse the identical way when there is
-    nothing to append into, or more than one candidate to choose from
-    (`agreements_state`'s own doctrine that the tool never invents a
-    checklist file, 140-145).
+    position block yet.
+
+    `"declared"`/`"create"` resolve directly to the declared write target
+    (present or, for `"create"`, not yet on disk -- `cmd_position`'s own
+    write already tolerates a brand-new path, see its docstring).
+    `"undeclared"` -- the D3 middle row, a candidate found by shape but not
+    by name -- refuses the new `HOLDER_UNDECLARED`, naming both exits.
+    `"absent"` narrows `POSITION_HOLDER_ABSENT` to "no product folder"
+    only (D9; `require_named_product_dir` does not itself refuse a merely
+    absent `<name>/`). `"ambiguous"` keeps `POSITION_HOLDER_AMBIGUOUS`
+    unchanged -- the same doctrine `agreements_state` states for itself
+    (`the tool never invents a checklist file`, its own root doctrine).
     """
-    holding = [target / h for h in agreements_state(target, name)["holders"]]
-    if not holding:
+    resolution = holder_resolution(target, name)
+    action = resolution["action"]
+    if action in ("declared", "create"):
+        return resolution["write"]
+    if action == "undeclared":
+        raise Refused(
+            "HOLDER_UNDECLARED",
+            f"{resolution['byShape'][0]} holds checklist items under "
+            f"{product.relative_to(target)}/, but this skill declares its "
+            f"own holder as {resolution['declared']}; rename "
+            f"{resolution['byShape'][0]} to {resolution['declared']} in the "
+            "target repository, or declare "
+            f"{Path(resolution['byShape'][0]).name!r} in this skill's own "
+            "PROFILE[\"holder\"][\"filename\"] if that name should become "
+            "this skill's convention for every target.")
+    if action == "absent":
         raise Refused(
             "POSITION_HOLDER_ABSENT",
-            f"no markdown file under {product.relative_to(target)}/ holds "
-            "checklist items; the position section is never written into "
-            "a file this command invents.")
-    if len(holding) > 1:
-        raise Refused(
-            "POSITION_HOLDER_AMBIGUOUS",
-            f"{len(holding)} markdown files under {product.relative_to(target)}/ "
-            "hold checklist items and none yet carries a position block; "
-            "which one should receive it is not decidable without a human "
-            "choosing.")
-    return holding[0]
+            f"{product.relative_to(target)}/ does not exist; the position "
+            "section is never written into a product folder this command "
+            "invents.")
+    # action == "ambiguous"
+    holding = resolution["byShape"]
+    raise Refused(
+        "POSITION_HOLDER_AMBIGUOUS",
+        f"{len(holding)} markdown files under {product.relative_to(target)}/ "
+        "hold checklist items and none yet carries a position block; "
+        "which one should receive it is not decidable without a human "
+        "choosing.")
 
 
 def _reconcile_discovered_witnesses(target: Path, name: str, args: argparse.Namespace) -> list:
@@ -12002,7 +12163,9 @@ def position_finding_resolution(args, sequence: list[dict]) -> dict | None:
 
 
 def cmd_position(args: argparse.Namespace) -> dict:
-    """The only writer into `<Name>/AGREED.md`'s position section.
+    """The only writer into this skill's own declared holder's position
+    section (`PROFILE["holder"]["filename"]`, e.g. `<Name>/AGREED.md` for
+    `proposal-implementation`).
 
     Three write modes:
 
@@ -12033,12 +12196,17 @@ def cmd_position(args: argparse.Namespace) -> dict:
     against an unchanged target appends nothing (spec "Reconstruction From
     an Existing Target").
 
-    **The holder, found by shape for a refresh or a reconcile against an
-    existing block** — exactly `position_state`'s own rule (`>1 candidate
-    carrying a block` is `POSITION_HOLDER_AMBIGUOUS`, the same code,
-    because a delimiter this module owns appearing twice is an ambiguous
-    document regardless of which command is reading it). **For a fresh
-    install or a fresh reconcile**, chosen by `_chosen_holder`.
+    **The holder, for a refresh or a reconcile against an existing block:**
+    `the-holder-each-skill-declares` (design D3) puts the declared-name
+    lookup ahead of the by-shape glob — the declared file wins even beside
+    another candidate that also carries a block. Only when the declared
+    name is absent does the by-shape scan run, exactly `position_state`'s
+    own rule (`>1 candidate carrying a block` is `POSITION_HOLDER_
+    AMBIGUOUS`, the same code, because a delimiter this module owns
+    appearing twice is an ambiguous document regardless of which command
+    is reading it). **For a fresh install or a fresh reconcile**, chosen
+    by `_chosen_holder`, which dispatches off `holder_resolution` the
+    identical way.
 
     **`status: "unchanged"` skips the write entirely.** Comparing the
     complete item list — witness, text, mark, and count — old vs new, plus
@@ -12087,6 +12255,14 @@ def cmd_position(args: argparse.Namespace) -> dict:
             "the position header cannot be bound to a revision.")
     revision_sha256 = hashlib.sha256(source.encode("utf-8")).hexdigest()
 
+    # Declared-name lookup runs ahead of the by-shape glob
+    # (`the-holder-each-skill-declares`, design D3, D8): the declared file
+    # wins even beside another candidate that also carries a block. The
+    # glob itself survives unconditionally below -- `holder_digests` still
+    # needs a pre-image per candidate, a different requirement from
+    # choosing which one holds the section.
+    holder_resolution_result = holder_resolution(target, name)
+
     # Found by shape, exactly like `agreements_state` and `position_state`:
     # every markdown file at the top of the product folder is a candidate,
     # never a fixed filename.
@@ -12123,23 +12299,30 @@ def cmd_position(args: argparse.Namespace) -> dict:
             # migration case `allow_legacy` already generalizes: it still
             # opens, with `revision`/`sha256` meaning document 0 exactly as
             # today, and gets the group added on the next write.
-            if block.get("documents") is not None and len(DOCUMENTS) <= 1:
+            count_detail = _header_document_count_detail(block)
+            if count_detail is not None:
                 raise Refused(
                     "POSITION_HEADER_DOCUMENT_COUNT_MISMATCH",
-                    f"{path.relative_to(target)}'s position header carries "
-                    "a `documents=` group naming more than one document, "
-                    "but this target's own profile declares only one; the "
-                    "header was written under a different document count "
-                    "than this invocation is running with.")
+                    f"{path.relative_to(target)}'s {count_detail}")
             holders_with_block.append((path, block))
-    if len(holders_with_block) > 1:
-        raise Refused(
-            "POSITION_HOLDER_AMBIGUOUS",
-            f"more than one markdown file under {product.relative_to(target)}/ "
-            "carries a `<!-- position -->` block; only one may hold the "
-            "section this writes.")
-    existing_path, existing_block = (
-        holders_with_block[0] if holders_with_block else (None, None))
+
+    if holder_resolution_result["path"] is not None:
+        # D3: the declared file, when present, is used even beside another
+        # candidate that also carries a block -- the ambiguity scan below
+        # applies only when the declared name is absent.
+        existing_path, existing_block = next(
+            ((path, block) for path, block in holders_with_block
+             if path == holder_resolution_result["path"]),
+            (None, None))
+    else:
+        if len(holders_with_block) > 1:
+            raise Refused(
+                "POSITION_HOLDER_AMBIGUOUS",
+                f"more than one markdown file under {product.relative_to(target)}/ "
+                "carries a `<!-- position -->` block; only one may hold the "
+                "section this writes.")
+        existing_path, existing_block = (
+            holders_with_block[0] if holders_with_block else (None, None))
 
     # `target` is filled in below, once every branch has produced `items` and
     # the section is confirmed actually about to be measured or written (the
@@ -14146,12 +14329,20 @@ def cmd_settle(args: argparse.Namespace) -> dict:
         match") -- a later clarifying question must never retroactively
         erase an earlier answer, which would teach a caller not to ask
         one.
-    12. `SETTLE_HOLDER_ABSENT` -- `agreements_state`'s own already-computed
-        `holders` is the candidate set; a target with none has nowhere this
-        command may write (or, for `--remove`/`--reverse`/`--done`, nothing
-        to delete from or flip), and it never invents a file, the same
-        doctrine `_chosen_holder` already states for a fresh position
-        block. Checked in every mode.
+    12. `SETTLE_HOLDER_ABSENT` / `HOLDER_UNDECLARED` --
+        `the-holder-each-skill-declares` (design D10): all five modes
+        resolve through `holder_resolution` and search exactly the one
+        resolved write holder, never every by-shape candidate. `settle`
+        writes only into the holder this skill declares, and creates that
+        one when the product folder holds none (D5) -- narrowed from
+        "settle never invents a file to write into" to that same
+        restraint stated for the declared name: the engine still invents
+        no *filename*, because it holds none to invent. `SETTLE_HOLDER_
+        ABSENT` survives, narrowed to "no product folder at all" (the
+        create path still needs a folder to create the file in);
+        `HOLDER_UNDECLARED` is new, for a checklist found by shape but not
+        by the declared name -- the same doctrine `_chosen_holder` already
+        states for a fresh position block. Checked in every mode.
     13. Create path: `SETTLE_HEADING_ABSENT` / `SETTLE_HEADING_AMBIGUOUS` --
         every holder's own `impl_position.locate_headings` hits, concatenated
         across all of them: zero, or more than one anywhere (two hits in
@@ -14365,12 +14556,38 @@ def cmd_settle(args: argparse.Namespace) -> dict:
                 "identity and none carries status \"answered\"; an open "
                 "question is not yet a settled agreement.")
 
-    holders = agreements_state(target, name)["holders"]
-    if not holders:
+    # `the-holder-each-skill-declares` (design D10): all five `settle`
+    # modes resolve through `holder_resolution` and search exactly the one
+    # resolved write holder, never every by-shape candidate -- a write
+    # into a holder this skill did not declare is the D3 middle row, and
+    # narrows `SETTLE_HOLDER_ABSENT` to "no product folder" only (D9).
+    resolution = holder_resolution(target, name)
+    if resolution["action"] in ("absent", "create"):
+        # `"create"` is interim-refused here, exactly like `"absent"`: D5's
+        # actual scaffold write (`the-holder-each-skill-declares`, Phase 3)
+        # has not landed yet in this phase, so a `"create"` resolution has
+        # no existing file this loop could search. Phase 3 replaces this
+        # branch with the real create-on-absent wiring; until then, an
+        # empty-but-present product folder is refused the same as an
+        # absent one.
         raise Refused(
             "SETTLE_HOLDER_ABSENT",
-            f"no markdown file under {name}/ holds checklist items; "
-            "settle never invents a file to write into.")
+            f"{name}/ does not exist, or holds no file this skill "
+            "declares or finds by shape; settle never invents a file to "
+            "write into.")
+    if resolution["action"] in ("undeclared", "ambiguous"):
+        candidate = (resolution["byShape"][0] if resolution["action"] == "undeclared"
+                    else resolution["byShape"])
+        raise Refused(
+            "HOLDER_UNDECLARED",
+            f"{candidate!r} holds checklist items under {name}/, but this "
+            f"skill declares its own holder as {resolution['declared']}; "
+            f"rename it to {resolution['declared']} in the target "
+            "repository, or declare its own name in this skill's own "
+            "PROFILE[\"holder\"][\"filename\"] if that name should become "
+            "this skill's convention for every target.")
+    # action == "declared": `resolution["write"]` exists on disk.
+    holders = [str(resolution["write"].relative_to(target))]
 
     heading = None
     supersedes = None
@@ -14387,13 +14604,13 @@ def cmd_settle(args: argparse.Namespace) -> dict:
         if not candidates:
             raise Refused(
                 "SETTLE_TEXT_ABSENT",
-                f"{text!r} matches no existing checklist line across "
-                f"{len(holders)} holder(s) under {name}/.")
+                f"{text!r} matches no existing checklist line in "
+                f"{holders[0]}.")
         if len(candidates) > 1:
             raise Refused(
                 "SETTLE_TEXT_AMBIGUOUS",
                 f"{text!r} matches {len(candidates)} existing checklist "
-                f"lines across {name}/'s holder(s); which one receives the "
+                f"lines in {holders[0]}; which one receives the "
                 "witness is not decidable without a human choosing.")
         target_path, data, span = candidates[0]
 
@@ -14419,13 +14636,13 @@ def cmd_settle(args: argparse.Namespace) -> dict:
         if not candidates:
             raise Refused(
                 "SETTLE_TEXT_ABSENT",
-                f"{text!r} matches no existing checklist line across "
-                f"{len(holders)} holder(s) under {name}/.")
+                f"{text!r} matches no existing checklist line in "
+                f"{holders[0]}.")
         if len(candidates) > 1:
             raise Refused(
                 "SETTLE_TEXT_AMBIGUOUS",
                 f"{text!r} matches {len(candidates)} existing checklist "
-                f"lines across {name}/'s holder(s); which one this call "
+                f"lines in {holders[0]}; which one this call "
                 "removes is not decidable without a human choosing.")
         target_path, data, span = candidates[0]
 
@@ -14451,13 +14668,13 @@ def cmd_settle(args: argparse.Namespace) -> dict:
         if not candidates:
             raise Refused(
                 "SETTLE_TEXT_ABSENT",
-                f"{text!r} matches no existing checklist line across "
-                f"{len(holders)} holder(s) under {name}/.")
+                f"{text!r} matches no existing checklist line in "
+                f"{holders[0]}.")
         if len(candidates) > 1:
             raise Refused(
                 "SETTLE_TEXT_AMBIGUOUS",
                 f"{text!r} matches {len(candidates)} existing checklist "
-                f"lines across {name}/'s holder(s); which one this call "
+                f"lines in {holders[0]}; which one this call "
                 "reverses is not decidable without a human choosing.")
         target_path, data, span = candidates[0]
 
@@ -14519,13 +14736,13 @@ def cmd_settle(args: argparse.Namespace) -> dict:
         if not candidates:
             raise Refused(
                 "SETTLE_TEXT_ABSENT",
-                f"{text!r} matches no existing checklist line across "
-                f"{len(holders)} holder(s) under {name}/.")
+                f"{text!r} matches no existing checklist line in "
+                f"{holders[0]}.")
         if len(candidates) > 1:
             raise Refused(
                 "SETTLE_TEXT_AMBIGUOUS",
                 f"{text!r} matches {len(candidates)} existing checklist "
-                f"lines across {name}/'s holder(s); which one this call "
+                f"lines in {holders[0]}; which one this call "
                 "marks done is not decidable without a human choosing.")
         target_path, data, span = candidates[0]
 
@@ -14559,13 +14776,13 @@ def cmd_settle(args: argparse.Namespace) -> dict:
         if not candidates:
             raise Refused(
                 "SETTLE_HEADING_ABSENT",
-                f"{heading!r} occurs in none of {len(holders)} holder(s) "
-                f"under {name}/.")
+                f"{heading!r} occurs in none of {holders[0]}'s own "
+                "headings.")
         if len(candidates) > 1:
             raise Refused(
                 "SETTLE_HEADING_AMBIGUOUS",
-                f"{heading!r} occurs {len(candidates)} times across "
-                f"{name}/'s holder(s); which occurrence receives the item "
+                f"{heading!r} occurs {len(candidates)} times in "
+                f"{holders[0]}; which occurrence receives the item "
                 "is not decidable without a human choosing.")
         target_path, data, span = candidates[0]
 
@@ -15743,8 +15960,8 @@ def cmd_offer(args: argparse.Namespace) -> dict:
         # conversation about what the experiment contract should still
         # add, never a write of its own). `discuss` publishes the
         # conversation instead: it appends only a `discuss` ledger event,
-        # never touches `AGREED.md` (spec "expand-contract publishes a
-        # runnable command").
+        # never touches this skill's own declared holder (spec
+        # "expand-contract publishes a runnable command").
         #
         # No `--session` here (design "expand-contract target"): `discuss`
         # is the one write-adjacent command `main()` registers with no
@@ -18498,8 +18715,9 @@ GATING_REFUSALS: dict[str, str] = {
     # seal next, read from its own ladder.
     "POSITION_RUNG_SKIPPED": WORK_STATE,
     # An `@step` operand names a position ITEM's declared step, and that
-    # declaration lives in AGREED.md, not in any argument `position` accepts
-    # -- no flag names a step; clearing this means editing the document or
+    # declaration lives in this skill's own declared holder, not in any
+    # argument `position` accepts -- no flag names a step; clearing this
+    # means editing the document or
     # declaring the step in `__steps__` (design "The new refusal is a work
     # state, raised in `cmd_position`", a measured correction to the
     # proposal's `INVOCATION_DEFECT`).
@@ -18633,6 +18851,12 @@ GATING_REFUSALS: dict[str, str] = {
     # `validate_name` accepts a narrower alphabet). So the repository act is
     # published: `plan`, whose output names the rename it would propose.
     "PRODUCT_DIR_MISNAMED": WORK_STATE,
+    # `the-holder-each-skill-declares` (design D9): a property of the
+    # TARGET, not of the command -- its checklist is named something this
+    # skill did not declare -- so it carries no command prefix, the same
+    # family `PRODUCT_DIR_MISNAMED` joins just above. No flag clears it;
+    # the target repository, or this skill's own declaration, has to.
+    "HOLDER_UNDECLARED": WORK_STATE,
 
     # --- the shared readers -------------------------------------------------
     # The malformed half of `NO_FINDINGS`, and a work state for the same
@@ -18863,9 +19087,9 @@ def _resolve_position_step_unknown(args) -> dict:
     `args`, which carries none).
 
     A question, never a command: no flag this command accepts can name a
-    step, and clearing this means either editing AGREED.md's `@step`
-    operand or adding an entry to `__steps__` -- both decisions only a
-    human can make.
+    step, and clearing this means either editing this skill's own declared
+    holder's `@step` operand or adding an entry to `__steps__` -- both
+    decisions only a human can make.
     """
     target = Path(str(getattr(args, "target", "")))
     name = str(getattr(args, "name", ""))
@@ -18913,9 +19137,9 @@ def _resolve_position_record_unknown(args) -> dict:
     `args`, which carries none).
 
     A question, never a command: no flag this command accepts can name a
-    record, and clearing this means either editing AGREED.md's
-    `@record:level` operand or adding an entry to `__records__` -- both
-    decisions only a human can make.
+    record, and clearing this means either editing this skill's own
+    declared holder's `@record:level` operand or adding an entry to
+    `__records__` -- both decisions only a human can make.
     """
     target = Path(str(getattr(args, "target", "")))
     name = str(getattr(args, "name", ""))
@@ -18943,8 +19167,8 @@ def _refusal_git_command(args, *parts: str) -> str:
 
 
 def _position_block_revision(target: Path, name: str) -> str | None:
-    """The revision `<Name>/AGREED.md`'s position block is already bound to,
-    read straight off its own header.
+    """The revision this skill's own declared holder's position block is
+    already bound to, read straight off its own header.
 
     Rebuilt at the moment of refusal from `target`/`name` alone, for the
     reason `_position_attained_level` states: the `except Refused` chokepoint
@@ -18983,13 +19207,13 @@ def _resolve_step_sequence_not_reached(args) -> dict:
     and the act the operator had to compose by hand each time.
 
     Measured: a step ran and returned, and the next step refused this code --
-    because the sequence check reads the TICK in the target's own `AGREED.md`,
-    and nothing had re-derived it since the run. The operator called
+    because the sequence check reads the TICK in the target's own declared
+    holder, and nothing had re-derived it since the run. The operator called
     `position` between every pair, by hand, and the flow said that nowhere.
 
     **Why `step` does not simply re-derive it itself**, which is the obvious
-    fix and the wrong one. `cmd_position` is "the only writer into
-    `<Name>/AGREED.md`'s position section" -- its own first line, and a
+    fix and the wrong one. `cmd_position` is "the only writer into this
+    skill's own declared holder's position section" -- its own first line, and a
     single-writer invariant rather than a note about scheduling. A `step` that
     re-derived would be a second writer into the agreement document, from a
     command whose entire contract is "run one declared callable, isolated".
@@ -19281,10 +19505,14 @@ _WORK_STATE_RESOLUTIONS = {
         args, "this placement's discussion was asked and never answered, and "
               "an open question is not yet a settled agreement; what is the "
               "answer, and why?"),
+    # `the-holder-each-skill-declares` (design D9, A5): narrowed, not
+    # retired -- the create path (D5) still needs a product folder to
+    # create the declared holder in, so this stays reachable for exactly
+    # that narrower case.
     "SETTLE_HOLDER_ABSENT": lambda args: _refusal_question(
-        args, "no markdown file under this product holds checklist items, and "
-              "settle never invents a file to write into; which file holds "
-              "the agreements, and why?"),
+        args, "this product's own folder does not exist, and settle never "
+              "invents one to write into; scaffold the target first, or is "
+              "the target itself misnamed, and why?"),
     "SETTLE_TEXT_AMBIGUOUS": lambda args: _refusal_question(
         args, "this text matches more than one existing checklist line, and "
               "no argument this command takes can tell them apart; which line "
@@ -19317,6 +19545,19 @@ _WORK_STATE_RESOLUTIONS = {
 
     # --- the guards, one file over -----------------------------------------
     "PRODUCT_DIR_MISNAMED": _resolve_product_dir_misnamed,
+    # `the-holder-each-skill-declares` (design D9): both exits are named
+    # in the detail already (which file, which declared name); the
+    # question repeats them because a human, not a flag, decides between
+    # them.
+    "HOLDER_UNDECLARED": lambda args: _refusal_question(
+        args, "an existing checklist under this product holds items but is "
+              "not named what this skill declares as its own holder (the "
+              "refusal detail names both the found file and the declared "
+              "name); rename the found file to the declared name in the "
+              "target repository, or declare the found file's own name in "
+              "this skill's PROFILE[\"holder\"][\"filename\"] if that name "
+              "should become this skill's convention for every target, and "
+              "why?"),
     "DIRTY_WORKTREE": _resolve_dirty_worktree,
     "GIT_FAILED": lambda args: _refusal_question(
         args, "git itself refused the command this skill ran, and the refusal "
@@ -19331,10 +19572,13 @@ _WORK_STATE_RESOLUTIONS = {
               "record why the defect stays open, and why?"),
 
     # --- the position grammar ----------------------------------------------
+    # `the-holder-each-skill-declares` (design D9, A6): narrowed, not
+    # retired -- identical reasoning to `SETTLE_HOLDER_ABSENT` above.
     "POSITION_HOLDER_ABSENT": lambda args: _refusal_question(
-        args, "no markdown file under this product holds checklist items, and "
-              "the position section is never written into a file this command "
-              "invents; which file holds it, and why?"),
+        args, "this product's own folder does not exist, and the position "
+              "section is never written into a product folder this command "
+              "invents; scaffold the target first, or is the target itself "
+              "misnamed, and why?"),
     # A retry, and the only one in this table. The tree moved under a read that
     # had already located the section, so the section is measured again -- the
     # same command `POSITION_STALE` and `POSITION_UNBACKED` publish, for the

@@ -341,7 +341,8 @@ def _write_common_package(target: Path, *, with_data: bool,
         _STEPS_MODULE_SOURCE, encoding="utf-8")
     (target / "tests" / "findings.py").write_text(findings_source, encoding="utf-8")
     (target / "tests" / "__init__.py").write_text("", encoding="utf-8")
-    (target / "Trial" / "AGREED.md").write_text(_AGREED_SOURCE, encoding="utf-8")
+    (target / "Trial" / "Experimental_AGREED.md").write_text(
+        _AGREED_SOURCE, encoding="utf-8")
     _git_commit(target)
 
 

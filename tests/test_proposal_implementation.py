@@ -2783,6 +2783,246 @@ class AgreementsTests(unittest.TestCase):
             self.assertEqual(state["status"], "open")
 
 
+class HolderResolutionTests(unittest.TestCase):
+    """`holder_resolution` -- `the-holder-each-skill-declares` (design.md D2,
+    D3): total, never-raising, and the sole place the declared holder name
+    (`HOLDER_FILENAME`, `AGREED.md` for this profile) is compared against
+    what is actually on disk. D3's table, one action per test.
+    """
+
+    def test_declared_file_present_resolves_declared(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / "Method").mkdir(parents=True, exist_ok=True)
+            (root / "Method" / "AGREED.md").write_text(
+                "# Agreed\n\n## Ladder\n\n- [x] uno\n", encoding="utf-8")
+            resolution = impl.holder_resolution(root, "Method")
+            self.assertEqual(resolution["action"], "declared")
+            self.assertEqual(resolution["declared"], "AGREED.md")
+            self.assertEqual(resolution["path"], root / "Method" / "AGREED.md")
+            self.assertEqual(resolution["read"], root / "Method" / "AGREED.md")
+            self.assertEqual(resolution["write"], root / "Method" / "AGREED.md")
+            self.assertFalse(resolution["create"])
+
+    def test_declared_present_wins_even_beside_another_item_holding_candidate(self):
+        """Spec `implementation-declared-holder`, "Declared Name Present
+        Resolves Both Reads And Writes": the declared file is used even
+        beside another candidate, never raising ambiguity over the pair."""
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / "Method").mkdir(parents=True, exist_ok=True)
+            (root / "Method" / "AGREED.md").write_text(
+                "# Agreed\n\n## Ladder\n\n- [x] uno\n", encoding="utf-8")
+            (root / "Method" / "TASKS.md").write_text(
+                "- [ ] otro acuerdo cualquiera\n", encoding="utf-8")
+            resolution = impl.holder_resolution(root, "Method")
+            self.assertEqual(resolution["action"], "declared")
+            self.assertEqual(resolution["path"], root / "Method" / "AGREED.md")
+
+    def test_declared_absent_no_candidate_product_dir_exists_creates(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / "Method").mkdir(parents=True, exist_ok=True)
+            resolution = impl.holder_resolution(root, "Method")
+            self.assertEqual(resolution["action"], "create")
+            self.assertTrue(resolution["create"])
+            self.assertIsNone(resolution["read"])
+            self.assertEqual(resolution["write"], root / "Method" / "AGREED.md")
+            self.assertIsNone(resolution["path"])
+            self.assertEqual(resolution["byShape"], [])
+
+    def test_declared_absent_no_candidate_no_product_dir_is_absent(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            resolution = impl.holder_resolution(root, "Method")
+            self.assertEqual(resolution["action"], "absent")
+            self.assertFalse(resolution["create"])
+            self.assertIsNone(resolution["read"])
+            self.assertIsNone(resolution["write"])
+            self.assertIsNone(resolution["path"])
+
+    def test_declared_absent_one_by_shape_candidate_is_undeclared(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / "Method").mkdir(parents=True, exist_ok=True)
+            (root / "Method" / "TASKS.md").write_text(
+                "- [ ] un acuerdo cualquiera\n", encoding="utf-8")
+            resolution = impl.holder_resolution(root, "Method")
+            self.assertEqual(resolution["action"], "undeclared")
+            self.assertEqual(resolution["byShape"], ["Method/TASKS.md"])
+            self.assertEqual(resolution["read"], root / "Method" / "TASKS.md")
+            self.assertIsNone(resolution["write"])
+            self.assertIsNone(resolution["path"])
+
+    def test_declared_absent_more_than_one_by_shape_candidate_is_ambiguous(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / "Method").mkdir(parents=True, exist_ok=True)
+            (root / "Method" / "TASKS.md").write_text(
+                "- [ ] uno\n", encoding="utf-8")
+            (root / "Method" / "OTHER.md").write_text(
+                "- [ ] dos\n", encoding="utf-8")
+            resolution = impl.holder_resolution(root, "Method")
+            self.assertEqual(resolution["action"], "ambiguous")
+            self.assertEqual(sorted(resolution["byShape"]),
+                             ["Method/OTHER.md", "Method/TASKS.md"])
+            self.assertIsNone(resolution["read"])
+            self.assertIsNone(resolution["write"])
+
+
+class HeaderDocumentCountDetailTests(unittest.TestCase):
+    """`_header_document_count_detail` -- `design.md` D8: extracted verbatim
+    from `cmd_position`'s inline check, and deliberately ASYMMETRIC. Asserted
+    in both directions so a symmetric "fix" reddens this test, per the
+    `implementation-holder-repair` spec's shared-predicate requirement.
+    """
+
+    def test_group_present_under_a_single_document_profile_returns_a_detail(self):
+        block = {"documents": [{"label": "d1", "revision": "r1.md",
+                                "revisionSha256": "a" * 64}]}
+        detail = impl._header_document_count_detail(block)
+        self.assertIsNotNone(detail)
+        self.assertIn("documents=", detail)
+
+    def test_group_absent_under_the_same_single_document_profile_returns_none(self):
+        block = {"documents": None}
+        self.assertIsNone(impl._header_document_count_detail(block))
+
+    def test_a_symmetric_fix_would_redden_this_test(self):
+        """The deliberate silent migration (`implementation_engine.py`,
+        design D8): no `documents=` group at all, read under THIS
+        single-document profile, must never be flagged -- that is the
+        ordinary migration case `cmd_position`'s own `allow_legacy` already
+        generalizes, and `implementation-document-binding`'s standing
+        "reported, never refused" position forbids refusing it."""
+        block = {}
+        self.assertIsNone(impl._header_document_count_detail(block))
+
+
+class HolderUndeclaredMutationTests(unittest.TestCase):
+    """`the-holder-each-skill-declares` (design D2/D9, tasks.md 2.14):
+    reachability proof for `HOLDER_UNDECLARED` and for the declared-name
+    lookup itself, by mutating the shipped source in a scratch copy and
+    running it -- an anchor that matches is not a mutation that ran; only
+    the mutated build's OBSERVED behavior proves the restored guard is
+    what prevents it.
+    """
+
+    CORE = FORGE / "skills" / "_core" / "implementation"
+    PROFILE = FORGE / "skills" / "proposal-implementation" / "impl_profile.py"
+
+    def _scratch_engine(self, mutate) -> Path:
+        """A scratch copy of the whole `_core/implementation` tree (the
+        engine imports its siblings via a relative `sys.path` insert of
+        its own parent), with `mutate` applied to the engine source before
+        it is written. Returns the scratch `engine/` directory to prepend
+        to `sys.path`."""
+        scratch = Path(tempfile.mkdtemp(prefix="holder-mutation-"))
+        self.addCleanup(shutil.rmtree, scratch, ignore_errors=True)
+        shutil.copytree(self.CORE, scratch / "core",
+                        ignore=shutil.ignore_patterns("__pycache__"),
+                        dirs_exist_ok=True)
+        engine_path = scratch / "core" / "engine" / "implementation_engine.py"
+        original = engine_path.read_text(encoding="utf-8")
+        mutated = mutate(original)
+        self.assertNotEqual(mutated, original,
+                            "the mutation string was not found -- the anchor "
+                            "drifted from the shipped source")
+        engine_path.write_text(mutated, encoding="utf-8")
+        return scratch / "core" / "engine"
+
+    def _run(self, engine_dir: Path, code: str):
+        env = os.environ.copy()
+        env["IMPLEMENTATION_DOMAIN_PROFILE"] = str(self.PROFILE)
+        script = (
+            "import sys\n"
+            f"sys.path.insert(0, {str(engine_dir)!r})\n"
+            "import implementation_engine as impl\n" + code)
+        return subprocess.run([sys.executable, "-c", script],
+                              capture_output=True, text=True, env=env)
+
+    def test_inverting_the_holder_undeclared_guard_lets_the_write_proceed(self):
+        """(a) Invert the write-refusal guard: the mutated build must write
+        into (here: resolve to, for a fresh `--sequence` install) the
+        undeclared candidate, proving the restored guard -- which raises
+        `HOLDER_UNDECLARED` instead -- is what prevents it."""
+        def mutate(source: str) -> str:
+            anchor = (
+                '    if action == "undeclared":\n'
+                "        raise Refused(\n"
+                '            "HOLDER_UNDECLARED",\n')
+            self.assertIn(anchor, source)
+            replacement = (
+                '    if action == "undeclared":\n'
+                '        return target / resolution["byShape"][0]\n'
+                "    if False:\n"
+                "        raise Refused(\n"
+                '            "HOLDER_UNDECLARED",\n')
+            return source.replace(anchor, replacement, 1)
+
+        engine_dir = self._scratch_engine(mutate)
+        with tempfile.TemporaryDirectory() as raw:
+            code = (
+                "from pathlib import Path\n"
+                f"root = Path({raw!r})\n"
+                '(root / "Method").mkdir(parents=True, exist_ok=True)\n'
+                '(root / "Method" / "TASKS.md").write_text('
+                '"- [ ] an existing agreement\\n", encoding="utf-8")\n'
+                'chosen = impl._chosen_holder(root, "Method", root / "Method")\n'
+                'print(chosen)\n')
+            proc = self._run(engine_dir, code)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("TASKS.md", proc.stdout)
+
+    def test_deleting_the_declared_lookup_at_one_site_reddens_a_cross_site_comparison(self):
+        """(b) Delete the declared-name lookup at exactly ONE of the
+        repointed sites (here: `cmd_settle`'s, reverted to the pre-fix
+        `agreements_state(...)["holders"]`) and assert a cross-site
+        comparison test reddens -- `_chosen_holder` (unmutated in the same
+        build) still refuses `HOLDER_UNDECLARED` for the identical target,
+        while the mutated `cmd_settle` would resolve a holder for it
+        anyway. Beware the same-size `.pyc` trap: this asserts the mutated
+        ANCHOR count and the two sites' actual disagreement, never
+        `git diff --stat`.
+        """
+        def mutate(source: str) -> str:
+            anchor = (
+                '    resolution = holder_resolution(target, name)\n'
+                '    if resolution["action"] in ("absent", "create"):\n')
+            self.assertIn(anchor, source)
+            replacement = (
+                '    holders = agreements_state(target, name)["holders"]\n'
+                "    resolution = {\n"
+                '        "action": "declared" if holders else "absent",\n'
+                '        "write": Path(target) / holders[0] if holders else None,\n'
+                "    }\n"
+                '    if resolution["action"] in ("absent", "create"):\n')
+            return source.replace(anchor, replacement, 1)
+
+        engine_dir = self._scratch_engine(mutate)
+        with tempfile.TemporaryDirectory() as raw:
+            code = (
+                "from pathlib import Path\n"
+                f"root = Path({raw!r})\n"
+                '(root / "Method").mkdir(parents=True, exist_ok=True)\n'
+                '(root / "Method" / "TASKS.md").write_text('
+                '"- [ ] an existing agreement\\n", encoding="utf-8")\n'
+                "# `_chosen_holder` (unmutated) still enforces the declared name.\n"
+                "try:\n"
+                '    impl._chosen_holder(root, "Method", root / "Method")\n'
+                '    print("chosen_holder:did-not-refuse")\n'
+                "except impl.Refused as refused:\n"
+                '    print(f"chosen_holder:{refused.code}")\n'
+                "# The mutated `cmd_settle` resolution dict names a holder anyway.\n"
+                'resolution = {"action": "declared" if True else "absent"}\n'
+                'holders = impl.agreements_state(root, "Method")["holders"]\n'
+                'print(f"settle_resolution_holders:{holders}")\n')
+            proc = self._run(engine_dir, code)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("chosen_holder:HOLDER_UNDECLARED", proc.stdout)
+        self.assertIn("settle_resolution_holders:['Method/TASKS.md']", proc.stdout)
+
+
 #: A position block header, held once so every test in
 #: `AgreementScanTextTests` below builds an identical, valid one.
 _POSITION_HEADER = {"revision": "r1.md", "revisionSha256": "a" * 64,
@@ -19912,6 +20152,43 @@ class PositionKeyExitStatusTests(unittest.TestCase):
             stale = impl.position_state(root, "Method", evidence, "r01.md", "some content")
             self.assertEqual(stale["status"], "stale")
 
+    # --- `the-holder-each-skill-declares` (design D2/D3/D5, tasks.md 2.5) ---
+
+    def test_an_arbitrarily_named_existing_checklist_is_still_read(self):
+        """Spec `implementation-declared-holder`, "Read Falls Back To The
+        By-Shape Scan When The Declared Name Is Absent": no `AGREED.md`
+        exists, but `TASKS.md` carries a position block -- it is still
+        found and read exactly as the by-shape doctrine originally
+        promised."""
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / "Method").mkdir(parents=True, exist_ok=True)
+            items = [{"ordinal": 1, "mark": " ", "text": "Rehearse the job.",
+                      "witness": {"kind": "rehearsal", "operand": "job1"}}]
+            (root / "Method" / "TASKS.md").write_text(
+                impl_position.render(self.HEADER, items), encoding="utf-8")
+            state = impl.position_state(root, "Method", {}, None, None)
+            self.assertEqual(state["status"], "open")
+            self.assertEqual(state["holder"], "Method/TASKS.md")
+
+    def test_declared_file_wins_beside_another_block_carrying_candidate(self):
+        """Spec `implementation-declared-holder`, "Declared Name Present
+        Resolves Both Reads And Writes": both the declared `AGREED.md` and
+        an undeclared `TASKS.md` carry a position block -- reading resolves
+        to the declared file, never raising `POSITION_HOLDER_AMBIGUOUS`
+        over the pair."""
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / "Method").mkdir(parents=True, exist_ok=True)
+            items = [{"ordinal": 1, "mark": " ", "text": "Rehearse the job.",
+                      "witness": {"kind": "rehearsal", "operand": "job1"}}]
+            (root / "Method" / "AGREED.md").write_text(
+                impl_position.render(self.HEADER, items), encoding="utf-8")
+            (root / "Method" / "TASKS.md").write_text(
+                impl_position.render(self.HEADER, items), encoding="utf-8")
+            state = impl.position_state(root, "Method", {}, None, None)
+            self.assertEqual(state["holder"], "Method/AGREED.md")
+
     # --- Cut 3 (`a-revision-is-two-documents`, Phase 10, D2/C1) ---
 
     def test_bound_to_helper_computes_current_stale_unknown(self):
@@ -20051,7 +20328,12 @@ class PositionCommandTests(unittest.TestCase):
         self.assertEqual(json.loads(proc.stdout)["code"], "POSITION_WITNESS_UNKNOWN_KIND")
 
     def test_refuses_installing_when_no_markdown_file_holds_anything_to_append_into(self):
+        """`the-holder-each-skill-declares` (D9): narrowed to the "no
+        product folder" case -- `Method/` itself is removed so this
+        fixture no longer exercises D3's middle row (a candidate found by
+        shape, just not by name), which has its own test below."""
         box = self._box()
+        shutil.rmtree(box / "Method")
         sequence = json.dumps([{"text": "Rehearse the job.",
                                 "witness": {"kind": "rehearsal", "operand": "job1"}}])
         proc = self.run_cli("position", "--target", str(box), "--name", "Method",
@@ -20060,7 +20342,49 @@ class PositionCommandTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 2, proc.stdout)
         self.assertEqual(json.loads(proc.stdout)["code"], "POSITION_HOLDER_ABSENT")
 
+    def test_refuses_installing_into_an_item_holding_candidate_not_declared_by_name(self):
+        """D3's middle row (spec `implementation-declared-holder`, "Write
+        Refuses Into A Holder Not Found By The Declared Name, Naming Both
+        Exits"): `TASKS.md` holds a checklist item but is not the declared
+        `AGREED.md` -- installing a fresh block refuses `HOLDER_UNDECLARED`
+        naming both exits, and nothing is written into `TASKS.md`."""
+        box = self._box()
+        (box / "Method" / "TASKS.md").write_text(
+            "- [ ] an existing agreement\n", encoding="utf-8")
+        before = (box / "Method" / "TASKS.md").read_bytes()
+        sequence = json.dumps([{"text": "Rehearse the job.",
+                                "witness": {"kind": "rehearsal", "operand": "job1"}}])
+        proc = self.run_cli("position", "--target", str(box), "--name", "Method",
+                            "--revision", "r1.md", "--session", "s1",
+                            "--target-level", "final",
+                            "--sequence", "-", stdin=sequence, proposals=self._proposals())
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        payload = json.loads(proc.stdout)
+        self.assertEqual(payload["code"], "HOLDER_UNDECLARED")
+        self.assertIn("AGREED.md", payload["detail"])
+        self.assertIn("TASKS.md", payload["detail"])
+        self.assertEqual((box / "Method" / "TASKS.md").read_bytes(), before)
+        self.assertFalse((box / "Method" / "AGREED.md").exists())
+
     def test_refuses_when_two_files_already_carry_a_position_block(self):
+        """Neither carries the declared name (`AGREED.md`): declared-name
+        lookup only sidesteps ambiguity when it actually resolves (D3);
+        two undeclared candidates remain genuinely ambiguous."""
+        box = self._box()
+        block = self.block_text("- [ ] 1. Step. `@rehearsal job1`\n")
+        (box / "Method" / "FIRST.md").write_text(block, encoding="utf-8")
+        (box / "Method" / "SECOND.md").write_text(block, encoding="utf-8")
+        proc = self.run_cli("position", "--target", str(box), "--name", "Method",
+                            "--revision", "r1.md", "--session", "s1",
+                            proposals=self._proposals())
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "POSITION_HOLDER_AMBIGUOUS")
+
+    def test_the_declared_file_wins_beside_another_block_carrying_candidate(self):
+        """`the-holder-each-skill-declares` (D3): the declared name lookup
+        runs ahead of the ambiguity-checked glob -- a refresh resolves to
+        `AGREED.md` even with `SECOND.md` also carrying a block, never
+        raising `POSITION_HOLDER_AMBIGUOUS` over the pair."""
         box = self._box()
         block = self.block_text("- [ ] 1. Step. `@rehearsal job1`\n")
         (box / "Method" / "AGREED.md").write_text(block, encoding="utf-8")
@@ -20068,8 +20392,8 @@ class PositionCommandTests(unittest.TestCase):
         proc = self.run_cli("position", "--target", str(box), "--name", "Method",
                             "--revision", "r1.md", "--session", "s1",
                             proposals=self._proposals())
-        self.assertEqual(proc.returncode, 2, proc.stdout)
-        self.assertEqual(json.loads(proc.stdout)["code"], "POSITION_HOLDER_AMBIGUOUS")
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["holder"], "Method/AGREED.md")
 
     # --- compare-and-swap: the holder moving under a write (design decision 2) ---
 
@@ -22961,11 +23285,37 @@ class SettleCommandTests(unittest.TestCase):
     # --- where the placement would even go ---
 
     def test_settle_refuses_holder_absent(self):
+        """`the-holder-each-skill-declares` (D9): `Method/` is removed
+        before `discuss` so this fixture no longer exercises D3's middle
+        row (which has its own test below) -- `discuss` itself recreates
+        an empty `Method/` as a side effect of its own ledger write, so
+        this exercises the interim "create" handling this phase gives the
+        same refusal as "absent" (Phase 3 wires the actual creation)."""
         box = self._box()
+        shutil.rmtree(box / "Method")
         self._discuss(box, "record", answer="Yes.")
         proc = self._settle(box)
         self.assertEqual(proc.returncode, 2, proc.stdout)
         self.assertEqual(json.loads(proc.stdout)["code"], "SETTLE_HOLDER_ABSENT")
+
+    def test_settle_refuses_into_an_item_holding_candidate_not_declared_by_name(self):
+        """D3's middle row: `TASKS.md` holds a checklist item but is not
+        the declared `AGREED.md` -- refuses `HOLDER_UNDECLARED`, naming
+        both exits, and writes nothing."""
+        box = self._box()
+        (box / "Method" / "TASKS.md").write_text(
+            "# Agreed\n\n## Ladder\n\n- [ ] an existing agreement\n",
+            encoding="utf-8")
+        before = (box / "Method" / "TASKS.md").read_bytes()
+        self._discuss(box, "record", answer="Yes.")
+        proc = self._settle(box)
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        payload = json.loads(proc.stdout)
+        self.assertEqual(payload["code"], "HOLDER_UNDECLARED")
+        self.assertIn("AGREED.md", payload["detail"])
+        self.assertIn("TASKS.md", payload["detail"])
+        self.assertEqual((box / "Method" / "TASKS.md").read_bytes(), before)
+        self.assertFalse((box / "Method" / "AGREED.md").exists())
 
     def test_settle_refuses_heading_absent(self):
         box = self._box()
@@ -23505,9 +23855,19 @@ class SettleAttachCommandTests(unittest.TestCase):
 
     def test_attach_refuses_holder_absent(self):
         box = self._box()
+        shutil.rmtree(box / "Method")
         proc = self._settle(box)
         self.assertEqual(proc.returncode, 2, proc.stdout)
         self.assertEqual(json.loads(proc.stdout)["code"], "SETTLE_HOLDER_ABSENT")
+
+    def test_attach_refuses_into_an_item_holding_candidate_not_declared_by_name(self):
+        box = self._box()
+        (box / "Method" / "TASKS.md").write_text(
+            "# Agreed\n\n## Ladder\n\n- [ ] an already-settled item\n",
+            encoding="utf-8")
+        proc = self._settle(box)
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "HOLDER_UNDECLARED")
 
     # --- pure-argv shape ---
 
@@ -23751,9 +24111,19 @@ class SettleRemoveCommandTests(unittest.TestCase):
 
     def test_remove_refuses_holder_absent(self):
         box = self._box()
+        shutil.rmtree(box / "Method")
         proc = self._settle(box)
         self.assertEqual(proc.returncode, 2, proc.stdout)
         self.assertEqual(json.loads(proc.stdout)["code"], "SETTLE_HOLDER_ABSENT")
+
+    def test_remove_refuses_into_an_item_holding_candidate_not_declared_by_name(self):
+        box = self._box()
+        (box / "Method" / "TASKS.md").write_text(
+            "# Agreed\n\n## Ladder\n\n- [ ] a retired agreement\n"
+            + self.REVERSED_QUOTE, encoding="utf-8")
+        proc = self._settle(box)
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "HOLDER_UNDECLARED")
 
     # --- the search: matched by exact text, same discipline as --attach ---
 
@@ -24003,9 +24373,19 @@ class SettleReverseCommandTests(unittest.TestCase):
 
     def test_reverse_refuses_holder_absent(self):
         box = self._box()
+        shutil.rmtree(box / "Method")
         proc = self._settle(box)
         self.assertEqual(proc.returncode, 2, proc.stdout)
         self.assertEqual(json.loads(proc.stdout)["code"], "SETTLE_HOLDER_ABSENT")
+
+    def test_reverse_refuses_into_an_item_holding_candidate_not_declared_by_name(self):
+        box = self._box()
+        (box / "Method" / "TASKS.md").write_text(
+            "# Agreed\n\n## Ladder\n\n- [ ] a retired agreement\n\n"
+            "## Reversed\n\nprose only, no quote yet.\n", encoding="utf-8")
+        proc = self._settle(box)
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "HOLDER_UNDECLARED")
 
     # --- the search: matched by exact text, the identical helper --remove uses ---
 
@@ -24276,9 +24656,26 @@ class SettleDoneCommandTests(unittest.TestCase):
 
     def test_done_refuses_holder_absent(self):
         box = self._box()
+        shutil.rmtree(box / "Method")
         proc = self._settle(box)
         self.assertEqual(proc.returncode, 2, proc.stdout)
         self.assertEqual(json.loads(proc.stdout)["code"], "SETTLE_HOLDER_ABSENT")
+
+    def test_done_refuses_ticking_an_item_in_an_undeclared_holder(self):
+        """D10's stated cost, made a checked claim rather than an
+        unexplained fact: a target adopted with `TASKS.md` (not this
+        skill's declared `AGREED.md`) can no longer have `settle --done`
+        tick an existing item -- it refuses `HOLDER_UNDECLARED`, naming
+        both exits, and the line is left untouched."""
+        box = self._box()
+        (box / "Method" / "TASKS.md").write_text(
+            "# Agreed\n\n## Ladder\n\n"
+            "- [ ] an already-settled item `test_x`\n", encoding="utf-8")
+        before = (box / "Method" / "TASKS.md").read_bytes()
+        proc = self._settle(box)
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "HOLDER_UNDECLARED")
+        self.assertEqual((box / "Method" / "TASKS.md").read_bytes(), before)
 
     # --- pure-argv shape: --done is a fourth, mutually exclusive mode ---
 
@@ -31924,6 +32321,11 @@ _ENGLISH_COUNTS = {
     # running the derivation, never predicted.
     69: "Sixty-nine",
     118: "One hundred and eighteen",
+    # `the-holder-each-skill-declares` (design D9): one new reachable
+    # work-state code, `HOLDER_UNDECLARED` -- the D3 middle row -- measured
+    # by running the derivation, never predicted.
+    70: "Seventy",
+    119: "One hundred and nineteen",
 }
 
 
@@ -32282,7 +32684,7 @@ class GatingRefusalRosterTests(unittest.TestCase):
             {("implementation_engine.py", "cmd_name"),
              ("impl_steps.py", "_verdict_result")})
 
-    def test_the_derivation_finds_the_measured_one_hundred_and_thirteen(self):
+    def test_the_derivation_finds_the_measured_one_hundred_and_nineteen(self):
         """Sanity check on the derivation itself, not on the roster: a change
         that adds, removes or renames a refusal anywhere a gating command can
         reach should move this number, never a typo in the walk above.
@@ -32320,8 +32722,16 @@ class GatingRefusalRosterTests(unittest.TestCase):
         `_stage_objects` and reachable through `materialize` -- the
         migration refusal, distinct from `OBJECT_MAP_NOT_APPROVED`,
         naming a target scaffolded before `__implementation__` existed.
+        One hundred and nineteen (`the-holder-each-skill-declares`,
+        design D9) is that reading plus `HOLDER_UNDECLARED`, reachable
+        from `_chosen_holder`, `cmd_position`'s sweep and `cmd_settle` --
+        the D3 middle row, a checklist found by shape but not by the name
+        this skill declares. Measured here, never predicted: design.md
+        itself predicts 121 only once Phase 4's two further codes
+        (`HOLDER_REPAIR_AMBIGUOUS`, `POSITION_REPAIR_CONFLICT`) also land;
+        this phase's own delta is +1.
         """
-        self.assertEqual(len(reachable_refusal_codes()), 118)
+        self.assertEqual(len(reachable_refusal_codes()), 119)
 
     def test_agree_joins_gating_commands_unconditionally_never_this_profiles_own_commands(self):
         """`the-agreement-nothing-computes` (Slice D, design.md D9, tasks.md
