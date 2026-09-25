@@ -1119,7 +1119,22 @@ class TwoDocumentLifecycleTests(unittest.TestCase):
         # real, passing smoke result for `close` to succeed below.
         items = [{"ordinal": 1, "mark": "x", "text": "Rehearse the job.",
                   "witness": {"kind": "rehearsal", "operand": "job1"}}]
-        (box / self.PACKAGE / "AGREED.md").write_text(
+        # `the-holder-each-skill-declares` Phase 8: this profile is built by
+        # `pair_corpus.build`, which declares `Fixture_AGREED.md` as its own
+        # holder (`tests/fixtures/two_documents/impl_profile.py`). Writing a
+        # plain `AGREED.md` here -- a name this profile does NOT declare --
+        # is the exact same undeclared-name-in-its-own-fixture pattern
+        # Phase 7 (task 7.3) already fixed in two sibling fixtures
+        # (`TwoDocumentAmbiguousFamilyRefusesTests`,
+        # `AmbiguousFamilyMutationProvesReachabilityTests`); this is the
+        # third instance, left standing at the time because Phase 7 scoped
+        # `HOLDER_UNDECLARED` narrowly to the `"undeclared"` action and this
+        # fixture's block-only file (no checklist item outside the block)
+        # resolves `"create"` instead (`agreements_state`'s `byShape`
+        # excludes a position block's own items), a DIFFERENT, documented
+        # blind spot -- see `cmd_position`'s own comment beside its
+        # `elif ... == "undeclared":` branch.
+        (box / self.PACKAGE / "Fixture_AGREED.md").write_text(
             impl_position.render(header, items), encoding="utf-8")
 
         return box, commit
@@ -1237,7 +1252,8 @@ class TwoDocumentLifecycleTests(unittest.TestCase):
             self.assertEqual(close_result["status"], "closed")
             self.assertIn("documentRevisions", close_result)
             agreed_after_close = (
-                self.box / self.PACKAGE / "AGREED.md").read_text(encoding="utf-8")
+                self.box / self.PACKAGE
+                / "Fixture_AGREED.md").read_text(encoding="utf-8")
             self.assertIn("documents=", agreed_after_close)
             ledger_events_after_close = [
                 json.loads(line) for line in

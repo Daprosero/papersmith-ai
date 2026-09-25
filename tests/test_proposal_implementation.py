@@ -3229,6 +3229,100 @@ class HolderUndeclaredMutationTests(unittest.TestCase):
         self.assertIn("refused:HOLDER_UNDECLARED", proc2.stdout)
         self.assertIn("unchanged:True", proc2.stdout)
 
+    def test_inverting_cmd_gates_read_side_fold_lets_it_authorize_off_a_foreign_holder(self):
+        """`the-holder-each-skill-declares` Phase 8 (the READ face of the
+        CRITICAL defect Phase 7 closed on the WRITE side, Engram obs
+        2139/2140): reachability proof for `cmd_gate`'s own fold guard,
+        which compares `position_state`'s existing `"holder"` key against
+        `HOLDER_FILENAME` and, on a mismatch, folds the read down to
+        `_absent_position_state`'s own shape before computing a launch
+        verdict from it. Invert the guard back to its pre-fix shape (the
+        comparison never fires) and the mutated build must proceed past
+        `POSITION_ABSENT` and evaluate the launch against `TASKS.md`'s own
+        foreign sequence instead -- reaching `NOT_READY` here, the same
+        code this defect's real, cross-skill reproduction measured
+        (`HolderCollisionTests::test_gate_never_authorizes_a_launch_
+        against_the_siblings_position`) -- proving the restored fold is
+        what prevents a launch from ever being authorized against it."""
+        def mutate(source: str) -> str:
+            anchor = (
+                '    if (position["holder"] is not None\n'
+                '            and Path(position["holder"]).name != HOLDER_FILENAME):\n'
+                "        position = _absent_position_state(len(DOCUMENTS) > 1)\n")
+            self.assertEqual(source.count(anchor), 1)
+            replacement = (
+                '    if (False and position["holder"] is not None\n'
+                '            and Path(position["holder"]).name != HOLDER_FILENAME):\n'
+                "        position = _absent_position_state(len(DOCUMENTS) > 1)\n")
+            return source.replace(anchor, replacement, 1)
+
+        engine_dir = self._scratch_engine(mutate)
+
+        box_setup = (
+            "box = impl.FORGE_ROOT / 'implementations' / 'GateFoldMutation'\n"
+            "import shutil, subprocess\n"
+            "shutil.rmtree(box, ignore_errors=True)\n"
+            "(box / 'Method').mkdir(parents=True)\n"
+            "subprocess.run(['git', 'init', '-q', str(box)], check=True, "
+            "capture_output=True)\n"
+            "(box / 'TASKS_revision.md').write_text('## 1\\ntexto\\n', encoding='utf-8')\n"
+            "import hashlib\n"
+            "revision_sha = hashlib.sha256(b'## 1\\ntexto\\n').hexdigest()\n"
+            "header = ('<!-- position revision=TASKS_revision.md sha256=' "
+            "+ revision_sha + ' derivedAt=2026-09-25T00:00:00Z session=s0 "
+            "target=final -->\\n')\n"
+            "(box / 'Method' / 'TASKS.md').write_text(\n"
+            "    '# Agreed\\n\\n## Ladder\\n- [ ] an existing settled agreement\\n\\n'\n"
+            "    + header\n"
+            "    + '- [ ] 1. a positioned agreement `@rehearsal job1`\\n'\n"
+            "    '<!-- /position -->\\n',\n"
+            "    encoding='utf-8')\n"
+            "before = (box / 'Method' / 'TASKS.md').read_bytes()\n"
+            "import argparse, os\n"
+            "args = argparse.Namespace(\n"
+            "    target=str(box), name='Method', revision='TASKS_revision.md',\n"
+            "    session='s1', job='job1', worker='w1', units=None,\n"
+            "    justification='mutation reachability proof',\n"
+            "    authorization='bogus-token', elected=None)\n"
+            "os.environ['IMPLEMENTATION_PROPOSALS'] = str(box)\n")
+
+        mutated_code = box_setup + (
+            "try:\n"
+            "    result = impl.cmd_gate(args)\n"
+            "    print('unexpected-success:' + str(result))\n"
+            "except impl.Refused as refused:\n"
+            "    print('refused:' + refused.code)\n"
+            "shutil.rmtree(box, ignore_errors=True)\n")
+        proc = self._run(engine_dir, mutated_code)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        # The mutated build never folds the foreign read down to absent --
+        # it reaches the SAME code the real cross-skill reproduction
+        # measured (`NOT_READY`), never `POSITION_ABSENT`.
+        self.assertIn("refused:NOT_READY", proc.stdout)
+
+        # The unmutated build (the shipped fix) refuses `POSITION_ABSENT`
+        # instead, for the identical target shape, and never appends a
+        # `gate` ledger event.
+        unmutated_code = box_setup + (
+            "try:\n"
+            "    result = impl.cmd_gate(args)\n"
+            "    print('unexpected-success:' + str(result))\n"
+            "except impl.Refused as refused:\n"
+            "    print('refused:' + refused.code)\n"
+            "print('unchanged:' + str((box / 'Method' / 'TASKS.md').read_bytes() == before))\n"
+            "shutil.rmtree(box, ignore_errors=True)\n")
+        env = os.environ.copy()
+        env["IMPLEMENTATION_DOMAIN_PROFILE"] = str(self.PROFILE)
+        script2 = (
+            "import sys\n"
+            f"sys.path.insert(0, {str(FORGE / 'skills/_core/implementation/engine')!r})\n"
+            "import implementation_engine as impl\n" + unmutated_code)
+        proc2 = subprocess.run([sys.executable, "-c", script2],
+                              capture_output=True, text=True, env=env)
+        self.assertEqual(proc2.returncode, 0, proc2.stdout + proc2.stderr)
+        self.assertIn("refused:POSITION_ABSENT", proc2.stdout)
+        self.assertIn("unchanged:True", proc2.stdout)
+
 
 class HolderRepairAmbiguousMutationTests(unittest.TestCase):
     """`implementation-holder-repair` spec, "The Stop Is Reachable By

@@ -764,7 +764,182 @@ it).
       task's own numbers, and the 7.7 re-pin they gated, come from clean, sequential
       re-runs only, confirmed by checking for a single `pytest` process before each.
 
-## Total: 70 tasks across 7 phases (Phase 1: 8, Phase 2: 25, Phase 3: 9, Phase 4: 12,
-Phase 5: 3, Phase 6: 6, Phase 7: 8 — 6.6 added during Phase 6 itself, closing the SKILL.md
-roster gap Phases 4/5 both deliberately left unassigned; Phase 7 added post-verify to
-close a CRITICAL defect `sdd-verify` found after Phase 6, operator-authorized)
+## Phase 8: Closing The READ Face Of The CRITICAL Verify Defect (Operator-Authorized Extension)
+
+Phase 7 closed the WRITE face of the CRITICAL defect (Engram obs 2139/2140): a
+foreign or arbitrarily-named holder could no longer be silently adopted for a
+write. Task 7.5 measured, tested, and then reverted a READ-side fix — the
+regression was `tests/test_implementation_pair.py::TwoDocumentLifecycleTests`,
+whose own fixture wrote its position block into a plain `AGREED.md` rather
+than its own profile's declared `Fixture_AGREED.md`. The operator authorized
+closing this gap. Spec: `implementation-declared-holder` — "Write Refuses Into
+A Holder Not Found By The Declared Name, Naming Both Exits" (the read-side
+authorization sub-case this phase closes was untested, and `cmd_gate`'s own
+read was unguarded; the requirement's D3 read/write split already covers it).
+
+- [x] 8.1 Fixed the enabling obstacle first, measured before any production
+      change: `tests/test_implementation_pair.py::TwoDocumentLifecycleTests
+      ::_build_box` wrote its hand-authored position block into a bare
+      `AGREED.md` — a name the two-document fixture profile
+      (`tests/fixtures/two_documents/impl_profile.py`) does NOT declare
+      (`Fixture_AGREED.md` is). This is the third instance of the exact
+      undeclared-name-in-its-own-fixture pattern task 7.3 already fixed in two
+      sibling fixtures. Moved both sites (`_build_box`'s write, `C2 close`'s
+      read-back assertion) to `Fixture_AGREED.md`. Verified in isolation,
+      BEFORE touching any production code, that this alone keeps the lifecycle
+      test green — confirming the KEY INSIGHT: the obstacle was the fixture,
+      not a structural conflict with the read-side fix. Verification:
+      `.venv/bin/python -m pytest tests/test_implementation_pair.py -k
+      TwoDocumentLifecycleTests -v` — 1 passed, 10 subtests passed; full file
+      `.venv/bin/python -m pytest tests/test_implementation_pair.py -q` — 38
+      passed, 18 subtests passed.
+- [x] 8.2 RED: reproduced the CRITICAL defect's READ face as a permanent
+      regression test,
+      `tests/test_experimental_implementation.py::HolderCollisionTests
+      ::test_gate_never_authorizes_a_launch_against_the_siblings_position` —
+      real subprocesses throughout: `proposal-implementation` installs a
+      settled item plus a position block into `Method/AGREED.md`
+      (`_install_siblings_holder`, already shipped by Phase 7), then
+      `experimental-implementation gate` is called against the SAME target.
+      Measured actual pre-fix output (not assumed): `gate` refused
+      `NOT_READY` — it evaluated `job1`'s readiness against the SIBLING's own
+      sequence — instead of the correct `POSITION_ABSENT`, since this skill's
+      own declared holder (`Experimental_AGREED.md`) never existed on this
+      target at all. Verification:
+      `.venv/bin/python -m pytest tests/test_experimental_implementation.py -k
+      test_gate_never_authorizes_a_launch_against_the_siblings_position -v`
+      (RED — pasted actual failure: `AssertionError: 'NOT_READY' !=
+      'POSITION_ABSENT'`).
+- [x] 8.3 GREEN: `skills/_core/implementation/engine/implementation_engine.py`
+      — extracted `position_state`'s own uniform "nothing to report" dict
+      literal into a new module-level `_absent_position_state(multi: bool) ->
+      dict`, called identically from `position_state`'s two `absent` branches
+      (pure extraction, byte-identical output — no key added, no behaviour
+      change; confirmed against the seal zero-delta gate immediately after).
+      Then, in `cmd_gate` — after `position = position_state(...)`, before the
+      launch verdict is computed — added a fold: when
+      `position["holder"]` names a file whose basename is not
+      `HOLDER_FILENAME`, `position` is replaced with
+      `_absent_position_state(len(DOCUMENTS) > 1)`. No new refusal code: the
+      EXISTING `POSITION_ABSENT` (`impl_availability.position_honest`) fires
+      naturally once `status` reads `"absent"`. This is exactly task 7.5's own
+      already-measured, already-RED/GREEN-tested mechanism, scoped
+      identically (`cmd_gate` only — the launch-authorization consumer, never
+      `verify`/`probe`/`discuss`/`offer`/`close`/`step`'s own reporting, which
+      remains out of this phase's charter per the same reasoning
+      `proposal.md`'s "The read-side gap" section already gives for a
+      DIFFERENT read-side check). Acceptance: 8.2's RED test now GREEN.
+      Verification: `.venv/bin/python -m pytest
+      tests/test_experimental_implementation.py -k
+      test_gate_never_authorizes_a_launch_against_the_siblings_position -v`
+      (GREEN); full `HolderCollisionTests` class — 6 passed.
+- [x] 8.4 RED: reproduced a SECOND, distinct blind spot on the WRITE side that
+      Phase 7 diagnosed but explicitly deferred (task 7.5's own report,
+      point 3): `agreements_state`'s `byShape` excludes a position block's
+      own items, so a sibling's declared holder carrying ONLY a block (no
+      checklist line outside it) resolves `holder_resolution`'s `"create"`
+      action, not `"undeclared"` — invisible to Phase 7's `elif ... ==
+      "undeclared":` guard. New test,
+      `tests/test_experimental_implementation.py::HolderCollisionTests
+      ::test_reconcile_never_writes_into_the_siblings_block_only_holder`, with
+      a new helper `_install_siblings_block_only_holder` (a bare `position
+      --sequence` install, no `settle`, so the sibling's `AGREED.md` carries
+      ONLY a block). Measured actual pre-fix output: `experimental-
+      implementation position --reconcile` against the same target wrote a
+      `documents=` group straight into the sibling's `AGREED.md`
+      (`payload["holder"] == "Method/AGREED.md"`), reproducing the exact
+      poisoning task 7.5 named but did not test. Verification:
+      `.venv/bin/python -m pytest tests/test_experimental_implementation.py -k
+      test_reconcile_never_writes_into_the_siblings_block_only_holder -v` (RED
+      — pasted actual failure: `AssertionError: 'Method/AGREED.md' !=
+      'Method/Experimental_AGREED.md'`).
+- [x] 8.5 GREEN, in two measured steps (the first attempt regressed two
+      already-shipped tests and was corrected, not forced):
+      (a) First attempt — widened `cmd_position`'s dispatch condition from
+      `holder_resolution_result["path"] is not None` to
+      `holder_resolution_result["write"] is not None"` (non-`None` for both
+      `"declared"` and `"create"`, `None` only for `"absent"`/`"undeclared"`/
+      `"ambiguous"`). This made 8.4's test GREEN, but running the wider
+      `test_proposal_implementation.py -k "holder or position or repair or
+      mutation"` sweep measured two regressions: `PositionCommandTests
+      ::test_refuses_when_two_files_already_carry_a_position_block` and
+      `PositionRepairHeaderTests
+      ::test_repair_ambiguous_more_than_one_file_carrying_a_block_still_answers_holder_ambiguous`
+      — both broke because the `else` branch's own `len(holders_with_block) >
+      1` ambiguity check (a check independent of, and different from,
+      `holder_resolution`'s own byShape-based `"ambiguous"` action) stopped
+      running for `"create"`, letting an on-disk multi-block ambiguity route
+      into create/repair instead of stopping for a human.
+      (b) Corrected: re-shaped the dispatch to three explicit branches keyed
+      on `holder_resolution_result["action"]` (`"declared"` /
+      `"undeclared"` / else), keeping the `else` branch's block-count
+      ambiguity check FIRST and unconditional, then — only for `"create"`,
+      and only after that check has already passed — resetting
+      `existing_path`/`existing_block` to `(None, None)` whenever a single
+      block-carrying candidate was found, so `_chosen_holder` creates this
+      skill's own declared holder instead of ever adopting the foreign one.
+      Acceptance: 8.4's test GREEN, and both regressed tests GREEN again.
+      Verification: `.venv/bin/python -m pytest
+      tests/test_proposal_implementation.py -k
+      "test_refuses_when_two_files_already_carry_a_position_block or
+      test_repair_ambiguous_more_than_one_file_carrying_a_block_still_answers_holder_ambiguous"
+      -v` (2 passed); `.venv/bin/python -m pytest
+      tests/test_proposal_implementation.py -k "holder or HOLDER or position or
+      Position or repair or Repair or mutation or Mutation" -q` (171 passed);
+      `.venv/bin/python -m pytest tests/test_experimental_implementation.py -k
+      HolderCollisionTests -v` (6 passed); `.venv/bin/python -m pytest
+      tests/test_implementation_pair.py -q` (38 passed, 18 subtests passed).
+- [x] 8.6 Mutation reachability proof for `cmd_gate`'s own fold guard (8.3), as
+      distinct from `_chosen_holder`'s (task 2.14) and `cmd_position`'s own
+      (task 7.6) — `tests/test_proposal_implementation.py
+      ::HolderUndeclaredMutationTests
+      ::test_inverting_cmd_gates_read_side_fold_lets_it_authorize_off_a_foreign_holder`:
+      a scratch-copied engine with the fold guard's condition ANDed with
+      `False` reaches `NOT_READY` against a foreign `TASKS.md` holder — the
+      identical code the real cross-skill reproduction (8.2) measured; the
+      unmutated build, same target shape, refuses `POSITION_ABSENT` and
+      leaves the foreign holder byte-identical. Verification:
+      `.venv/bin/python -m pytest tests/test_proposal_implementation.py -k
+      test_inverting_cmd_gates_read_side_fold_lets_it_authorize_off_a_foreign_holder
+      -v` — 1 passed.
+- [x] 8.7 `tests/test_implementation_domain_lock.py::DerivedDenylistTests
+      ::test_3` re-pin — the new `_absent_position_state` docstring,
+      `cmd_gate`'s fold-guard comment, and the widened three-way
+      `cmd_position` dispatch's own prose moved 9 already-pinned word counts
+      by their comment text alone, zero admissions, zero removals: `before`
+      259→260, `beside` 109→110, `check` 158→161 (+3), `makes` 47→48,
+      `rather` 380→382 (+2), `validated` 9→10, `write` 152→153 (grew); `sweep`
+      12→11, `whose` 157→156 (SHRANK — the Phase 7 sweep-comment text was
+      folded into the `else` branch's own comment once instead of twice, and
+      the rewritten `elif`'s docstring reads differently from what it
+      replaced). Re-pinned `M5_PINNED_RESIDUE` to these MEASURED values and
+      appended a Phase 8 changelog entry matching the file's own convention.
+      Verification: `.venv/bin/python -m pytest
+      tests/test_implementation_domain_lock.py -v` — 28 passed, 134 subtests
+      passed (`CampaignProposalExclusionTests::test_l1`'s own separate
+      `\bproposal\b` pin unaffected).
+- [x] 8.8 Full regression + seal + refusal-count gate. Verification: `npm run
+      test:node` — 653/653 passed (unchanged from baseline); `.venv/bin/python
+      -m pytest --deselect
+      tests/test_proposal_implementation.py::StepCommandTests::test_a_step_killed_mid_run_leaves_a_started_line_with_no_partner
+      -q` (clean, sequential run, no concurrent pytest) — see this phase's own
+      apply-progress record for the exact counts; the failures are exactly
+      the 8 named pre-existing cases from task 1.8, zero unaccounted failure,
+      zero `DerivedDenylistTests` subfail; `.venv/bin/python -m pytest
+      tests/test_implementation_seal.py tests/test_experiments_seal.py` — 73
+      passed, `git diff --stat -- tests/seal/digests.json
+      tests/experiments_seal/digests.json` empty (zero movement in EITHER
+      seal — this phase touches no sealed case); `reachable_refusal_codes()`
+      independently re-run (via the test module's own derivation, not merely
+      read from the pinned assertion) — **121**, unchanged (no refusal code
+      added or retired by this phase); `git status --porcelain
+      implementations/` — clean; `tests/seal_capture.py` — never invoked; no
+      concurrent pytest ever ran (each invocation checked to be the only one
+      in flight before starting the next).
+
+## Total: 79 tasks across 8 phases (Phase 1: 8, Phase 2: 25, Phase 3: 9, Phase 4: 12,
+Phase 5: 3, Phase 6: 6, Phase 7: 8, Phase 8: 8 — 6.6 added during Phase 6 itself, closing
+the SKILL.md roster gap Phases 4/5 both deliberately left unassigned; Phase 7 added
+post-verify to close the WRITE face of a CRITICAL defect `sdd-verify` found after Phase 6,
+operator-authorized; Phase 8 added to close the READ face of the same CRITICAL defect,
+operator-authorized)

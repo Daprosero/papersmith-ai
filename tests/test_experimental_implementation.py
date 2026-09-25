@@ -2065,6 +2065,78 @@ class HolderCollisionTests(unittest.TestCase):
         self.assertNotIn(b"documents=", before)
         return before
 
+    def _install_siblings_block_only_holder(self, box: Path, proposals_root: Path) -> bytes:
+        """Real subprocesses, `proposal-implementation` only, and
+        deliberately WITHOUT `settle`: a bare `position --sequence` against
+        a target with no prior holder at all creates the sibling's declared
+        `Method/AGREED.md` itself (D5, `action == "create"`) and splices its
+        block straight in -- every checklist line lives INSIDE that block,
+        none outside it. `agreements_state`'s `byShape` excludes a position
+        block's own items (`implementation_engine.py:406-410`), so under the
+        experimental profile this resolves `holder_resolution`'s `"create"`
+        action, not `"undeclared"` -- the DIFFERENT, documented blind spot
+        `cmd_position`'s own `elif ... == "undeclared":` comment names.
+        Returns the bytes on disk right after the install."""
+        env = os.environ.copy()
+        env.pop("IMPLEMENTATION_DOMAIN_PROFILE", None)
+        env["IMPLEMENTATION_PROPOSALS"] = str(proposals_root)
+        sequence = json.dumps([{"text": "an agreement the sibling settled",
+                                "witness": {"kind": "rehearsal", "operand": "job1"}}])
+        install = subprocess.run(
+            [sys.executable, str(SIBLING_LAUNCHER), "position",
+             "--target", str(box), "--name", "Method", "--revision", "r1.md",
+             "--session", "s1", "--target-level", "final",
+             "--sequence", "-"],
+            input=sequence, capture_output=True, text=True, cwd=FORGE, env=env)
+        self.assertEqual(install.returncode, 0, install.stdout + install.stderr)
+        before = (box / "Method" / "AGREED.md").read_bytes()
+        self.assertIn(b"an agreement the sibling settled", before)
+        self.assertNotIn(b"documents=", before)
+        return before
+
+    def test_reconcile_never_writes_into_the_siblings_block_only_holder(self):
+        """The `"create"`-action collision (the blind spot `cmd_position`'s
+        own comment beside its `elif ... == "undeclared":` branch names,
+        and `tasks.md` 7.5 reported rather than fixed, pending this exact
+        measurement): a sibling's declared holder carrying ONLY a position
+        block -- no checklist item outside it -- is invisible to
+        `holder_resolution`'s `"undeclared"` classification and resolves
+        `"create"` instead, but `cmd_position`'s dispatch used to key off
+        `holder_resolution_result["path"]` alone (`None` for `"create"`),
+        falling into the same `else` branch an `"undeclared"` candidate
+        used to reach before Phase 7 -- silently adopting the sibling's
+        block as "existing" for a `--reconcile` merge. Measured directly
+        (this test's own RED run, pre-fix): `documents=` landed straight in
+        the sibling's `AGREED.md`. Widening the dispatch to key off
+        `holder_resolution_result["write"]` instead (non-`None` for both
+        `"declared"` and `"create"`) makes this branch's own inner lookup
+        -- still keyed on `["path"]`, which stays `None` for `"create"` --
+        correctly find no existing entry in `holders_with_block`, so this
+        skill's OWN declared holder is created instead."""
+        box = self._box()
+        proposals_root = self._tmp_dir("collision-create-proposals-")
+        (proposals_root / "r1.md").write_text("## 1\ntexto\n", encoding="utf-8")
+        before = self._install_siblings_block_only_holder(box, proposals_root)
+
+        doc1_root = self._tmp_dir("collision-create-doc1-")
+        (doc1_root / "p1.md").write_text("$$a = b \\tag{1}$$\n", encoding="utf-8")
+        env = os.environ.copy()
+        env.pop("IMPLEMENTATION_DOMAIN_PROFILE", None)
+        env["IMPLEMENTATION_PROPOSALS"] = str(proposals_root)
+        env["IMPLEMENTATION_PROPOSALS_1"] = str(doc1_root)
+
+        reconcile = subprocess.run(
+            [sys.executable, str(LAUNCHER), "position",
+             "--target", str(box), "--name", "Method", "--revision", "r1.md",
+             "--session", "s1", "--target-level", "final", "--reconcile"],
+            capture_output=True, text=True, cwd=FORGE, env=env)
+
+        self.assertEqual(reconcile.returncode, 0, reconcile.stdout + reconcile.stderr)
+        payload = json.loads(reconcile.stdout)
+        self.assertEqual(payload["holder"], "Method/Experimental_AGREED.md")
+        self.assertEqual((box / "Method" / "AGREED.md").read_bytes(), before)
+        self.assertTrue((box / "Method" / "Experimental_AGREED.md").exists())
+
     def test_reconcile_never_writes_into_the_siblings_declared_holder(self):
         """The measured CRITICAL defect (`sdd/the-holder-each-skill-
         declares/verify-critical`, Engram obs 2139): `cmd_position` used
@@ -2136,6 +2208,58 @@ class HolderCollisionTests(unittest.TestCase):
                          install_experimental.stdout + install_experimental.stderr)
         payload = json.loads(install_experimental.stdout)
         self.assertEqual(payload["code"], "HOLDER_UNDECLARED")
+        self.assertEqual((box / "Method" / "AGREED.md").read_bytes(), before)
+        self.assertFalse((box / "Method" / "Experimental_AGREED.md").exists())
+
+    def test_gate_never_authorizes_a_launch_against_the_siblings_position(self):
+        """The READ face of the same CRITICAL defect (`sdd/the-holder-
+        each-skill-declares/verify-critical`, Engram obs 2139/2140), left
+        open when Phase 7 closed only the WRITE face: `position_state`
+        falls back to its own raw by-shape block scan -- independent of
+        `holder_resolution` and of `agreements_state`'s item-holding
+        `byShape` -- with no check that the block it finds belongs to a
+        DIFFERENT skill. `cmd_gate` calls `position_state` for its own
+        launch-authorization inputs, so before this fix it read the
+        sibling `proposal-implementation`'s own position as if it were
+        `experimental-implementation`'s: measured directly (this test's
+        own RED run, pre-fix) as `NOT_READY` -- `gate` evaluated `job1`'s
+        readiness against the sibling's sequence -- rather than the
+        correct `POSITION_ABSENT`, since this skill's own declared holder
+        (`Experimental_AGREED.md`) never existed on this target at all.
+
+        No new refusal code: `POSITION_ABSENT` already exists and already
+        fires whenever `position_state`'s `status` reads `"absent"`
+        (`impl_availability.position_honest`); this proves only that
+        `cmd_gate` now folds a foreign-holder read to that same shape
+        before ever computing a verdict from it."""
+        box = self._box()
+        proposals_root = self._tmp_dir("collision-gate-proposals-")
+        (proposals_root / "r1.md").write_text("## 1\ntexto\n", encoding="utf-8")
+        before = self._install_siblings_holder(box, proposals_root)
+
+        env = os.environ.copy()
+        env.pop("IMPLEMENTATION_DOMAIN_PROFILE", None)
+        env["IMPLEMENTATION_PROPOSALS"] = str(proposals_root)
+
+        gate = subprocess.run(
+            [sys.executable, str(LAUNCHER), "gate",
+             "--target", str(box), "--name", "Method", "--revision", "r1.md",
+             "--session", "s1", "--job", "job1", "--worker", "w1",
+             "--justification", "Reproduction of the read-side gap only.",
+             "--authorization", "bogus-token"],
+            capture_output=True, text=True, cwd=FORGE, env=env)
+
+        self.assertEqual(gate.returncode, 2, gate.stdout + gate.stderr)
+        payload = json.loads(gate.stdout)
+        self.assertEqual(payload["code"], "POSITION_ABSENT")
+        # No `gate` ledger event -- the refusal fires before `gate` ever
+        # appends one. (`position.jsonl` already carries the sibling's OWN
+        # `position` event from `_install_siblings_holder` above -- that
+        # file's existence is not evidence either way, only its contents.)
+        ledger_path = box / "Method" / ".implementation" / "position.jsonl"
+        ledger_events = [json.loads(line) for line in
+                         ledger_path.read_text(encoding="utf-8").splitlines()]
+        self.assertFalse(any(e.get("kind") == "gate" for e in ledger_events))
         self.assertEqual((box / "Method" / "AGREED.md").read_bytes(), before)
         self.assertFalse((box / "Method" / "Experimental_AGREED.md").exists())
 

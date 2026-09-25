@@ -559,20 +559,20 @@ def build_denylist(profiles: list[dict[str, Any]]) -> dict[str, str]:
 M5_PINNED_RESIDUE: dict[str, int] = {
     "actually": 83, "admissible": 3, "after": 92, "against": 197,
     "agreed": 16, "answered": 95, "answers": 107, "approved": 47,
-    "audit": 19, "before": 259, "benchmark": 108, "beside": 109,
-    "check": 158, "checkable": 3, "claim": 36, "command": 277,
+    "audit": 19, "before": 260, "benchmark": 108, "beside": 110,
+    "check": 161, "checkable": 3, "claim": 36, "command": 277,
     "commands": 18, "compares": 25, "declaration": 211,
     "destinations": 39, "empty": 132, "established": 5, "experiment": 25,
     "experiments": 6, "implementations": 4, "incomplete": 28,
     "invariant": 22, "isolated": 5, "leave": 11, "leaves": 38,
-    "local": 37, "longer": 54, "makes": 47, "materialized": 12,
+    "local": 37, "longer": 54, "makes": 48, "materialized": 12,
     "measured": 145, "measurement": 43, "module": 195, "notebooks": 110,
     "object": 33, "pilot": 123, "place": 58, "produces": 51,
-    "rather": 380, "recorded": 80, "remedy": 56, "remote": 65,
+    "rather": 382, "recorded": 80, "remedy": 56, "remote": 65,
     "reported": 148, "resolves": 34, "ruled": 9, "runnable": 15,
     "scaffolded": 12, "sitting": 9, "small": 8, "something": 77,
-    "steps": 139, "sweep": 12, "validated": 9, "value": 243, "whose": 157,
-    "write": 152, "wrong": 52
+    "steps": 139, "sweep": 11, "validated": 10, "value": 243, "whose": 156,
+    "write": 153, "wrong": 52
 }
 #: Unit 6b (Part B, the transitions): thirteen pins grew from the new
 #: engine prose alone (`_comparison_reuses_acid_test_question`,
@@ -605,6 +605,21 @@ M5_PINNED_RESIDUE: dict[str, int] = {
 #: `reported` (+1), `resolves` (+1), `sweep` (+1), `whose` (+2), `write`
 #: (+1). Zero admissions, zero removals; the same restraint every prior
 #: unit's changelog block states.
+#: `the-holder-each-skill-declares` Phase 8 (operator-authorized extension
+#: closing the READ face of the same CRITICAL defect: the new
+#: `_absent_position_state` extraction, `cmd_gate`'s own fold-to-absent
+#: guard, and the widened `cmd_position` dispatch -- now three-way on
+#: `holder_resolution_result["action"]` instead of two, closing the
+#: `"create"`-action collision alongside the `"undeclared"` one Phase 7
+#: closed -- comments and one new function docstring only, no new refusal
+#: code): seven pins grew and two SHRANK by their comment's own prose
+#: alone. Grew: `before` (+1), `beside` (+1), `check` (+3), `makes` (+1),
+#: `rather` (+2), `validated` (+1), `write` (+1). SHRANK, deliberately:
+#: `sweep` 12->11 (the Phase 7 comment naming "this sweep's OWN, unrelated
+#: block scan" was rewritten into the `else` branch's own comment, once,
+#: rather than twice); `whose` 157->156 (the rewritten `elif`'s docstring
+#: reads differently from what it replaced). Zero admissions; the same
+#: restraint every prior unit's changelog block states.
 
 
 class DerivedDenylistTests(unittest.TestCase):

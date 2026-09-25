@@ -690,6 +690,50 @@ def _document_extra_sources(revision: str | None) -> list[str | None] | None:
             for index in range(1, len(DOCUMENTS))]
 
 
+def _absent_position_state(multi: bool) -> dict:
+    """`position_state`'s own uniform "nothing to report" shape, extracted
+    so a caller that must FOLD an otherwise-populated read down to "no
+    position for THIS skill" (`cmd_gate`, `the-holder-each-skill-declares`
+    Phase 8 -- see the call site beside `position_state(...)` there) uses
+    the identical dict `position_state` itself returns on its own `absent`
+    branches, rather than a second, hand-typed copy that could silently
+    drift from it. Pure data, no I/O -- `multi` is the caller's own
+    `len(DOCUMENTS) > 1`, the only fact this shape depends on.
+    """
+    return {
+        "status": "absent", "holder": None, "revision": None,
+        "revisionSha256": None,
+        "boundTo": ({entry["label"]: "unknown" for entry in DOCUMENTS}
+                    if multi else "unknown"),
+        "sequence": [], "disagreements": [], "unmeasured": [],
+        # Held to the same key set the full return has below
+        # (`unmeasurable`, filled by the loop the absent branches never
+        # reach).
+        "unmeasurable": [],
+        # Every item whose box is ticked and whose witness nothing measured
+        # -- an assertion, not a reading. Its own list beside `disagreements`
+        # rather than folded into it, because a disagreement names a
+        # measurement that says otherwise and this one has none to name; see
+        # `impl_position.derive`'s docstring.
+        "unbacked": [],
+        "lastGate": None, "lastClose": None,
+        # PR10 (the-position-nobody-holds, level grammar): the rung this
+        # pass is aiming at, read straight off the block's own header --
+        # `None` on every branch that never located a block, since there is
+        # no pass to name a target for.
+        "targetLevel": None,
+        # And the other fact, which the header cannot carry: the rung the
+        # EVIDENCE reaches (`impl_position.attained_level`). An aim above what
+        # is attained is legitimate -- it is how a pass climbs -- so the two
+        # only mean something read side by side, and until this key existed
+        # only one of them was ever visible. A recorded rung standing over
+        # nothing attained was reported nowhere at all, while the much smaller
+        # incident of a tick over nothing measured had `unbacked` to itself;
+        # the gap is now readable without tripping a refusal to find it.
+        "attainedLevel": None,
+    }
+
+
 def position_state(target: Path, name: str, evidence: dict,
                    revision: str | None, source: str | None,
                    extra_sources: list[str | None] | None = None) -> dict:
@@ -729,37 +773,7 @@ def position_state(target: Path, name: str, evidence: dict,
     supplied.
     """
     multi = len(DOCUMENTS) > 1
-    empty = {
-        "status": "absent", "holder": None, "revision": None,
-        "revisionSha256": None,
-        "boundTo": ({entry["label"]: "unknown" for entry in DOCUMENTS}
-                    if multi else "unknown"),
-        "sequence": [], "disagreements": [], "unmeasured": [],
-        # Held to the same key set the full return has below
-        # (`unmeasurable`, filled by the loop this branch never reaches).
-        "unmeasurable": [],
-        # Every item whose box is ticked and whose witness nothing measured
-        # -- an assertion, not a reading. Its own list beside `disagreements`
-        # rather than folded into it, because a disagreement names a
-        # measurement that says otherwise and this one has none to name; see
-        # `impl_position.derive`'s docstring.
-        "unbacked": [],
-        "lastGate": None, "lastClose": None,
-        # PR10 (the-position-nobody-holds, level grammar): the rung this
-        # pass is aiming at, read straight off the block's own header --
-        # `None` on every branch that never located a block, since there is
-        # no pass to name a target for.
-        "targetLevel": None,
-        # And the other fact, which the header cannot carry: the rung the
-        # EVIDENCE reaches (`impl_position.attained_level`). An aim above what
-        # is attained is legitimate -- it is how a pass climbs -- so the two
-        # only mean something read side by side, and until this key existed
-        # only one of them was ever visible. A recorded rung standing over
-        # nothing attained was reported nowhere at all, while the much smaller
-        # incident of a tick over nothing measured had `unbacked` to itself;
-        # the gap is now readable without tripping a refusal to find it.
-        "attainedLevel": None,
-    }
+    empty = _absent_position_state(multi)
     product = target / name
     if not product.is_dir():
         return empty
@@ -12471,7 +12485,7 @@ def cmd_position(args: argparse.Namespace) -> dict:
                 repair_data[path] = data
             holders_with_block.append((path, block))
 
-    if holder_resolution_result["path"] is not None:
+    if holder_resolution_result["action"] == "declared":
         # D3: the declared file, when present, is used even beside another
         # candidate that also carries a block -- the ambiguity scan below
         # applies only when the declared name is absent.
@@ -12496,27 +12510,22 @@ def cmd_position(args: argparse.Namespace) -> dict:
         # rather than re-deriving its message, so the two can never read
         # as two different sentences for the same condition -- and never
         # returns (this action always raises there).
-        #
-        # Deliberately narrower than "every action `holder_resolution`
-        # ever reports besides 'declared'": `agreements_state`'s
-        # `byShape` scan excludes a position block's own items
-        # (`agreements_state`'s documented "a located position block
-        # never counts as an agreement"), so a file carrying ONLY a
-        # position block -- no separate checklist line outside it --
-        # is invisible to `byShape` and resolves "create" or "absent"
-        # here, never "undeclared", even when `holders_with_block`
-        # (this sweep's OWN, unrelated block scan, a few lines up) finds
-        # it. That is a real, pre-existing gap in `holder_resolution`'s
-        # own classification -- untouched by this fix, and reported
-        # rather than silently widened here: measured directly against
-        # `tests/test_implementation_pair.py::TwoDocumentLifecycleTests`,
-        # whose own fixture writes such a block-only file under a name
-        # its OWN profile does not declare, and whose `close`/`gate`
-        # sites depend on the `else` branch below still adopting it for
-        # exactly that "create"/"absent" shape -- widening this guard to
-        # cover them regresses that already-shipped, unrelated test.
         _chosen_holder(target, name, product)
     else:
+        # "create", "absent", or `holder_resolution`'s own "ambiguous"
+        # (a byShape-count signal this dispatch does not branch on
+        # directly -- design.md D2 says its "ambiguous" action maps to
+        # the EXISTING, independent `POSITION_HOLDER_AMBIGUOUS` check
+        # right here, unchanged). The block-count ambiguity check MUST
+        # run before any "create"-specific narrowing below, or a target
+        # already ambiguous on disk (two markdown files each carrying a
+        # block) would launch a create/repair action instead of stopping
+        # for a human -- measured directly:
+        # `PositionCommandTests::test_refuses_when_two_files_already_
+        # carry_a_position_block` and
+        # `PositionRepairHeaderTests::test_repair_ambiguous_more_than_
+        # one_file_carrying_a_block_still_answers_holder_ambiguous` both
+        # regressed when a first attempt at the fix below skipped it.
         if len(holders_with_block) > 1:
             raise Refused(
                 "POSITION_HOLDER_AMBIGUOUS",
@@ -12525,6 +12534,33 @@ def cmd_position(args: argparse.Namespace) -> dict:
                 "section this writes.")
         existing_path, existing_block = (
             holders_with_block[0] if holders_with_block else (None, None))
+        if (holder_resolution_result["action"] == "create"
+                and existing_path is not None):
+            # Phase 8 (`the-holder-each-skill-declares`, tasks.md 7.5/8.x):
+            # the "create"-action collision Phase 7 reported rather than
+            # closed. `agreements_state`'s `byShape` excludes a position
+            # block's own items (its documented "a located position block
+            # never counts as an agreement"), so a sibling skill's declared
+            # holder -- carrying ONLY a block, no separate checklist line
+            # outside it -- is invisible to `holder_resolution`'s
+            # `"undeclared"` classification and resolves `"create"`
+            # instead. The single block-carrying candidate found above can
+            # never be THIS skill's own declared file under `"create"` (by
+            # definition, that file does not exist yet) -- it belongs to
+            # whatever wrote it, and adopting it as "existing" for a
+            # refresh or a `--reconcile` merge is the exact same collision
+            # Phase 7 already closed for `"undeclared"`. Resetting to
+            # "nothing existing" routes the `--sequence`/`--reconcile`
+            # branches below to `_chosen_holder`, which creates THIS
+            # skill's own declared holder instead (D5) -- never touching
+            # the foreign file. Proven at `HolderCollisionTests::
+            # test_reconcile_never_writes_into_the_siblings_block_only_
+            # holder`, and re-validated against `tests/
+            # test_implementation_pair.py::TwoDocumentLifecycleTests` once
+            # its own fixture was moved to its OWN declared name
+            # (`Fixture_AGREED.md`) rather than widening this guard around
+            # an unrelated, already-shipped test that depended on it.
+            existing_path, existing_block = None, None
 
     if repair_header:
         return _cmd_position_repair(
@@ -15628,6 +15664,27 @@ def cmd_gate(args: argparse.Namespace) -> dict:
     evidence = _position_write_evidence(target, name)
     position = position_state(target, name, evidence, args.revision, source,
                               _document_extra_sources(args.revision))
+    # `the-holder-each-skill-declares` Phase 8 (the READ face of the
+    # CRITICAL defect Phase 7 closed on the WRITE side, Engram obs
+    # 2139/2140): `position_state` falls back to its own raw by-shape
+    # block scan whenever this skill's declared holder carries no block --
+    # deliberately, per D3, so an arbitrarily-named EXISTING checklist is
+    # still found and read. But that fallback names no owner: a foreign
+    # skill's own declared holder (already carrying a block) satisfies it
+    # exactly as well as a genuinely undeclared one does, and `gate` is the
+    # one caller whose read feeds a LAUNCH AUTHORIZATION decision, never
+    # merely a report. No new refusal code: folding a mismatched holder to
+    # `_absent_position_state`'s own shape -- the identical dict
+    # `position_state` returns on its own `absent` branches -- makes the
+    # EXISTING `POSITION_ABSENT` refusal (`impl_availability.
+    # position_honest`) fire below, exactly as it already does for a
+    # target with no position at all. `position["holder"]` is `None` on
+    # every branch this comparison would otherwise be meaningless for
+    # (already absent), so the check only ever narrows an existing read,
+    # never widens one.
+    if (position["holder"] is not None
+            and Path(position["holder"]).name != HOLDER_FILENAME):
+        position = _absent_position_state(len(DOCUMENTS) > 1)
     smoke_ready = evidence["smokeReady"]
     verdict = impl_availability.launch_available(
         status=position["status"], unbacked=position["unbacked"],
