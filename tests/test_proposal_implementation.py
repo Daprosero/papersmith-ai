@@ -14861,6 +14861,7 @@ FORGE_LEXICON: dict[str, str] = {
                  "trying to optimize, and ordinary English besides",
     "pipeline": "ordinary English for a sequence of steps, used twice in "
                 "doctrine prose about how a construction arranges itself",
+    "plots": "ordinary English for what a figure does with a data series. The single word-boundary hit in the forge is one docstring sentence in `paper_tikz.py` describing `\\pgfplotsinvokeforeach`, whose own name is the standard LaTeX package `pgfplots` -- the other two occurrences sit INSIDE that macro name and are not word-boundary matches at all. The word entered the denylist because a target on this disk happens to hold a notebook whose filename contains it, which is a fact about one operator's folder rather than about the forge's vocabulary",
     "pooling": "the statistical act of folding several measurements into one, "
                "named in the doctrine sentence that says every rule governing a "
                "measurement governs every statement derived from it. The forge "
