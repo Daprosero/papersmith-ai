@@ -355,16 +355,67 @@ def print_unfiled(unfiled: list[Path], options: list[str]) -> None:
     print("    python extract_pdf.py --file <pdf> --into <topic>")
 
 
+def _is_references_heading(match: "re.Match[str]") -> bool:
+    """Whether a heading match opens a references/bibliography section."""
+    title = _MARKDOWN_DECOR.sub("", match.group(1)).strip()
+    return bool(_REFERENCES_TITLE.match(title))
+
+
 def strip_references(text: str) -> str:
-    """Drop everything from the last references/bibliography heading to the end."""
-    cut = None
-    for m in _HEADING_LINE.finditer(text):
-        title = _MARKDOWN_DECOR.sub("", m.group(1)).strip()
-        if _REFERENCES_TITLE.match(title):
-            cut = m.start()
-    if cut is None:
+    """Drop the references/bibliography section, and ONLY that section.
+
+    Cuts from the last references heading to the next heading that is not
+    itself a references heading -- not to the end of the document, which
+    was the original behaviour and took the appendix with it. Measured on
+    a real corpus: of 17 ingested papers carrying a references heading,
+    five place supplementary material after it, and cutting to the end
+    removed between 52% and 74% of each file. What went was citable
+    science -- a generalization bound, a derivation, dataset details, an
+    algorithm's specification -- not trailing bibliography.
+
+    The end of the cut is the NEXT HEADING OF ANY LEVEL, deliberately not
+    the next heading at the same or shallower level. That depth rule reads
+    like the principled one and fails on real input: measured, one paper
+    puts `# References` above a `## A. Further Information ...` appendix,
+    so the appendix is nominally a CHILD of the references section.
+    Marker infers heading levels from font size, so depth carries no
+    reliable claim about structure.
+
+    Stopping at the first following heading can leave part of a
+    references section behind -- a bibliography with its own sub-headings,
+    which this corpus does not contain but some paper will. That is the
+    safe direction and it is chosen on purpose: surviving reference lines
+    are a nuisance a reader skips, while a deleted appendix is content the
+    operator cannot recover without re-ingesting the PDF. Consecutive
+    references headings ARE all cut, since a two-column render can emit
+    the same heading twice and stopping at the second would leave the
+    block under it.
+    """
+    headings = list(_HEADING_LINE.finditer(text))
+    last = None
+    for index, match in enumerate(headings):
+        if _is_references_heading(match):
+            last = index
+    if last is None:
         return text
-    return text[:cut].rstrip() + "\n"
+    # Walk back over an unbroken run of references headings. The LAST one
+    # is what anchors the cut -- an early false positive in a body that
+    # merely discusses references must not take the paper with it -- but
+    # starting there would leave every earlier block of the same run
+    # behind, which is exactly what a two-column render produces.
+    start = last
+    while start > 0 and _is_references_heading(headings[start - 1]):
+        start -= 1
+
+    head = text[:headings[start].start()].rstrip()
+    tail = ""
+    for match in headings[last + 1:]:
+        if not _is_references_heading(match):
+            tail = text[match.start():]
+            break
+    if not tail:
+        return head + "\n"
+    return head + "\n\n" + tail
 
 
 def build_converter(mode: str | None):

@@ -95,6 +95,72 @@ class StripReferencesTests(unittest.TestCase):
         self.assertIn("Body mentions the References section.", out)
         self.assertNotIn("[1] cite", out)
 
+    def test_an_appendix_after_the_references_survives(self) -> None:
+        """References are not always last, and cutting to the end of the
+        document takes the appendix with them.
+
+        Measured on this operator's own corpus: of 17 ingested papers
+        carrying a references heading, FIVE place supplementary material
+        after it, and cutting to the end removed between 52% and 74% of
+        each file -- `A UDA generalization bound`, `A1 Derivation of
+        UW-SO`, `B DATASET DETAILS`, `B. Details on Neural Networks
+        RAINCOAT Algorithm`, `A.1 RELATED WORK (CONTINUED)`. That is
+        citable science, not trailing bibliography.
+        """
+        text = (
+            "# Paper\n\nBody text.\n\n"
+            "# References\n\n[1] Foo et al.\n[2] Bar.\n\n"
+            "# Appendix A\n\nThe derivation that matters.\n"
+        )
+        out = EXTRACTOR.strip_references(text)
+        self.assertIn("Body text.", out)
+        self.assertNotIn("Foo et al.", out)
+        self.assertIn("Appendix A", out)
+        self.assertIn("The derivation that matters.", out)
+
+    def test_the_appendix_survives_at_any_heading_depth(self) -> None:
+        """The depth of the heading that follows cannot be the test.
+
+        Stopping at the next heading of the same-or-shallower level reads
+        like the principled rule and fails on real input: measured in
+        `he2023.md`, references sit at `# References` and the appendix
+        opens at `## A. Further Information ...` -- DEEPER. Marker infers
+        heading levels from font size, so depth is not a reliable signal
+        about structure. The cut therefore ends at the next heading of any
+        level that is not itself a references heading.
+        """
+        for appendix in ("# Appendix", "## Appendix", "#### Appendix"):
+            with self.subTest(appendix=appendix):
+                text = (
+                    f"Body.\n\n# References\n\n[1] cite.\n\n"
+                    f"{appendix}\n\nKept.\n"
+                )
+                out = EXTRACTOR.strip_references(text)
+                self.assertNotIn("[1] cite", out)
+                self.assertIn("Kept.", out)
+
+    def test_consecutive_references_headings_are_all_cut(self) -> None:
+        """A two-column render can emit the heading twice. Stopping at the
+        first following heading must not leave the second block behind."""
+        text = (
+            "Body.\n\n## References\n\n[1] one.\n\n"
+            "## REFERENCES\n\n[2] two.\n\n# Appendix\n\nKept.\n"
+        )
+        out = EXTRACTOR.strip_references(text)
+        self.assertNotIn("[1] one", out)
+        self.assertNotIn("[2] two", out)
+        self.assertIn("Kept.", out)
+
+    def test_references_last_still_cuts_to_the_end(self) -> None:
+        """The case that already worked must keep working: with nothing
+        after them, the references run to the end of the file and the whole
+        tail goes."""
+        text = "# Paper\n\nBody.\n\n## References\n\n[1] cite.\n[2] more.\n"
+        out = EXTRACTOR.strip_references(text)
+        self.assertIn("Body.", out)
+        self.assertNotIn("cite", out)
+        self.assertNotIn("more", out)
+
     def test_text_without_a_references_heading_is_unchanged(self) -> None:
         text = "# Paper\n\nAll body, no bibliography.\n"
         self.assertEqual(EXTRACTOR.strip_references(text), text)
