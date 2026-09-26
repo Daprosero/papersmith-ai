@@ -17,9 +17,10 @@ from papersmith.yamllite import loads
 
 class InitTests(unittest.TestCase):
     def new_tmp(self) -> Path:
+        """Scratch directory, resolved -- see BridgesTests.new_tmp for why."""
         holder = tempfile.TemporaryDirectory()
         self.addCleanup(holder.cleanup)
-        return Path(holder.name)
+        return Path(holder.name).resolve()
 
     def test_initialize_creates_the_workspace_contract(self) -> None:
         tmp_path = self.new_tmp()

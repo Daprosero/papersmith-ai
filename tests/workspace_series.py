@@ -161,7 +161,12 @@ def run_node(script: Path, request: str, *, workspace: Path,
 
 
 def new_tmp(case) -> Path:
-    """Temporary directory owned by a ``unittest.TestCase``."""
+    """Temporary directory owned by a ``unittest.TestCase``, resolved.
+
+    See ``tests/test_papersmith_bridges.py::BridgesTests.new_tmp`` for why:
+    unresolved, this is two spellings of one macOS directory that compare
+    unequal to production's own resolved answer.
+    """
     holder = tempfile.TemporaryDirectory()
     case.addCleanup(holder.cleanup)
-    return Path(holder.name)
+    return Path(holder.name).resolve()

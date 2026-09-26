@@ -19,9 +19,10 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class IngestTests(unittest.TestCase):
     def new_tmp(self) -> Path:
+        """Scratch directory, resolved -- see BridgesTests.new_tmp for why."""
         holder = tempfile.TemporaryDirectory()
         self.addCleanup(holder.cleanup)
-        return Path(holder.name)
+        return Path(holder.name).resolve()
 
     def patch(self, target, attribute, value):
         patcher = mock.patch.object(target, attribute, value)

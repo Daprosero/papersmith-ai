@@ -16,9 +16,10 @@ from papersmith.core import status as status_module
 
 class StatusTests(unittest.TestCase):
     def new_tmp(self) -> Path:
+        """Scratch directory, resolved -- see BridgesTests.new_tmp for why."""
         holder = tempfile.TemporaryDirectory()
         self.addCleanup(holder.cleanup)
-        return Path(holder.name)
+        return Path(holder.name).resolve()
 
     def test_status_json_reports_versions_and_workspace_inventory(self) -> None:
         tmp_path = self.new_tmp()

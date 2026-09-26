@@ -68,9 +68,10 @@ def _skill_description(workspace: Path, name: str) -> str:
 
 class GeneratorsTests(unittest.TestCase):
     def new_tmp(self) -> Path:
+        """Scratch directory, resolved -- see BridgesTests.new_tmp for why."""
         holder = tempfile.TemporaryDirectory()
         self.addCleanup(holder.cleanup)
-        return Path(holder.name)
+        return Path(holder.name).resolve()
 
     def test_generators_are_clean_after_init(self) -> None:
         workspace = _workspace(self.new_tmp())
@@ -173,9 +174,10 @@ class CommandDerivationTests(unittest.TestCase):
     """``collect_commands`` is fail-soft: user state never hard-fails generation."""
 
     def new_tmp(self) -> Path:
+        """Scratch directory, resolved -- see BridgesTests.new_tmp for why."""
         holder = tempfile.TemporaryDirectory()
         self.addCleanup(holder.cleanup)
-        return Path(holder.name)
+        return Path(holder.name).resolve()
 
     def _broken(self, workspace: Path, name: str, text: str) -> None:
         directory = workspace / "skills" / name
@@ -269,9 +271,10 @@ class WorkspaceToolsResolverTests(unittest.TestCase):
     """Change B: one resolver decides which runtimes a workspace declares."""
 
     def new_tmp(self) -> Path:
+        """Scratch directory, resolved -- see BridgesTests.new_tmp for why."""
         holder = tempfile.TemporaryDirectory()
         self.addCleanup(holder.cleanup)
-        return Path(holder.name)
+        return Path(holder.name).resolve()
 
     def _warned(self, workspace: Path) -> tuple[tuple[str, ...], list]:
         with warnings.catch_warnings(record=True) as caught:

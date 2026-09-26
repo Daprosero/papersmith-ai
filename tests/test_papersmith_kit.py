@@ -48,9 +48,20 @@ def _make_checkout(tmp_path: Path) -> Path:
 
 class KitTests(unittest.TestCase):
     def new_tmp(self) -> Path:
+        """A scratch directory, RESOLVED.
+
+        `resolve_kit_root()` resolves every path it returns, on all three of
+        its branches. On macOS `tempfile` hands out a path under `/var`,
+        which is a symlink to `/private/var`, so comparing its answer
+        against an unresolved fixture compares two spellings of one
+        directory and finds them unequal. Three tests here failed on that
+        platform detail with the resolver under them behaving correctly.
+        Resolving in the fixture, rather than at each assertion, is what
+        keeps the next assertion from rediscovering it.
+        """
         holder = tempfile.TemporaryDirectory()
         self.addCleanup(holder.cleanup)
-        return Path(holder.name)
+        return Path(holder.name).resolve()
 
     def set_env(self, name: str, value: str) -> None:
         patcher = mock.patch.dict(os.environ, {name: value})

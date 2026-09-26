@@ -24,9 +24,10 @@ def _workspace(tmp_path: Path) -> Path:
 
 class UpgradeTests(unittest.TestCase):
     def new_tmp(self) -> Path:
+        """Scratch directory, resolved -- see BridgesTests.new_tmp for why."""
         holder = tempfile.TemporaryDirectory()
         self.addCleanup(holder.cleanup)
-        return Path(holder.name)
+        return Path(holder.name).resolve()
 
     def set_env(self, name: str, value: str) -> None:
         patcher = mock.patch.dict(os.environ, {name: value})

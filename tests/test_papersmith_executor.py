@@ -5,8 +5,10 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -26,6 +28,16 @@ def _workspace(tmp_path: Path) -> Path:
     workspace = tmp_path / "paper"
     init_module.initialize(workspace, run_npm=False)
     return workspace
+
+
+#: The interpreter the local `smoke` profile below actually launches.
+#: `executor.run_profile()` `shlex.split`s the entrypoint and runs it with
+#: no shell, so a bare `python` is resolved by the caller's `PATH` -- and on
+#: a machine where `PATH` carries `python3` but no `python`, the job simply
+#: failed and the profile reported `failed` over a correct executor. Naming
+#: `sys.executable` removes `PATH` from the question entirely, which is the
+#: same rule `tests/test_forge_gate.py` holds the repository's own gate to.
+LOCAL_INTERPRETER = shlex.quote(sys.executable)
 
 
 def _write_local_manifest(workspace: Path, *, sharded: bool = False) -> None:
@@ -57,7 +69,7 @@ compute_targets:
 execution_profiles:
   smoke:
     target: "local"
-    entrypoint: "python -c \\\"print(42)\\\""
+    entrypoint: "{LOCAL_INTERPRETER} -c \\\"print(42)\\\""
     timeout_seconds: 30
     sharding:
       enabled: {enabled}{values}
@@ -129,9 +141,10 @@ def _remote_args(**overrides):
 
 class ExecutorTests(unittest.TestCase):
     def new_tmp(self) -> Path:
+        """Scratch directory, resolved -- see BridgesTests.new_tmp for why."""
         holder = tempfile.TemporaryDirectory()
         self.addCleanup(holder.cleanup)
-        return Path(holder.name)
+        return Path(holder.name).resolve()
 
     def patch(self, target, attribute, value):
         patcher = mock.patch.object(target, attribute, value)
