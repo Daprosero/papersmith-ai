@@ -362,61 +362,75 @@ def _is_references_heading(match: "re.Match[str]") -> bool:
 
 
 def strip_references(text: str) -> str:
-    """Drop the references/bibliography section, and ONLY that section.
+    """Drop EVERY references/bibliography section, and only those sections.
 
-    Cuts from the last references heading to the next heading that is not
-    itself a references heading -- not to the end of the document, which
-    was the original behaviour and took the appendix with it. Measured on
-    a real corpus: of 17 ingested papers carrying a references heading,
-    five place supplementary material after it, and cutting to the end
-    removed between 52% and 74% of each file. What went was citable
-    science -- a generalization bound, a derivation, dataset details, an
-    algorithm's specification -- not trailing bibliography.
+    Two things this must not do, both learned by measuring a real corpus of
+    116 ingested documents rather than by reasoning about the shape of a
+    paper:
 
-    The end of the cut is the NEXT HEADING OF ANY LEVEL, deliberately not
-    the next heading at the same or shallower level. That depth rule reads
-    like the principled one and fails on real input: measured, one paper
-    puts `# References` above a `## A. Further Information ...` appendix,
-    so the appendix is nominally a CHILD of the references section.
-    Marker infers heading levels from font size, so depth carries no
-    reliable claim about structure.
+    It must not cut to the end of the document. References are not always
+    last: in ML venues the appendix usually follows them. Seventeen of those
+    documents carried a references heading and five placed supplementary
+    material after it -- cutting to the end removed 52% to 74% of each file,
+    taking a generalization bound, a derivation, dataset details and an
+    algorithm's specification with it. So each cut ends at the next heading
+    that is not itself a references heading.
 
-    Stopping at the first following heading can leave part of a
-    references section behind -- a bibliography with its own sub-headings,
-    which this corpus does not contain but some paper will. That is the
-    safe direction and it is chosen on purpose: surviving reference lines
-    are a nuisance a reader skips, while a deleted appendix is content the
-    operator cannot recover without re-ingesting the PDF. Consecutive
-    references headings ARE all cut, since a two-column render can emit
-    the same heading twice and stopping at the second would leave the
-    block under it.
+    That end is the next heading of ANY level, deliberately not the next
+    heading at the same or shallower level. The depth rule reads as the
+    principled one and fails on real input: one paper puts `# References`
+    above a `## A. Further Information ...` appendix, making the appendix
+    nominally a CHILD of the references. Marker infers heading levels from
+    font size, so depth carries no reliable claim about structure.
+
+    And it must not cut only one section. Eight of those documents carry a
+    `References` section in the body AND another later, usually beside
+    supplementary material. An earlier version anchored on the LAST one,
+    removed the trailing block and left the body's real bibliography in
+    place -- which looked like success, because the file did get smaller.
+    Every matching section is cut, which also makes this idempotent: a
+    second pass has nothing left to find, and a test asserts that rather
+    than leaving it for someone to notice.
+
+    A consecutive run of references headings is cut as one span, since a
+    two-column render can emit the same heading twice.
+
+    Stopping at the first following heading can leave part of a references
+    section behind when a bibliography carries sub-headings of its own. That
+    is the safe direction and it is chosen on purpose: surviving reference
+    lines are a nuisance a reader skips, while a deleted appendix costs a
+    PDF re-ingestion to recover.
     """
     headings = list(_HEADING_LINE.finditer(text))
-    last = None
-    for index, match in enumerate(headings):
-        if _is_references_heading(match):
-            last = index
-    if last is None:
+    if not headings:
         return text
-    # Walk back over an unbroken run of references headings. The LAST one
-    # is what anchors the cut -- an early false positive in a body that
-    # merely discusses references must not take the paper with it -- but
-    # starting there would leave every earlier block of the same run
-    # behind, which is exactly what a two-column render produces.
-    start = last
-    while start > 0 and _is_references_heading(headings[start - 1]):
-        start -= 1
 
-    head = text[:headings[start].start()].rstrip()
-    tail = ""
-    for match in headings[last + 1:]:
-        if not _is_references_heading(match):
-            tail = text[match.start():]
-            break
-    if not tail:
-        return head + "\n"
-    return head + "\n\n" + tail
+    spans: list[tuple[int, int]] = []
+    index = 0
+    while index < len(headings):
+        if not _is_references_heading(headings[index]):
+            index += 1
+            continue
+        run_end = index
+        while (run_end + 1 < len(headings)
+               and _is_references_heading(headings[run_end + 1])):
+            run_end += 1
+        after = headings[run_end + 1] if run_end + 1 < len(headings) else None
+        spans.append((headings[index].start(),
+                      after.start() if after else len(text)))
+        index = run_end + 1
 
+    if not spans:
+        return text
+
+    kept: list[str] = []
+    cursor = 0
+    for begin, finish in spans:
+        kept.append(text[cursor:begin].rstrip())
+        cursor = finish
+    if cursor < len(text):
+        kept.append(text[cursor:])
+    return "\n\n".join(part for part in kept if part) + ("\n" if not kept[-1].endswith("\n") else "")
 
 def build_converter(mode: str | None):
     """Construct a keyless Marker PDF->markdown converter (models loaded once)."""

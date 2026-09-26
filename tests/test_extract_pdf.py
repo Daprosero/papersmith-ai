@@ -161,6 +161,46 @@ class StripReferencesTests(unittest.TestCase):
         self.assertNotIn("cite", out)
         self.assertNotIn("more", out)
 
+    def test_every_references_section_is_cut_not_only_the_last(self) -> None:
+        """A paper can carry more than one bibliography.
+
+        Measured on a real corpus: eight ingested papers place a
+        `References` section in the body AND another later, typically
+        beside supplementary material. Anchoring the cut on the LAST one
+        removed the trailing block and left the body's real bibliography
+        sitting in the document -- the opposite of the intent, and invisible
+        because the file did get smaller.
+        """
+        text = (
+            "Body.\n\n## References\n\n[1] first list.\n\n"
+            "## Associated Data\n\nKept one.\n\n"
+            "## References\n\n[2] second list.\n\n"
+            "## Supplementary Materials\n\nKept two.\n"
+        )
+        out = EXTRACTOR.strip_references(text)
+        self.assertNotIn("first list", out)
+        self.assertNotIn("second list", out)
+        self.assertIn("Kept one.", out)
+        self.assertIn("Kept two.", out)
+
+    def test_stripping_twice_changes_nothing_the_second_time(self) -> None:
+        """Idempotence is the property that catches a partial cut.
+
+        A pass that removes one bibliography and leaves another looks like
+        success -- the file shrank -- and only a second pass reveals it by
+        shrinking again. Asserting the second pass is a no-op turns that
+        into a test instead of something someone has to notice.
+        """
+        text = (
+            "Body.\n\n## References\n\n[1] a.\n\n"
+            "## Appendix\n\nKept.\n\n## Bibliography\n\n[2] b.\n"
+        )
+        once = EXTRACTOR.strip_references(text)
+        self.assertEqual(
+            EXTRACTOR.strip_references(once), once,
+            "a second pass still found something to remove, so the first "
+            "pass left a references section behind")
+
     def test_text_without_a_references_heading_is_unchanged(self) -> None:
         text = "# Paper\n\nAll body, no bibliography.\n"
         self.assertEqual(EXTRACTOR.strip_references(text), text)
