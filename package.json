@@ -1,6 +1,6 @@
 {
   "name": "papersmith-ai",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "description": "Papersmith AI — native Claude Code skills for paper ingestion and paper-proposal.",

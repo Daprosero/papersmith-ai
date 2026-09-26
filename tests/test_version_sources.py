@@ -26,6 +26,7 @@ looked.
 
 import json
 import re
+import subprocess
 import sys
 import tomllib
 import unittest
@@ -36,6 +37,16 @@ import papersmith
 FORGE_ROOT = Path(__file__).resolve().parent.parent
 MANIFEST = FORGE_ROOT / "package.json"
 PYPROJECT = FORGE_ROOT / "pyproject.toml"
+CHANGELOG = FORGE_ROOT / "CHANGELOG.md"
+
+#: A release tag, as this project spells one. `backup/...` tags exist and are
+#: not releases, which is why the shape is matched rather than "any tag".
+RELEASE_TAG = re.compile(r"^v(\d+\.\d+\.\d+)$")
+
+#: What a user receives. `tests/` is deliberately absent: a suite growing is
+#: not a reason to cut a release, and treating it as one would make every
+#: guard added here demand a version bump of its own.
+SHIPPED_ROOTS = ("src", "skills", "scripts")
 
 #: The attribute `pyproject.toml` must keep reading. Named here because the
 #: point of the assertion is that this exact indirection survives: any other
@@ -121,6 +132,77 @@ class VersionSourcesAgreeTests(unittest.TestCase):
             f"`import papersmith` resolved to {source}, which is not this "
             f"checkout. Run `npm run setup:env` so the editable install "
             "points here (interpreter: " + sys.executable + ")")
+
+
+class ReleaseHygieneTests(unittest.TestCase):
+    """A version that never moves makes everything downstream of it inert.
+
+    `0.1.0` was set in the commit that created the package and did not change
+    again for more than a thousand commits. Nothing was wrong with the code
+    that read it -- `upgrade` compares versions to refuse a downgrade, and
+    that comparison is correct -- but with one value in circulation it could
+    never fire. A guard that cannot fire and a guard that passes look the
+    same from outside, which is the failure this class exists to make loud.
+    """
+
+    @staticmethod
+    def _git(*args: str) -> str:
+        return subprocess.run(
+            ["git", *args], cwd=FORGE_ROOT,
+            capture_output=True, text=True, check=True).stdout
+
+    def _release_tags(self) -> list[tuple[tuple[int, ...], str, str]]:
+        """Every release tag as `(order, tag, version)`, oldest first."""
+        found = []
+        for line in self._git("tag").split("\n"):
+            matched = RELEASE_TAG.match(line.strip())
+            if matched:
+                version = matched.group(1)
+                found.append((tuple(int(p) for p in version.split(".")),
+                              line.strip(), version))
+        return sorted(found)
+
+    def test_the_changelog_documents_the_current_version(self) -> None:
+        """A bump with no entry leaves a reader asking git what changed, which
+        is the state this file was written to end. Checked against the version
+        the distribution builds, so a changelog can only be right about the
+        version that actually ships."""
+        self.assertTrue(CHANGELOG.is_file(), f"no changelog at {CHANGELOG}")
+        text = CHANGELOG.read_text(encoding="utf-8")
+        version = distribution_version()
+        self.assertRegex(
+            text, re.compile(rf"^##\s+{re.escape(version)}\s*$", re.MULTILINE),
+            f"the distribution builds {version} and CHANGELOG.md has no "
+            f"`## {version}` section, so the version moved and the record "
+            "did not")
+
+    def test_shipped_changes_since_the_last_release_moved_the_version(self) -> None:
+        """Once a release is tagged, changing what users receive without
+        moving the version is what froze `0.1.0` for a thousand commits.
+
+        Skips -- announced, never silently -- until a release tag exists,
+        because before the first one there is no claim to compare against.
+        An announced skip and a pass are different answers and this
+        repository keeps them apart deliberately.
+        """
+        tags = self._release_tags()
+        if not tags:
+            self.skipTest(
+                "no release tag matching `vN.N.N` exists yet, so there is no "
+                "released version to compare against; this is silence rather "
+                "than a pass")
+        _, tag, released = tags[-1]
+        changed = [path for path in
+                   self._git("diff", "--name-only", f"{tag}..HEAD", "--",
+                             *SHIPPED_ROOTS).split("\n") if path.strip()]
+        if not changed:
+            return
+        self.assertNotEqual(
+            distribution_version(), released,
+            f"{len(changed)} shipped file(s) changed since {tag} and the "
+            f"version is still {released}. Two builds a user cannot tell "
+            f"apart are two builds `upgrade` cannot order either. First "
+            f"changed: {changed[0]}")
 
 
 if __name__ == "__main__":
