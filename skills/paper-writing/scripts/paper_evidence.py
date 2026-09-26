@@ -14,6 +14,7 @@ Public surface:
     read_records(paper_dir, block_id)     -> list[dict]
     read_all_records(paper_dir)           -> list[dict]
     write_evidence_manifest(folder, section_id, papers) -> dict
+    append_grounding_run(paper_dir, block_id, report, ...) -> dict
 
 No I/O toward the network anywhere in this module -- resolution and metadata
 live in `paper_resolve.py`; this module only ever reads bytes already on
@@ -37,6 +38,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import paper_region  # noqa: E402
 import paper_vocabulary  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "_core" / "implementation"))
@@ -321,6 +323,53 @@ def write_evidence_manifest(folder: Path, *, section_id: str, papers: list[str],
     }
     manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     return {"path": str(manifest_path), "manifest": manifest}
+
+
+def _grounding_runs_path(paper_dir: Path) -> Path:
+    return paper_dir / ".paper-writing" / "grounding-runs.jsonl"
+
+
+def append_grounding_run(
+    paper_dir: Path, block_id: str, report: dict, *, clock=paper_region.default_clock,
+) -> dict:
+    """Appends one JSON line to `paper/.paper-writing/grounding-runs.jsonl`,
+    the recorder the `the-block-asserts-only-what-its-section-carries`
+    skill's own falsifier depends on: "over ten or more recorded real
+    `write` runs against genuine document-rooted bindings, if any block
+    reaches `written` with `downgraded > 0`, or with `subjects > 0` and
+    `decided == 0`, the no-ratio-threshold ruling is wrong...". Without a
+    place to accumulate those runs, the falsifier is undischargeable no
+    matter how many real runs actually happen -- an unrecorded run and a
+    run that never happened are indistinguishable, which is exactly the
+    "unmeasured looks like measured" failure mode this whole change exists
+    to remove.
+
+    `report` is recorded verbatim -- `paper_grounding.source_grounding_report`'s
+    own return value, or `paper_write.write_block`'s interim
+    `{"status": "unmeasured", "subjects": 0}` envelope for a non-
+    transposition or unbound block -- never reshaped or recomputed here;
+    this module only ever records what a run already produced (`design.md`,
+    Decision 2 and 6, the same discipline `append_record` above follows).
+
+    Never rewrites a prior line, following `append_record`'s own
+    convention exactly: a line documents one `write` run that really
+    happened, so an existing line is a record, not a value to edit.
+
+    Deliberately lets a write failure (`OSError`) propagate rather than
+    catching it. This ledger lives in the same sidecar the evidence store
+    already trusts with real records; silently swallowing a failed append
+    would leave a real `written` run with no line at all -- indistinguishable
+    from a run that reported `unmeasured` on purpose -- which is precisely
+    the ambiguity this recorder exists to close. A caller that cannot
+    tolerate the ledger being unwritable must decide that itself; this
+    function never decides it silently.
+    """
+    path = _grounding_runs_path(paper_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    line = {"timestamp": clock(), "block_id": block_id, **report}
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(line) + "\n")
+    return {"path": str(path), "block": block_id}
 
 
 def _mark_evidence_folder(source_md: Path, guidance_dir: Path, cite_key: str) -> dict | None:

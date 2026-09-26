@@ -28,6 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import paper_audit  # noqa: E402
 import paper_bindings  # noqa: E402
 import paper_block  # noqa: E402
+import paper_evidence  # noqa: E402
 import paper_vocabulary  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "_core" / "implementation"))
@@ -276,6 +277,25 @@ def write_block(
         source_grounding = paper_grounding.source_grounding_report(subjects, reconciled)
 
     result = paper_block.substitute(paper_dir, contract.block_id, new_body=draft["latex"].encode("utf-8"))
+
+    # `the-block-asserts-only-what-its-section-carries` skill's own
+    # falsifier ("over ten or more recorded real `write` runs...") needs a
+    # place to accumulate real runs against. Two constraints, both load-
+    # bearing:
+    #
+    # 1. AFTER substitute, never before. The falsifier counts blocks that
+    #    REACHED `written`. Appending before this point and then having
+    #    `substitute` raise would record a run that never happened.
+    # 2. Every `written` run, not only a measured one. This call sits here
+    #    -- after every grounding branch above, unconditionally -- rather
+    #    than inside the `contract.mode == MODE_TRANSPOSITION` branch,
+    #    because an `argument`-mode block (or one with no `source_sections`)
+    #    still leaves `source_grounding` at the interim `{"status":
+    #    "unmeasured", "subjects": 0}` envelope and is still a real write
+    #    run that belongs in the "ten or more" denominator the falsifier
+    #    counts against.
+    paper_evidence.append_grounding_run(paper_dir, contract.block_id, source_grounding)
+
     return {
         "status": "written",
         "block": contract.block_id,

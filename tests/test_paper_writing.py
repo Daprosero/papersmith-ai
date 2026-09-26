@@ -14878,6 +14878,203 @@ class GroundingScopeBoundaryTests(unittest.TestCase):
         self.assertEqual(result["sourceGrounding"], {"status": "unmeasured", "subjects": 0})
 
 
+def _read_grounding_run_lines(paper_dir: Path) -> list:
+    """Test-only helper: parses `paper/.paper-writing/grounding-runs.jsonl`
+    one line at a time, the same convention `EvidenceRecordStoreTests`
+    (`tests/test_paper_evidence.py`) uses for its own JSONL store, oldest
+    first. Reads bytes actually on disk rather than trusting any in-process
+    return value, since the property under test is what got WRITTEN."""
+    path = paper_dir / ".paper-writing" / "grounding-runs.jsonl"
+    if not path.is_file():
+        return []
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+class GroundingRunLedgerTests(unittest.TestCase):
+    """The falsifier `GroundingThresholdObligationTests` names (`SKILL.md`,
+    "over ten or more recorded real `write` runs...") has nothing to
+    accumulate against today: `write_block` computes `sourceGrounding` and
+    then drops it. This is the missing recorder -- one JSON line per
+    completed `write` run, appended to `paper/.paper-writing/grounding-
+    runs.jsonl`, never rewritten.
+
+    Deliberately does NOT touch `GroundingThresholdObligationTests` itself,
+    and does not fabricate a document-rooted binding: these fixtures are
+    the same invented, non-document-rooted shapes every sibling grounding
+    test in this file already uses, so `paper_declarations.read_bindings`
+    on the real `paper/` tree is untouched and that tripwire stays red for
+    the same reason it already is.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.paper_dir = Path(self._tmp.name) / "paper"
+
+    def test_a_measured_transposition_run_leaves_one_line_carrying_its_counts(self) -> None:
+        _write_fixture(self.paper_dir, _marker_pair("mm-proposal", b"Old body.\n"))
+        section = _bound_section(fact="calibration-regime", text="The constant holds across trials.")
+        contract = _write_contract(
+            citations_regime="resolution", evidence_set=({"id": "E1", "regime": "resolution"},),
+            requires_facts=("calibration-regime",), source_sections=(section,),
+        )
+        draft = {
+            "latex": "The constant holds steady across trials.",
+            "bindings": [
+                {
+                    "sentence": "The constant holds steady across trials.",
+                    "binding": "fact:calibration-regime",
+                },
+            ],
+        }
+        grounding_account = _grounding_account([
+            {
+                "sentence": "The constant holds steady across trials.",
+                "fact": "calibration-regime", "verdict": "supported",
+                "span": "constant holds across trials",
+            },
+        ])
+
+        result = paper_write.write_block(
+            self.paper_dir, contract, draft, _CLEAN_AUDIT, grounding_account=grounding_account,
+        )
+
+        self.assertEqual(result["status"], "written")
+        expected_report = result["sourceGrounding"]
+        self.assertEqual(
+            expected_report,
+            {"status": "measured", "subjects": 1, "decided": 1, "undecidable": 0, "downgraded": 0},
+        )
+        lines = _read_grounding_run_lines(self.paper_dir)
+        self.assertEqual(len(lines), 1)
+        line = lines[0]
+        self.assertEqual(line["block_id"], "mm-proposal")
+        for key, value in expected_report.items():
+            self.assertEqual(line[key], value)
+
+    def test_a_run_whose_substitution_fails_leaves_no_line_at_all(self) -> None:
+        """The ledger counts blocks that REACHED `written`, so the append
+        belongs after the substitution and nowhere else.
+
+        Without this test that ordering is prose: moving the append above
+        `paper_block.substitute` was measured to change nothing any test
+        observes, because no other case here ever lets the substitution
+        fail. And the ordering is not cosmetic -- a line written before a
+        substitution that then raises records a run that never happened,
+        inflating the very denominator the falsifier discharges the D2
+        obligation by counting. Overcounting is the worse direction: it
+        would let ten apparent runs discharge a ruling that fewer real
+        runs were ever measured against.
+        """
+        _write_fixture(self.paper_dir, _marker_pair("mm-proposal", b"Old body.\n"))
+        section = _bound_section(fact="invented-calibration-fact")
+        contract = _write_contract(
+            citations_regime="none", evidence_set=(), mode="argument",
+            requires_facts=("invented-calibration-fact",), source_sections=(section,),
+        )
+        draft = {
+            "latex": "The device holds calibration steady across trials.",
+            "bindings": [
+                {
+                    "sentence": "The device holds calibration steady across trials.",
+                    "binding": "fact:invented-calibration-fact",
+                }
+            ],
+        }
+
+        def _refuse(*args, **kwargs):
+            raise RuntimeError("substitution refused by this test")
+
+        with unittest.mock.patch.object(paper_block, "substitute", _refuse):
+            with self.assertRaisesRegex(
+                    RuntimeError, "substitution refused by this test"):
+                paper_write.write_block(
+                    self.paper_dir, contract, draft, _CLEAN_AUDIT)
+
+        self.assertEqual(
+            _read_grounding_run_lines(self.paper_dir), [],
+            "the substitution raised, so no block reached `written` -- a "
+            "ledger line here would count a run that never happened")
+
+    def test_an_argument_mode_unmeasured_run_also_leaves_a_line(self) -> None:
+        """The one a careless implementation drops: an `argument`-mode
+        block never imports `paper_grounding` and reports the interim
+        `{"status": "unmeasured", "subjects": 0}` envelope, but it is still
+        a real completed `write` run and still owed a place in the "ten or
+        more" denominator the falsifier counts against."""
+        _write_fixture(self.paper_dir, _marker_pair("mm-proposal", b"Old body.\n"))
+        section = _bound_section(fact="invented-calibration-fact")
+        contract = _write_contract(
+            citations_regime="none", evidence_set=(), mode="argument",
+            requires_facts=("invented-calibration-fact",), source_sections=(section,),
+        )
+        draft = {
+            "latex": "The device holds calibration steady across trials.",
+            "bindings": [
+                {
+                    "sentence": "The device holds calibration steady across trials.",
+                    "binding": "fact:invented-calibration-fact",
+                }
+            ],
+        }
+
+        result = paper_write.write_block(self.paper_dir, contract, draft, _CLEAN_AUDIT)
+
+        self.assertEqual(result["status"], "written")
+        self.assertEqual(result["sourceGrounding"], {"status": "unmeasured", "subjects": 0})
+        lines = _read_grounding_run_lines(self.paper_dir)
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(lines[0]["block_id"], "mm-proposal")
+        self.assertEqual(lines[0]["status"], "unmeasured")
+        self.assertEqual(lines[0]["subjects"], 0)
+
+    def test_a_second_run_appends_and_the_first_line_survives_byte_identical(self) -> None:
+        main_tex = _marker_pair("mm-proposal", b"Old body one.\n") + _marker_pair(
+            "mm-second", b"Old body two.\n",
+        )
+        _write_fixture(self.paper_dir, main_tex)
+        contract_a = _write_contract(
+            block_id="mm-proposal", citations_regime="none", evidence_set=(), mode="argument",
+        )
+        contract_b = _write_contract(
+            block_id="mm-second", citations_regime="none", evidence_set=(), mode="argument",
+        )
+
+        paper_write.write_block(self.paper_dir, contract_a, _CLEAN_DRAFT, _CLEAN_AUDIT)
+        path = self.paper_dir / ".paper-writing" / "grounding-runs.jsonl"
+        first_line_bytes = path.read_bytes()
+        self.assertEqual(len(_read_grounding_run_lines(self.paper_dir)), 1)
+
+        paper_write.write_block(self.paper_dir, contract_b, _CLEAN_DRAFT, _CLEAN_AUDIT)
+
+        raw = path.read_bytes()
+        self.assertTrue(raw.startswith(first_line_bytes))
+        lines = _read_grounding_run_lines(self.paper_dir)
+        self.assertEqual(len(lines), 2)
+        self.assertEqual(lines[0]["block_id"], "mm-proposal")
+        self.assertEqual(lines[1]["block_id"], "mm-second")
+
+    def test_the_line_is_valid_json_with_timestamp_block_id_and_counts(self) -> None:
+        from datetime import datetime as _datetime  # noqa: PLC0415
+
+        _write_fixture(self.paper_dir, _marker_pair("mm-proposal", b"Old body.\n"))
+        contract = _write_contract(
+            citations_regime="none", evidence_set=(), mode="argument",
+        )
+
+        paper_write.write_block(self.paper_dir, contract, _CLEAN_DRAFT, _CLEAN_AUDIT)
+
+        path = self.paper_dir / ".paper-writing" / "grounding-runs.jsonl"
+        raw_lines = path.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(raw_lines), 1)
+        line = json.loads(raw_lines[0])  # raises if not valid JSON
+        self.assertIsInstance(line["timestamp"], str)
+        _datetime.fromisoformat(line["timestamp"])  # raises if not a real timestamp
+        self.assertEqual(line["block_id"], "mm-proposal")
+        self.assertEqual(line["status"], "unmeasured")
+        self.assertEqual(line["subjects"], 0)
+
+
 class CmdWriteGroundingWiringTests(unittest.TestCase):
     """`the-block-asserts-only-what-its-section-carries`, Phase 2, task
     2.8: `cmd_write` reads `--grounding`, resolves it through
