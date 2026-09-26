@@ -95,8 +95,81 @@ def _copy_if_needed(workspace: Path, kit_root: Path, relpath: str, *, force: boo
     return True
 
 
+def _version_order(value: str) -> tuple[int, ...] | None:
+    """`value` as an orderable tuple, or ``None`` when it carries no order.
+
+    Only the leading dot-separated run of integers is read, so `0.2.0rc1`
+    orders beside `0.2.0` rather than refusing: a prerelease suffix is a
+    claim this function is not equipped to rank, and treating the two as
+    equal declines to guess in the direction that blocks nothing. A value
+    with no leading integer at all -- a branch name, a build label, an
+    empty string -- returns ``None``, because there is no order to report
+    and inventing one is how a downgrade gets waved through.
+    """
+    parts: list[int] = []
+    for chunk in value.strip().split("."):
+        digits = ""
+        for character in chunk:
+            if not character.isdigit():
+                break
+            digits += character
+        if not digits:
+            break
+        parts.append(int(digits))
+    return tuple(parts) or None
+
+
+def _refuse_a_downgrade(root: Path, kit_version: str, *, allowed: bool) -> None:
+    """Refuse to move a workspace to an older framework version.
+
+    `upgrade` read the kit's version and WROTE it in three places, and the
+    only comparison it made was an equality -- enough to decide whether to
+    rewrite the version file, and nothing about order. So installing an
+    older kit over a newer workspace rolled it back in silence and reported
+    the older version as the new truth.
+
+    This refuses at a decision point rather than reporting afterwards, the
+    same split `remote-execution`'s pin conditions already draw and for the
+    reason written there: a warning printed beside work that already
+    happened reads like weather. By the time the files are copied the
+    rollback IS the state.
+
+    The escape hatch is its own argument, deliberately not `force`. `force`
+    means "write even when the bytes already match", and a caller asking
+    for a redundant rewrite must not receive a version rollback as part of
+    the bargain -- one flag answering two unrelated questions is how an
+    operator gets a behaviour they never asked for.
+
+    A workspace with no recorded version is not a downgrade: there is
+    nothing to go backwards from, and refusing a first upgrade would block
+    the case this guard was never about. A recorded version that cannot be
+    ordered refuses instead, because the guard's whole claim is that one
+    version precedes another, and writing files under a relationship
+    nobody established is the silence being removed here.
+    """
+    if allowed:
+        return
+    recorded = read_workspace_version(root, "").strip()
+    if not recorded:
+        return
+    current = _version_order(recorded)
+    incoming = _version_order(kit_version)
+    if current is None or incoming is None:
+        raise UserError(
+            f"cannot tell whether {kit_version!r} precedes the version this "
+            f"workspace records ({recorded!r}): one of them carries no "
+            f"orderable number. Re-run with allow_downgrade=True "
+            f"(`--allow-downgrade`) if you mean to install it anyway")
+    if incoming < current:
+        raise UserError(
+            f"refusing to move this workspace backwards: it records "
+            f"{recorded!r} and the installed kit is {kit_version!r}. "
+            f"Install the newer kit, or re-run with allow_downgrade=True "
+            f"(`--allow-downgrade`) if the rollback is deliberate")
+
+
 def upgrade(workspace: str | Path = ".", *, tools: Sequence[str] | None = None,
-            force: bool = False) -> dict:
+            force: bool = False, allow_downgrade: bool = False) -> dict:
     root = Path(workspace).expanduser().resolve()
     stored = manifest.load_manifest(root)
     if stored is None:
@@ -105,6 +178,9 @@ def upgrade(workspace: str | Path = ".", *, tools: Sequence[str] | None = None,
     kit_root = resolve_and_validate()
     kit_files = manifest.kit_files(kit_root)
     version = manifest.kit_version(kit_root)
+    # Before a single byte is written, and never after: by the time the kit
+    # files are copied the rollback is already the workspace's state.
+    _refuse_a_downgrade(root, version, allowed=allow_downgrade)
     workspace_config = config.load_workspace_config(root)
     active_tools = validate_tools(list(tools) if tools is not None else workspace_config["active_tools"])
     changed: list[str] = []
@@ -210,6 +286,8 @@ def register(subparsers) -> None:
     parser.add_argument("directory", nargs="?", default=".", metavar="<dir>")
     parser.add_argument("--tools", default=None, help="replace active runtime generators")
     parser.add_argument("--force", action="store_true", help="force framework-file writes")
+    parser.add_argument("--allow-downgrade", action="store_true",
+                        help="permit installing an older framework version")
     parser.set_defaults(handler=run_cli)
 
 
@@ -217,7 +295,8 @@ def run_cli(args) -> int:
     tools = None
     if args.tools is not None:
         tools = [item.strip() for item in args.tools.split(",") if item.strip()]
-    result = upgrade(args.directory, tools=tools, force=args.force)
+    result = upgrade(args.directory, tools=tools, force=args.force,
+                     allow_downgrade=args.allow_downgrade)
     print(f"Upgraded papersmith workspace: {result['workspace']}")
     print(f"Framework version: {result['version']}; changed files: {len(result['changed_files'])}")
     for relpath in result["unsynchronized"]:

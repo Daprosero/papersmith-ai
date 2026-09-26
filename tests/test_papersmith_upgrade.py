@@ -171,12 +171,120 @@ class UpgradeTests(unittest.TestCase):
         stored = json.loads((workspace / ".papersmith/manifest.json").read_text())
         assert stored["version"] == "0.2.0"
 
+    def _kit_at(self, tmp_path, version: str):
+        """A minimal kit whose only interesting property is its version."""
+        kit = tmp_path / f"kit-{version}"
+        for relpath, content in {
+            "skills/paper-ingestion/SKILL.md": "# skill\n",
+            "scripts/setup_env.py": "# env\n",
+            ".claude/agents/paper-ingestion.md":
+                "---\nname: paper-ingestion\ndescription: d\n---\n",
+            "package.json": '{"version": "%s"}\n' % version,
+            "requirements.txt": "kagglesdk==0.1.37\n",
+            "CLAUDE.md": "# kit marker\n",
+        }.items():
+            path = kit / relpath
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content, encoding="utf-8")
+        self.set_env("PAPERSMITH_KIT_ROOT", str(kit))
+        return kit
+
+    def test_upgrade_refuses_to_move_a_workspace_backwards(self) -> None:
+        """`upgrade` read the kit's version and WROTE it, comparing only for
+        equality to decide whether to rewrite the version file. Nothing
+        ordered the two, so installing an older kit over a newer workspace
+        downgraded it silently and reported the older version as the new
+        truth."""
+        tmp_path = self.new_tmp()
+        workspace = _workspace(tmp_path)
+        self._kit_at(tmp_path, "0.9.0")
+        upgrade_module.upgrade(workspace)
+
+        self._kit_at(tmp_path, "0.4.0")
+        with self.assertRaises(UserError) as caught:
+            upgrade_module.upgrade(workspace)
+        message = str(caught.exception)
+        self.assertIn("0.4.0", message)
+        self.assertIn("0.9.0", message)
+
+    def test_a_downgrade_needs_its_own_permission_not_force(self) -> None:
+        """`--force` already means "write even when the bytes match". Letting
+        it also mean "yes, go backwards" would make one flag answer two
+        unrelated questions, and a caller who wanted a redundant rewrite
+        would get a version rollback with it."""
+        tmp_path = self.new_tmp()
+        workspace = _workspace(tmp_path)
+        self._kit_at(tmp_path, "0.9.0")
+        upgrade_module.upgrade(workspace)
+
+        self._kit_at(tmp_path, "0.4.0")
+        with self.assertRaises(UserError):
+            upgrade_module.upgrade(workspace, force=True)
+
+        result = upgrade_module.upgrade(workspace, allow_downgrade=True)
+        assert result["version"] == "0.4.0"
+
+    def test_the_same_version_is_not_a_downgrade(self) -> None:
+        tmp_path = self.new_tmp()
+        workspace = _workspace(tmp_path)
+        self._kit_at(tmp_path, "0.9.0")
+        upgrade_module.upgrade(workspace)
+        result = upgrade_module.upgrade(workspace)
+        assert result["version"] == "0.9.0"
+
+    def test_a_workspace_with_no_recorded_version_is_never_a_downgrade(self) -> None:
+        """A first upgrade has nothing to go backwards FROM, and refusing it
+        would make the guard block the case it was never about."""
+        tmp_path = self.new_tmp()
+        workspace = _workspace(tmp_path)
+        (workspace / ".papersmith" / "version").unlink(missing_ok=True)
+        self._kit_at(tmp_path, "0.4.0")
+        result = upgrade_module.upgrade(workspace)
+        assert result["version"] == "0.4.0"
+
+    def test_versions_that_cannot_be_ordered_refuse_rather_than_guess(self) -> None:
+        """The guard's claim is that one version precedes another. When the
+        recorded version carries no orderable number that claim cannot be
+        made, and writing files under a relationship nobody established is
+        the silent behaviour this whole change removes."""
+        tmp_path = self.new_tmp()
+        workspace = _workspace(tmp_path)
+        (workspace / ".papersmith" / "version").write_text("nightly\n", encoding="utf-8")
+        self._kit_at(tmp_path, "0.4.0")
+        with self.assertRaises(UserError) as caught:
+            upgrade_module.upgrade(workspace)
+        self.assertIn("nightly", str(caught.exception))
+
     def test_force_reports_framework_writes_even_when_content_matches(self) -> None:
         tmp_path = self.new_tmp()
         workspace = _workspace(tmp_path)
         result = upgrade_module.upgrade(workspace, force=True)
         assert "skills/paper-ingestion/SKILL.md" in result["changed_files"]
         assert "sections/01-materials-and-methods.md" in result["changed_files"]
+
+    def test_cli_routes_allow_downgrade_and_refuses_without_it(self) -> None:
+        """A flag the parser declares and nothing carries to the function is
+        an option that reads as available and does nothing. The sibling
+        test above drives `--tools` and `--force` and never this one, so the
+        routing was declared and unexercised."""
+        tmp_path = self.new_tmp()
+        workspace = _workspace(tmp_path)
+        self._kit_at(tmp_path, "0.9.0")
+        upgrade_module.upgrade(workspace)
+        self._kit_at(tmp_path, "0.4.0")
+
+        # The CLI reports a refusal as a non-zero exit, not a traceback, so
+        # the visible contract is the code AND the workspace left untouched.
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            assert main(["upgrade", str(workspace)]) != 0
+        assert (workspace / ".papersmith/version").read_text() == "0.9.0\n"
+        assert "0.4.0" in stderr.getvalue()
+
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            assert main(["upgrade", str(workspace), "--allow-downgrade"]) == 0
+        assert (workspace / ".papersmith/version").read_text() == "0.4.0\n"
 
     def test_cli_upgrade_routes_directory_and_flags(self) -> None:
         tmp_path = self.new_tmp()
