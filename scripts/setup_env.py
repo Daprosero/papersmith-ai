@@ -9,10 +9,12 @@ conda-forge rather than Homebrew, so the same command works everywhere.
 
 What it installs
     conda-forge: python=3.12, pip, pytest, numpy, pymupdf, pyyaml, jsonschema,
-                 kagglesdk, llama.cpp (provides llama-server), and torch —
+                 kagglesdk, llama.cpp (provides llama-server), nbformat, nbclient
+                 and ipykernel (remote-execution runs notebooks), and torch —
                  `pytorch-gpu`+`torchvision` on CUDA machines, else
                  `pytorch-cpu`+`torchvision`.
-    pip:         marker-pdf==2.0.0 (the paper-ingestion engine; pip-only).
+    pip:         this project itself, editable (`pip install -e .`), and
+                 marker-pdf==2.0.0 (the paper-ingestion engine; pip-only).
 
 Usage
     python3 scripts/setup_env.py install          # detect hardware, provision
@@ -51,6 +53,22 @@ CONDA_BASE_PACKAGES = [
     "jsonschema",
     "kagglesdk",
     "llama.cpp",
+    # remote-execution reads and executes notebooks. `nbformat` parses them
+    # and `nbclient` drives them, but driving a notebook means talking to a
+    # KERNEL, and the kernel is a separate package: `nbclient` pulls in
+    # `jupyter_client`, which knows how to speak to a kernel, and never
+    # `ipykernel`, which is the one that runs the cells. Without all three
+    # the notebook suites fail -- the first two on import, the last one at
+    # execution, where the failure surfaces as a unit process exiting
+    # non-zero rather than as a missing module.
+    #
+    # All three were absent here and present in a hand-made virtualenv that
+    # nothing in this repository creates, which is why the gap stayed
+    # invisible: every run was green on an environment this script had
+    # never actually produced.
+    "nbformat",
+    "nbclient",
+    "ipykernel",
 ]
 
 MICROMAMBA_URL = (
@@ -176,6 +194,15 @@ def cmd_install(args: argparse.Namespace) -> int:
     verb = "install" if env_exists(args.name) else "create"
     run(mm, [verb, "-y", "-n", args.name, "-c", "conda-forge", *conda_packages],
         mamba_env())
+
+    # The project itself, editable. `papersmith` is a real package with a
+    # console entry point, and the MCP suites import it directly; without
+    # this step they error on import. Editable rather than a plain install
+    # so the environment keeps tracking the checkout instead of freezing a
+    # copy of it -- provisioning a developer environment that goes stale on
+    # the first edit is worse than not provisioning one.
+    run(mm, ["run", "-n", args.name, "python", "-m", "pip", "install", "-e",
+             str(PROJECT_ROOT)], mamba_env())
 
     pip_packages = [] if args.no_ingestion else PIP_PACKAGES
     if pip_packages:

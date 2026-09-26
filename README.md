@@ -107,7 +107,7 @@ Nada de esto requiere claves ni servicios externos: la forja corre localmente.
 pipx install .
 
 # 2. Runtime aislado de ingestión (micromamba: Python 3.12, PyTorch, Surya OCR, llama-server)
-python scripts/setup_env.py install
+python3 scripts/setup_env.py install
 
 # 3. Dependencias de Node y proyección de skills a los harnesses
 npm install
@@ -3073,7 +3073,7 @@ hoy el exit code no es estricto. Para un gate de CI, mirá el JSON (`--json`) en
 vez del código de salida.
 
 **"La primera ingesta descarga ~1.5 GB."** Son los pesos de Surya si el entorno
-no quedó pre-provisionado. Corré `python scripts/setup_env.py install` antes de
+no quedó pre-provisionado. Corré `python3 scripts/setup_env.py install` antes de
 la primera ingesta.
 
 ---

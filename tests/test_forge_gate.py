@@ -15,11 +15,14 @@ would have to be edited alongside the defect it was meant to catch, which is
 the same silence one indirection later.
 """
 
+import ast
 import fnmatch
+import importlib.util
 import json
 import re
 import shutil
 import subprocess
+import sys
 import unittest
 from pathlib import Path
 
@@ -44,6 +47,263 @@ GATE_SITES = (("rules", "apply", "test_command"),
 #: keeps the interpreter lock a measurement instead of a version number
 #: somebody chose.
 DECIDING_SCRIPTS = FORGE / "skills" / "remote-execution" / "scripts"
+
+#: Every tracked `.py` this guard scans for third-party imports: the
+#: suites, the source distribution, and every skill's own `scripts/` tree
+#: (any depth). `*.py` on every segment, never a bare directory name --
+#: `src/` and `skills/*/assets/` also carry non-Python tracked files
+#: (templates, notebooks), and asking `ast` to parse those would be asking
+#: the wrong question, not a merely slower one.
+IMPORT_SCOPE_PATHSPECS = ("tests/*.py", "src/*.py", "skills/*/scripts/*.py")
+
+#: The tracked asset files a skill's own scripts stage and later execute as
+#: subprocesses -- resolved by basename against the `_ASSET`-suffixed
+#: constants those scripts declare, never hand-listed. See
+#: `resolved_asset_files()`.
+ASSET_PATHSPEC = "skills/*/assets/*"
+
+#: A module-level assignment whose target name ends this way declares an
+#: asset basename: `adapters/colab.py`'s `LAUNCH_ASSET`, `EXECUTOR_ASSET`,
+#: `READ_STATE_ASSET`, and `jobfolder.py`'s `DEFAULT_BOOTSTRAP_ASSET`,
+#: `DEFAULT_INVOKE_ASSET`. `nbformat` and `nbclient` live only inside two
+#: of the files this resolves -- `assets/colab/executor.py` and
+#: `assets/runner_invoke.py` -- imported INSIDE a function rather than at
+#: module scope, so a scan that never reached these two files would never
+#: have found either.
+ASSET_CONSTANT_SUFFIX = "_ASSET"
+
+
+def tracked_files(*pathspecs):
+    """`git ls-files`, never `Path.rglob`. Measured trap: `rglob` walks
+    into a skill's own vendored `.venv` (a real environment on disk under
+    `skills/paper-ingestion/.venv/`) and harvests every optional import
+    inside a third-party distribution as though this repository required
+    it. `git ls-files` only ever lists what this repository actually
+    versions. Sibling precedent:
+    `tests/test_kaggle_accounts.py::AccountVocabularyLeakTests._tracked_skill_scripts`.
+    """
+    result = subprocess.run(
+        ["git", "ls-files", "-z", "--", *pathspecs],
+        cwd=str(FORGE), capture_output=True, text=True, check=True,
+    )
+    return sorted(FORGE / name for name in result.stdout.split("\0") if name)
+
+
+def _asset_constant_basenames(paths):
+    """Every basename assigned to an `_ASSET`-suffixed name in any of
+    `paths`, parsed with `ast` rather than grepped so a multi-line import
+    or an f-string mentioning the same word cannot be mistaken for a
+    declaration. Handles both shapes actually used: a bare string literal
+    (`LAUNCH_ASSET = "launch.py"`) and a path built with `/`
+    (`DEFAULT_BOOTSTRAP_ASSET = ASSETS_DIR / "runner_bootstrap.py"`).
+    """
+    basenames = set()
+    for path in paths:
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        except (SyntaxError, UnicodeDecodeError):
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Assign):
+                continue
+            for target in node.targets:
+                if not (isinstance(target, ast.Name)
+                        and target.id.endswith(ASSET_CONSTANT_SUFFIX)):
+                    continue
+                value = node.value
+                literal = None
+                if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                    literal = value.value
+                elif (isinstance(value, ast.BinOp) and isinstance(value.op, ast.Div)
+                      and isinstance(value.right, ast.Constant)
+                      and isinstance(value.right.value, str)):
+                    literal = value.right.value
+                if literal:
+                    basenames.add(literal)
+    return basenames
+
+
+def resolved_asset_files():
+    """The tracked `skills/*/assets/*` files that `IMPORT_SCOPE_PATHSPECS`'
+    own scripts actually name via an `_ASSET` constant, resolved by
+    basename. Kept separate from `import_scan_scope()` so a test can assert
+    this derivation reaches something on its own, before it is folded into
+    the larger scope -- a broken parse here would silently shrink that
+    scope back to the exact blind spot this guard exists to close.
+    """
+    basenames = _asset_constant_basenames(tracked_files(*IMPORT_SCOPE_PATHSPECS))
+    by_basename = {}
+    for path in tracked_files(ASSET_PATHSPEC):
+        by_basename.setdefault(path.name, []).append(path)
+    resolved = set()
+    for name in basenames:
+        resolved.update(by_basename.get(name, []))
+    return resolved
+
+
+def import_scan_scope():
+    """Every file this guard scans for third-party imports."""
+    return sorted(set(tracked_files(*IMPORT_SCOPE_PATHSPECS)) | resolved_asset_files())
+
+
+def local_module_names():
+    """Every name a suite or script can import without leaving this
+    repository: the stem of every tracked `.py` file (these trees are put
+    on `sys.path` by the suites themselves), plus the directory name of
+    every tracked `__init__.py`. Derived from the FULL tracked `.py`
+    universe (`git ls-files -z -- '*.py'`), not merely the scan scope --
+    measured at 204 files -- because a name can be local without living
+    inside the scanned trees.
+
+    One deliberate exception: `papersmith` is never treated as local, even
+    though `src/papersmith/__init__.py` would otherwise put it here.
+    `src/papersmith/` is a real distribution `scripts/setup_env.py`
+    installs editable, and its absence from the environment was exactly
+    one of the four gaps measured the day this guard was written --
+    excluding it here would exclude the one signal that catches that gap.
+    """
+    names = set()
+    for path in tracked_files("*.py"):
+        if path.stem == "__init__":
+            names.add(path.parent.name)
+        else:
+            names.add(path.stem)
+    names.discard("papersmith")
+    return names
+
+
+def _try_is_import_guard(node):
+    """True when this `ast.Try` declares at least one handler naming
+    `ImportError`, `ModuleNotFoundError`, or `Exception`, or a bare
+    `except:` -- the shape that means "the author declared this import
+    optional," as opposed to an import that happens to sit inside a `try`
+    guarding something else entirely.
+    """
+    for handler in node.handlers:
+        if handler.type is None:
+            return True
+        if _handler_type_names(handler.type) & {
+            "ImportError", "ModuleNotFoundError", "Exception",
+        }:
+            return True
+    return False
+
+
+def _handler_type_names(expr):
+    if isinstance(expr, ast.Tuple):
+        names = set()
+        for elt in expr.elts:
+            names |= _handler_type_names(elt)
+        return names
+    if isinstance(expr, ast.Name):
+        return {expr.id}
+    if isinstance(expr, ast.Attribute):
+        return {expr.attr}
+    return set()
+
+
+def _guarded_import_ids(tree):
+    """The `id()` of every `Import`/`ImportFrom` node lexically inside the
+    BODY of a `try` that guards against import failure -- never a handler,
+    `else`, or `finally` clause, none of which is what "guarded against
+    ImportError" means. A `try` nested inside a guarded body stays guarded,
+    because `ast.walk` recurses into it; a `try` living in a handler,
+    `else`, or `finally` does not, because those are never walked here.
+    """
+    guarded = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Try) and _try_is_import_guard(node):
+            for stmt in node.body:
+                for sub in ast.walk(stmt):
+                    if isinstance(sub, (ast.Import, ast.ImportFrom)):
+                        guarded.add(id(sub))
+    return guarded
+
+
+def file_top_level_imports(path):
+    """Yield `(name, guarded)` for every top-level package this file
+    imports, walked at ALL depths (`ast.walk`, never only the module body)
+    so an import made INSIDE a function -- `nbformat`/`nbclient` in
+    `assets/colab/executor.py`, deliberately imported late so importing the
+    module never requires a kernel -- is still found. `ImportFrom` only
+    counts when `level == 0`: a relative import can only ever name a module
+    already inside this repository.
+    """
+    try:
+        text = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        return
+    try:
+        tree = ast.parse(text, filename=str(path))
+    except SyntaxError:
+        return
+    guarded_ids = _guarded_import_ids(tree)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                yield alias.name.split(".")[0], id(node) in guarded_ids
+        elif isinstance(node, ast.ImportFrom):
+            if node.level == 0 and node.module:
+                yield node.module.split(".")[0], id(node) in guarded_ids
+
+
+def _pip_skippable_prefixes():
+    """`scripts/setup_env.py`'s own `PIP_PACKAGES`, read from that script's
+    AST rather than restated, normalized to the `-`-delimited prefix its
+    own `--no-ingestion` flag skips (`marker-pdf==2.0.0` -> `marker`). This
+    is a heuristic tied to that script's own declaration, not a hand-picked
+    exception: `--no-ingestion` skips exactly `PIP_PACKAGES`, so requiring
+    one of its entries here would turn a documented, supported install
+    into a red gate. Measured confirmation: `marker` is ABSENT from the
+    `.venv` that ran the suites, and no suite failure involved it.
+    """
+    setup_env = FORGE / "scripts" / "setup_env.py"
+    tree = ast.parse(setup_env.read_text(encoding="utf-8"), filename=str(setup_env))
+    entries = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign):
+            continue
+        for target in node.targets:
+            if (isinstance(target, ast.Name) and target.id == "PIP_PACKAGES"
+                    and isinstance(node.value, ast.List)):
+                for elt in node.value.elts:
+                    if isinstance(elt, ast.Constant) and isinstance(elt.value, str):
+                        entries.append(elt.value)
+    prefixes = set()
+    for entry in entries:
+        normalized = re.split(r"[=<>!~\[]", entry, maxsplit=1)[0].strip()
+        prefixes.add(normalized.split("-")[0].lower())
+    return prefixes
+
+
+def required_third_party_imports():
+    """`{name: [file, ...]}` for every third-party import this guard's
+    scan scope requires -- the files list is what makes a later failure
+    name a culprit instead of a bare name nobody can act on.
+
+    A name is required when at least one occurrence anywhere in scope is
+    UNGUARDED: an import guarded in one file (declared optional there) and
+    unguarded in another (a hard requirement there) is still required,
+    because the unguarded occurrence is what proves it. Excluded, in this
+    order: the standard library (`sys.stdlib_module_names`), every local
+    module name (`local_module_names()`, `papersmith` deliberately
+    excepted), and any name `scripts/setup_env.py` itself declares
+    skippable (`_pip_skippable_prefixes()`).
+    """
+    stdlib = set(sys.stdlib_module_names)
+    local = local_module_names()
+    skippable = _pip_skippable_prefixes()
+
+    occurrences = {}
+    for path in import_scan_scope():
+        for name, guarded in file_top_level_imports(path):
+            if not guarded:
+                occurrences.setdefault(name, []).append(path)
+
+    return {
+        name: sorted(files) for name, files in occurrences.items()
+        if name not in stdlib and name not in local and name.lower() not in skippable
+    }
 
 
 def configuration():
@@ -90,11 +350,47 @@ def gate_command(manifest, config):
     return stated, manifest["scripts"]["test:all"]
 
 
+def provisioned_bin_directory():
+    """Where `scripts/setup_env.py` puts the environment's programs, asked
+    of that script rather than restated here.
+
+    Two declarations decide whether the gate can run at all -- the one that
+    BUILDS the environment and the one that NAMES its interpreter -- and
+    they lived in different files with nothing between them. They
+    disagreed: the provisioning script built a micromamba environment under
+    `.micromamba/`, while the lock below looked for a `.venv/` that no
+    script in this repository creates. Everything passed anyway, on an
+    environment somebody had made by hand. Deriving the directory from the
+    script that creates it is what makes the disagreement visible instead
+    of load-bearing.
+    """
+    spec = importlib.util.spec_from_file_location(
+        "papersmith_setup_env", FORGE / "scripts" / "setup_env.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return (module.MAMBA_ROOT / "envs" / module.ENV_NAME / "bin").relative_to(FORGE)
+
+
 def pytest_stage(manifest):
-    """The gate's Python half: `test:py`'s pytest stage as pytest itself
-    spells it, so an interpreter the gate never named cannot stand in."""
+    """The gate's Python half: `test:py`'s pytest stage, matched by the
+    BASENAME of the program it names rather than by the whole token.
+
+    An earlier spelling required the token to equal `pytest` exactly, which
+    forced the gate to name a bare console script -- and a bare name is
+    resolved by the caller's `PATH`, which is the one thing about the
+    caller's machine this repository cannot state. Measured here: `pytest`
+    resolved to a Python 3.9 user-site install that sits ahead of the
+    provisioned environment and cannot import `DECIDING_SCRIPTS` at all, so
+    the gate was configured against an interpreter that could never run the
+    suites. Matching the basename lets `test:py` name a path, which is what
+    `test_the_gate_names_the_provisioned_interpreter` below then holds to
+    what `scripts/setup_env.py` actually provisions.
+    """
     stages = [stage.strip() for stage in manifest["scripts"]["test:py"].split("&&")]
-    pytest_stages = [stage for stage in stages if stage.split()[0] == "pytest"]
+    pytest_stages = [
+        stage for stage in stages
+        if Path(stage.split()[0]).name in ("pytest", "pytest.exe")
+    ]
     if len(pytest_stages) != 1:
         raise AssertionError(
             f"package.json's test:py script names {len(pytest_stages)} pytest "
@@ -254,18 +550,29 @@ class GateInterpreterTests(unittest.TestCase):
     """
 
     def interpreter(self):
-        """The `test:py` stage names `pytest`, the console script of the
-        venv this repository provisions (`.venv/bin/pytest`). Resolve it
-        the way a shell running the npm script would, then insist on a
-        file on disk."""
+        """Resolve the program `test:py` names, the way a shell running the
+        npm script would, then insist on a file on disk.
+
+        A token carrying a path separator is resolved against the
+        repository, never through `PATH`: that is the whole point of naming
+        a path, and consulting `PATH` for it would reintroduce the lottery.
+        A bare name still goes through `PATH`, because that is what a shell
+        would do with it -- and `test_the_gate_names_the_provisioned_
+        interpreter` is what refuses a bare name in the first place.
+        """
         named = pytest_stage(self.manifest).split()[0]
-        resolved = Path(shutil.which(named) or (FORGE / ".venv" / "bin" / named))
+        if "/" in named or "\\" in named:
+            resolved = FORGE / named
+        else:
+            resolved = Path(shutil.which(named) or (FORGE / named))
         self.assertTrue(
             resolved.is_file(),
             f"the gate names the interpreter {named!r}, which resolves to no "
-            f"file at {resolved}. An interpreter left to PATH instead is "
-            "whichever one the caller happens to have first, which is how a "
-            "gate ends up configured against one that cannot run the suites")
+            f"file at {resolved}. If the environment is simply not "
+            "provisioned yet, `npm run setup` creates it; the gate cannot "
+            "pass before it exists, and reporting that as anything other "
+            "than a failure would hide the one fact that decides whether "
+            "the suites can run at all")
         # `pytest` is a console script, not something that can drive `-c`;
         # the PYTHON the distribution provisions beside it is what answers
         # the import probes these tests drive.
@@ -281,6 +588,25 @@ class GateInterpreterTests(unittest.TestCase):
         return subprocess.run([str(self.interpreter()), "-c", source],
                               cwd=str(FORGE), capture_output=True, text=True,
                               timeout=120)
+
+    def test_the_gate_names_the_provisioned_interpreter(self):
+        """The gate's interpreter and the provisioning script's environment
+        are the same environment -- asked of both declarations, and
+        answerable whether or not that environment exists yet.
+
+        This is the half that is about the REPOSITORY. The three probes
+        below are about the MACHINE: they need the environment on disk and
+        fail while it is absent, which is true and actionable. Conflating
+        the two is what let a real configuration defect read as somebody's
+        missing setup for as long as it did.
+        """
+        named = pytest_stage(self.manifest).split()[0]
+        self.assertEqual(
+            Path(named).parent, provisioned_bin_directory(),
+            f"`test:py` names {named!r}, which does not live in the "
+            "environment `scripts/setup_env.py` provisions. A gate that "
+            "names an interpreter nothing in this repository creates is a "
+            "gate that only passes on a machine somebody prepared by hand")
 
     def test_the_gate_names_an_interpreter_that_exists_on_disk(self):
         self.interpreter()
@@ -308,6 +634,132 @@ class GateInterpreterTests(unittest.TestCase):
             done.returncode, 0,
             "the interpreter the gate names has no `requests`, so the suites "
             f"that import it error rather than assert:\n{done.stderr}")
+
+    def assert_derivation_is_non_vacuous(self):
+        """A silent empty scope or empty required set would let every
+        assertion downstream of it pass over nothing, which reads exactly
+        like a clean result. Called from both tests below so neither one
+        can pass vacuously, even the capability probe that never touches
+        the required-import set directly.
+        """
+        scope = import_scan_scope()
+        self.assertTrue(
+            scope,
+            "the scanned file universe (IMPORT_SCOPE_PATHSPECS) is empty "
+            "-- nothing was found under tests/, src/, or any skill's "
+            "scripts/ tree, so this guard has nothing to check")
+        required = required_third_party_imports()
+        self.assertTrue(
+            required,
+            "the derived required-import set is empty -- either nothing "
+            "in scope imports anything outside the standard library, or "
+            "the derivation itself is broken; either way this guard would "
+            "be checking nothing")
+        return scope, required
+
+    def test_the_derivation_reaches_the_assets_the_scripts_declare(self):
+        """Without this, a broken `_ASSET`-constant parse would silently
+        shrink `import_scan_scope()` back to exactly the blind spot this
+        guard exists to close: `nbformat` and `nbclient` live ONLY inside
+        `assets/colab/executor.py` and `assets/runner_invoke.py`, never in
+        a file `skills/*/scripts/*.py` reaches directly, so a derivation
+        that resolved zero asset files would never see either name.
+        """
+        resolved = resolved_asset_files()
+        self.assertTrue(
+            resolved,
+            "resolved_asset_files() found nothing -- either no script in "
+            "scope declares an `_ASSET` constant any more, or the parse "
+            "of that declaration is broken; both would silently drop "
+            "nbformat/nbclient from the required set")
+        under_assets = [p for p in resolved
+                        if "assets" in p.relative_to(FORGE).parts]
+        self.assertTrue(
+            under_assets,
+            f"none of the resolved files {sorted(resolved)} sit under an "
+            "assets/ directory, so the resolution is not actually "
+            "reaching the staged asset files it claims to")
+
+    def test_the_named_interpreter_carries_every_import_the_forge_requires(self):
+        """Every third-party import the forge's own code requires, derived
+        from `tests/`, `src/`, every skill's `scripts/` tree, and the
+        asset files those scripts stage as subprocesses -- probed under
+        the interpreter the gate names, in ONE subprocess.
+
+        Measured today: this same interpreter passed the two hand-picked
+        import probes above (`adapter`, `requests`) while the environment
+        was missing `nbformat`, `nbclient`, the `papersmith` distribution,
+        and `ipykernel` -- and the full gate then failed 31 tests, taking
+        13 minutes to reveal what this derived probe reports in seconds.
+        A hand-picked probe only ever proves what somebody remembered to
+        pick; this one is required to find everything the code itself
+        reaches for.
+        """
+        scope, required = self.assert_derivation_is_non_vacuous()
+        names = sorted(required)
+        program = (
+            "import importlib.util, json\n"
+            f"names = {names!r}\n"
+            "missing = [n for n in names if importlib.util.find_spec(n) is None]\n"
+            "print(json.dumps(missing))\n"
+        )
+        done = self.drive(program)
+        self.assertEqual(
+            done.returncode, 0,
+            f"the import probe itself crashed under the gate's interpreter"
+            f" (scanned {len(scope)} files, required {names}):\n{done.stderr}")
+        missing = json.loads(done.stdout)
+        if missing:
+            detail = "; ".join(
+                f"{name} (e.g. {required[name][0].relative_to(FORGE)})"
+                for name in missing
+            )
+            self.fail(
+                "the interpreter the gate names cannot import "
+                f"{len(missing)} distribution(s) this forge's own code "
+                f"requires: {detail}")
+
+    def test_the_named_interpreter_can_start_a_notebook_kernel(self):
+        """A CAPABILITY probe, not an import probe -- and deliberately so.
+
+        `ipykernel` is the fourth gap measured today, and NO file in this
+        repository imports it: `nbclient` pulls in `jupyter_client`, which
+        knows how to TALK to a kernel, and never `ipykernel`, which is the
+        thing that actually RUNS the cells. That gap surfaced as a child
+        process exiting non-zero mid-notebook, not as a missing import, so
+        no import scan of any scope -- however wide -- could ever have
+        found it. This asks the interpreter to actually resolve a `python3`
+        kernel spec instead of asking whether a module merely imports.
+        """
+        self.assert_derivation_is_non_vacuous()
+        program = (
+            "import sys\n"
+            "try:\n"
+            "    from jupyter_client.kernelspec import find_kernel_specs\n"
+            "except ImportError as exc:\n"
+            "    print('NO_JUPYTER_CLIENT:' + str(exc))\n"
+            "    sys.exit(0)\n"
+            "print('FOUND' if 'python3' in find_kernel_specs() else 'NOT_FOUND')\n"
+        )
+        done = self.drive(program)
+        self.assertEqual(
+            done.returncode, 0,
+            f"the kernel-spec probe itself crashed:\n{done.stderr}")
+        output = done.stdout.strip()
+        if output.startswith("NO_JUPYTER_CLIENT"):
+            self.fail(
+                "the interpreter the gate names has no `jupyter_client` at "
+                "all, so a kernel spec cannot even be asked for -- that is "
+                "test_the_named_interpreter_carries_every_import_the_forge_"
+                f"requires's business, not this one's: {output}")
+        self.assertEqual(
+            output, "FOUND",
+            "the interpreter the gate names cannot resolve a `python3` "
+            "notebook kernel spec, so nbclient's NotebookClient has "
+            "nothing to execute the notebook suites' cells with -- even "
+            "though every import above resolves cleanly. Install "
+            "`ipykernel` in that environment "
+            f"(e.g. `python -m ipykernel install --user`): {output}")
 
 
 if __name__ == "__main__":
