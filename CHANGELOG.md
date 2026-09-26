@@ -64,6 +64,18 @@ apart.
 
 ### Changed
 
+- **`upgrade` now refuses where it used to proceed.** Installing an older kit
+  over a newer workspace was accepted silently; it now raises unless
+  `--allow-downgrade` is given. For anyone driving `upgrade` from a script
+  this is a breaking change, and under strict conventional commits its commit
+  deserved a `!` it did not carry. Recording it here because a reader looking
+  for what broke looks in this file, not in a commit subject.
+
+  Worth naming the reason it was missed: across the 817 commits between
+  `0.1.0` and this release, not one carried `!` or `BREAKING CHANGE`. The
+  marker has never been used in this repository, so a version derived from
+  commit types cannot answer whether a major bump is owed -- the input for
+  that question was never written down.
 - **Pin conditions are named by id, never by position.** Two conditions had
   been inserted into the middle of the list; the doctrine table renumbered
   itself and 55 prose references across four files did not, leaving two
