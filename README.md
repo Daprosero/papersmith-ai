@@ -103,8 +103,12 @@ Nada de esto requiere claves ni servicios externos: la forja corre localmente.
 ### 1. Instalá el CLI y prepará el entorno
 
 ```bash
-# 1. El CLI, desde el checkout del framework
+# 1a. El CLI, desde el checkout del framework (lo que tengas en la carpeta AHORA)
 pipx install .
+
+# 1b. O fijando una versión publicada, que es lo que conviene si no sos quien
+#     la desarrolla: el tag decide qué recibís, no el estado de un clon
+pipx install "git+https://github.com/Daprosero/papersmith-ai@v0.2.0"
 
 # 2. Runtime aislado de ingestión (micromamba: Python 3.12, PyTorch, Surya OCR, llama-server)
 python3 scripts/setup_env.py install
@@ -113,6 +117,17 @@ python3 scripts/setup_env.py install
 npm install
 npm run setup:harnesses
 ```
+
+Las dos formas de la línea 1 no son equivalentes. `pipx install .` toma el
+checkout tal como está, incluidos cambios sin commitear, así que dos personas
+que corran ese comando el mismo día pueden terminar con builds distintos. La
+forma con `@vX.Y.Z` recibe exactamente lo que ese tag señala. Las versiones
+publicadas están en [CHANGELOG.md](CHANGELOG.md) y los tags en
+`git tag -l 'v*'`.
+
+Una versión instalada se lee con `papersmith --version`, y `papersmith upgrade`
+se niega a llevar un workspace a una versión anterior a la que registra salvo
+que se lo pidas con `--allow-downgrade`.
 
 `scripts/setup_env.py install` provisiona **todo** el stack de ingestión en un
 entorno micromamba aparte (CPU o CUDA, según lo que detecte), incluido el
