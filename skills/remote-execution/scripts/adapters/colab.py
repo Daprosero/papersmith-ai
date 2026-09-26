@@ -621,6 +621,44 @@ class ColabAdapter(ADAPTER.Adapter):
         combined = f"{result.stdout}\n{result.stderr}".lower()
         return "not found" in combined
 
+    @staticmethod
+    def _service_prose_only(
+            result: subprocess.CompletedProcess) -> subprocess.CompletedProcess:
+        """The same result with the HELPER'S PAYLOAD LINE removed, so the
+        wording test above reads only what the service itself said.
+
+        A helper execution prints one compact JSON line last
+        (`_parse_json_line`), and that line carries the RUN's own words --
+        `status.json` verbatim, the error text the executor recorded
+        included. `_looks_like_not_found()` matches its phrase anywhere in
+        the output, so scanning that line let the run answer a question
+        about the SERVICE: a run whose recorded error happened to contain
+        that phrase was reported as a vanished session. Measured: changing
+        only the wording of a recorded error, every other byte of the
+        scenario identical, flipped the verdict from `failed` to
+        `unknown` -- and `unknown` means evidence is MISSING, so a caller
+        waiting for a terminal state keeps polling instead of stopping to
+        look. The wording test itself is right to read output rather than
+        the exit code (measured: 0 even for a session that does not
+        exist); what was wrong is which output it was allowed to read.
+
+        The last line is dropped ONLY when it parses as JSON. When the
+        session really is gone there is no payload, and the service's own
+        sentence IS the last line -- dropping it unconditionally would
+        blind the very check this protects.
+        """
+        lines = [line for line in result.stdout.splitlines() if line.strip()]
+        if lines:
+            try:
+                json.loads(lines[-1])
+            except ValueError:  # not the payload, so it is the service talking
+                pass
+            else:
+                lines = lines[:-1]
+        return subprocess.CompletedProcess(
+            result.args, result.returncode, "\n".join(lines), result.stderr
+        )
+
     # -- rendering and helper execution -----------------------------------
 
     def _render(self, source: str, session_name: str) -> str:
@@ -1117,7 +1155,7 @@ class ColabAdapter(ADAPTER.Adapter):
                 READ_STATE_ASSET, session_name, Path(raw_tmp) / READ_STATE_ASSET
             )
             read_result = self._exec_result(reader, session_name, retry_read=True)
-        if self._looks_like_not_found(read_result):
+        if self._looks_like_not_found(self._service_prose_only(read_result)):
             return ADAPTER.Status(state="unknown", detail="session not found")
         payload = self._parse_json_line(read_result, f"state read for {submission_id!r}")
 
@@ -1135,7 +1173,22 @@ class ColabAdapter(ADAPTER.Adapter):
                 )
             if exit_code == 0:
                 return ADAPTER.Status(state="complete", detail=line)
-            return ADAPTER.Status(state="failed", detail=f"unit process exited {exit_code}")
+            # The executor records WHY beside the exit code, already
+            # bounded at the writer (`ERROR_MAX_CHARS`, so a runaway
+            # traceback cannot turn a completion signal into megabytes).
+            # Reporting the number alone left that field written and read
+            # by nobody, and left the caller with a digit to go digging
+            # from -- measured: a run whose notebook could not start
+            # surfaced as `unit process exited 1` beside a log holding one
+            # unrelated warning, with the reason sitting in `status.json`
+            # the whole time. A non-string or blank `error` is simply
+            # absent: this reports what the run recorded, and never
+            # invents a reason it did not.
+            detail = f"unit process exited {exit_code}"
+            recorded = status.get("error")
+            if isinstance(recorded, str) and recorded.strip():
+                detail = f"{detail}: {recorded.strip()}"
+            return ADAPTER.Status(state="failed", detail=detail)
 
         launch = payload.get("launch")
         if launch is not None:
@@ -1167,7 +1220,7 @@ class ColabAdapter(ADAPTER.Adapter):
                 READ_STATE_ASSET, session_name, Path(raw_tmp) / READ_STATE_ASSET
             )
             read_result = self._exec_result(reader, session_name, retry_read=True)
-        if self._looks_like_not_found(read_result):
+        if self._looks_like_not_found(self._service_prose_only(read_result)):
             raise ColabAdapterError(
                 f"the session for {submission_id!r} no longer exists; it may "
                 "already have been released by a terminal fetch, or stopped "

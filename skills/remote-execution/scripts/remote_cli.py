@@ -791,7 +791,7 @@ def _gate_job_folder_pin(
     resolved_entrypoint: Path, *, repo_credential_path: str | Path | None = None
 ) -> None:
     """Put a job-folder submission's own declared pin through the same
-    three conditions `generate-job` enforces — BEFORE the digest walk, the
+    pin conditions `generate-job` enforces — BEFORE the digest walk, the
     plan, `adapter.submit()` and `LEDGER.append()`.
 
     `cmd_submit` used to compute a staleness verdict and place it in its
@@ -813,14 +813,14 @@ def _gate_job_folder_pin(
     **The discriminator is `run-config.json`'s presence, deliberately not
     `_job_folder_staleness()`.** That helper returns `None` on TWO paths,
     not one: the legacy shape, and a `run-config.json` `read()` cannot make
-    sense of. Reusing it here would let a job folder skip all three
-    conditions by being unreadable, which is the worse half of the defect
+    sense of. Reusing it here would let a job folder skip every pin
+    condition by being unreadable, which is the worse half of the defect
     class this whole change is about. So a `JobFolderError` from `read()`
     is NOT swallowed — the same restraint `cmd_smoke_record()` already
     applies, and for the same reason. A malformed job folder refusing at
     submit is a new refusal path, and it is the intended one.
 
-    A legacy entrypoint skipping all three conditions is not a finding and
+    A legacy entrypoint skipping every pin condition is not a finding and
     is left exactly as it was: it has no declared pin, no declared clone
     paths and no declared remote, so there is nothing to check, and unlike
     a job folder it never promised a runner a commit.
@@ -1127,7 +1127,7 @@ def cmd_submit(
     job-folder submission with no resolvable product a clean refusal rather
     than a silently mis-recorded one. `_gate_job_folder_pin()` runs
     immediately after it and before everything else, so a job folder whose
-    pin fails any of the three conditions is refused while refusing still
+    pin fails any pin condition is refused while refusing still
     costs nothing: no digest walk, no plan, no adapter call, no ledger
     line. This function used to compute a staleness verdict and place it
     in its return value AFTER `LEDGER.append()`, which reported on a

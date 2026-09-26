@@ -23,11 +23,11 @@ before anything irreversible happens, and the only thing either decision
 point calls — `generate-job` here, and `remote_cli.py`'s `submit` — with
 exactly one word different between them: the `decision` that appears in
 the refusal. Conditions run in `PIN_CONDITIONS` order, cheapest first,
-and the first failure raises. Two call sites and three conditions could
-otherwise drift in order, or omit one on one side, with nothing in the
-code to say so.
+and the first failure raises. Two call sites and the pin conditions
+could otherwise drift in order, or omit one on one side, with nothing
+in the code to say so.
 
-Condition (1), `clean-worktree`, is `git status --porcelain` over the
+The `clean-worktree` condition is `git status --porcelain` over the
 declared clone paths, and `git diff` would be the wrong instrument rather
 than a slower one: `diff` enumerates changes to TRACKED content, so an
 untracked path is outside its domain by construction. That is the exact
@@ -39,7 +39,7 @@ after quota is spent. Nothing here stages, commits, stashes or fetches on
 the operator's behalf, and there is deliberately no flag that accepts a
 dirty tree.
 
-Condition (3), `pin-published`, is `_verify_commit_reachable()`, before
+The `pin-published` condition is `_verify_commit_reachable()`, before
 any write: `--commit` proving out with `git cat-file -e` only shows the pin
 exists in the LOCAL checkout that ran `generate-job` — it says nothing
 about whether the declared `--repo-url` can actually serve it, which is
@@ -1283,13 +1283,13 @@ def validate_commit_shape(commit: object, *, source: str = "the pinned commit") 
 
     The SAME validator both callers use — `validate_run_config()` on every
     read and every generation, and `verify_pin_preconditions()` before it
-    asks any of the three conditions — never a second, parallel copy. The
+    asks any of the pin conditions — never a second, parallel copy. The
     precondition function checks it FIRST, ahead of every condition,
     because a name-shaped pin makes each of them compare a value to
     itself and answer yes: `main` really is a ref the remote can serve,
     `main^{commit}` really does resolve locally, and the staleness diff
-    between `main` and `HEAD` really is empty. Three conditions passing
-    for a pin that means something different tomorrow.
+    between `main` and `HEAD` really is empty. Every pin condition
+    passing for a pin that means something different tomorrow.
     """
     if not isinstance(commit, str) or not COMMIT_PATTERN.match(commit):
         raise JobFolderError(
@@ -1846,8 +1846,9 @@ def generate_job(
     the two cannot disagree about what HEAD means, and a purely local one
     that reaches no remote. The default is not independent of the
     conditions below: HEAD is the code that was validated precisely
-    because condition (1) proves the working tree holds the same bytes and
-    condition (2) proves the pin is that commit. Resolution happens BEFORE
+    because the `clean-worktree` condition proves the working tree holds
+    the same bytes and the `pin-is-head` condition proves the pin is that
+    commit. Resolution happens BEFORE
     them, and a defaulted pin then meets every condition exactly as an
     explicit one does. An explicit `commit` is never substituted,
     discovered or overridden.
@@ -2595,10 +2596,12 @@ def _verify_commit_reachable(
         ) from exc
 
 
-# The three conditions a pin has to satisfy before anything irreversible
+# The conditions a pin has to satisfy before anything irreversible
 # happens, in the order they are checked. The order IS the contract, and
-# it is cheapest-first: two local, instant questions before the one that
-# reaches a network. It is a module constant rather than a sequence of
+# it is cheapest-first: the local, instant questions come before the one
+# that reaches a network. How many of each is deliberately not written
+# here: that number went stale once already, when this tuple grew in the
+# middle, and it is derivable from the tuple anyway. It is a module constant rather than a sequence of
 # statements so that `SKILL.md`'s doctrine table can be held to it by the
 # suite — prose cannot be held to code, a table can.
 PIN_CONDITIONS = ("clean-worktree", "pin-is-head", "declared-paths-exist",
@@ -2608,8 +2611,8 @@ PIN_CONDITIONS = ("clean-worktree", "pin-is-head", "declared-paths-exist",
 def _refuse_dirty_worktree(
     *, target: Path, clone_paths: Sequence[str], decision: str, **_unused: object
 ) -> None:
-    """Condition (1) — the working tree must be clean over the declared
-    clone paths.
+    """The `clean-worktree` condition — the working tree must be clean over
+    the declared clone paths.
 
     `git status --porcelain`, never `git diff`, and the two are not
     interchangeable here. `diff` enumerates changes to TRACKED content; a
@@ -2680,8 +2683,8 @@ def _refuse_stale_pin(
     decision: str,
     **_unused: object,
 ) -> None:
-    """Condition (2) — the pin must be HEAD, or nothing may have changed
-    between them under the declared clone paths.
+    """The `pin-is-head` condition — the pin must be HEAD, or nothing may
+    have changed between them under the declared clone paths.
 
     The verdict comes from `_staleness_for()` and from nowhere else. That
     function has answered exactly this question since the job folder
@@ -2702,11 +2705,12 @@ def _refuse_stale_pin(
     wrapped git error, so carrying it forward is what keeps git's own
     words — and the existing substring assertion on them — intact.
 
-    Condition (1) is what makes this one honest. `_staleness_for()`
-    compares two COMMITTED trees and is blind to uncommitted work by
-    construction; it would call a pin fresh while an untracked module sat
-    beside it. The two conditions are therefore separate and ordered, not
-    one refined into the other.
+    The `clean-worktree` condition is what makes this one honest.
+    `_staleness_for()` compares two COMMITTED trees and is blind to
+    uncommitted work by construction; it would call a pin fresh while an
+    untracked module sat beside it. The `clean-worktree` and
+    `pin-is-head` conditions are therefore separate and ordered, not one
+    refined into the other.
     """
     staleness = _staleness_for(target, commit, clone_paths)
     status = staleness["status"]
@@ -2724,7 +2728,7 @@ def _refuse_stale_pin(
 
     try:
         head = _run_git(["rev-parse", "HEAD"], cwd=target).stdout.strip()
-    except JobFolderError:  # pragma: no cover - condition (1) refuses first
+    except JobFolderError:  # pragma: no cover - clean-worktree refuses first
         head = "HEAD"
     changed = "\n  ".join(staleness["changedPaths"])
     raise JobFolderError(
@@ -2742,7 +2746,8 @@ def _refuse_absent_clone_paths(
     *, target: Path, commit: str, clone_paths: Sequence[str], decision: str,
     **_unused: object,
 ) -> None:
-    """Condition (3) — every declared clone path must exist at the pin.
+    """The `declared-paths-exist` condition — every declared clone path
+    must exist at the pin.
 
     `git sparse-checkout set` accepts a path the tree does not contain and
     checks out nothing for it, silently. So a job could declare the data file
@@ -2784,8 +2789,9 @@ def _refuse_unreachable_notebook(
     *, target: Path, commit: str, clone_paths: Sequence[str],
     notebooks: Sequence[str] = (), decision: str, **_unused: object,
 ) -> None:
-    """Condition (4) — every declared notebook must actually ARRIVE in the
-    runner's checkout, which is two facts and not one.
+    """The `declared-notebook-reachable` condition — every declared
+    notebook must actually ARRIVE in the runner's checkout, which is two
+    facts and not one.
 
     1. **Covered by a declared clone path.** `git sparse-checkout set`
        delivers what the declared paths cover and nothing else. A notebook
@@ -2804,7 +2810,8 @@ def _refuse_unreachable_notebook(
        not, and `sparse-checkout` reports nothing for either case.
 
     Both asked of the PIN and never of the working tree, for the reason
-    condition (3) already gives: the pin is what the runner fetches, and a
+    the `declared-paths-exist` condition already gives: the pin is what
+    the runner fetches, and a
     notebook the operator can see and the pin cannot is precisely the case
     a working-tree check waves through.
 
@@ -2846,7 +2853,8 @@ def _refuse_unpublished_pin(
     repo_credential_path: str | Path | None = None,
     **_unused: object,
 ) -> None:
-    """Condition (3) — the declared remote must be able to serve the pin.
+    """The `pin-published` condition — the declared remote must be able
+    to serve the pin.
 
     A thin adapter onto `_verify_commit_reachable()`, which owns the whole
     of this question and documents it at length. It exists so that every
@@ -2923,8 +2931,9 @@ def _resolve_pin(target: Path, commit: str | None, *,
     failure class this change exists to remove, reintroduced by
     convenience.
 
-    This default is safe only because conditions (1) and (2) exist. HEAD
-    is the code that was validated precisely when the working tree is
+    This default is safe only because the `clean-worktree` and
+    `pin-is-head` conditions exist. HEAD is the code that was validated
+    precisely when the working tree is
     clean over the clone paths and the pin is that commit. It must
     therefore never be reachable around `verify_pin_preconditions()`: the
     resolution happens before them, and every condition then runs against
@@ -2961,8 +2970,9 @@ def _published_equivalent(
 
     Written because the guard refused its own author. Generating a job folder
     writes under `tools/`; committing that moves HEAD past the remote; the next
-    generation defaults to the unpublished HEAD and condition (3) refuses — over
-    a commit whose entire content is the job folder being regenerated, and which
+    generation defaults to the unpublished HEAD and the `pin-published`
+    condition refuses — over a commit whose entire content is the job
+    folder being regenerated, and which
     the runner never clones. Measured on a live target: the blocking commit
     touched nothing but its own job folder, and its diff against the published
     commit over every declared clone path was empty.
@@ -3093,9 +3103,10 @@ def _staleness_for(target: Path, pinned_commit: str, clone_paths: Sequence[str])
 
     The SAME verdict refuses at a decision point and only reports at
     `read()`, and that asymmetry is deliberate rather than an accident of
-    where the code sits. `_refuse_stale_pin()` — condition (2) in
-    `PIN_CONDITIONS` — calls exactly this function and raises on `drift`
-    and `unknown`, so `generate-job` and `submit` both refuse. `read()`
+    where the code sits. `_refuse_stale_pin()` — the `pin-is-head`
+    condition in `PIN_CONDITIONS` — calls exactly this function and
+    raises on `drift` and `unknown`, so `generate-job` and `submit` both
+    refuse. `read()`
     calls it and attaches the verdict. Reading is an observation: refusing
     there would make a drifted job folder unreadable, which is the one
     state in which reading it is most useful, and every reporting command
@@ -3108,14 +3119,14 @@ def _staleness_for(target: Path, pinned_commit: str, clone_paths: Sequence[str])
     `fromStaleSubmission` on the way back — and neither could refuse, so a
     job folder pinned to code that had already moved on was generated,
     submitted and run with the drift printed beside the submission id as
-    though it were weather. Condition (2) is the missing consumer. There
-    is still exactly one computation, which is what keeps the guard and
-    the report from ever disagreeing.
+    though it were weather. The `pin-is-head` condition is the missing
+    consumer. There is still exactly one computation, which is what
+    keeps the guard and the report from ever disagreeing.
 
     This function compares two COMMITTED trees and is blind to
-    uncommitted work by construction — which is why condition (1)
-    (`clean-worktree`) is a separate condition ordered before it, and not
-    a refinement of this one.
+    uncommitted work by construction — which is why the `clean-worktree`
+    condition is a separate condition ordered before it, and not a
+    refinement of this one.
 
     `unknown`, with a reason, whenever the question cannot be answered at
     all: no git history, not a repository, or an absent pinned commit —

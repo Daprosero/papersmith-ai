@@ -721,7 +721,8 @@ executable — no test in this suite reaches the network or a real account).
   built to close, left open on the one entry the pilot actually
   validated. A notebook never becomes a `computed` clone path of its own:
   it is not a module and maps to no package directory, and whether it is
-  DELIVERED is condition (4)'s question, asked of the pin.
+  DELIVERED is the `declared-notebook-reachable` condition's question,
+  asked of the pin.
   `runnerTemplate` records each runner asset's path and sha256 as inert
   provenance — deliberately not a drift check; adding one would be a second
   staleness condition, out of bounds for this skill (see design #744
@@ -734,8 +735,8 @@ executable — no test in this suite reaches the network or a real account).
   and nothing else: `generate-job`, which writes a job folder, and
   `submit`, which spends remote quota. One word differs between the two
   calls — the one that appears in the refusal. The order below is the
-  contract, and it is cheapest-first: two local, instant questions before
-  the one that reaches a network. The first failure refuses; nothing is
+  contract, and it is cheapest-first: the local, instant questions come
+  before the one that reaches a network. The first failure refuses; nothing is
   written, nothing is submitted, no ledger event is appended.
 
 | # | id | Condition | Enforced at | Refusal names |
@@ -746,7 +747,7 @@ executable — no test in this suite reaches the network or a real account).
 | 4 | `declared-notebook-reachable` | Every notebook the run block declares (`run.notebook`, `run.smoke.notebook`) is covered by a declared clone path AND exists at the pin — `git cat-file -e <pin>:<notebook>`. Nothing imports a notebook, so the import cross-check has no representative for it and `sparse-checkout` reports nothing for a path its patterns do not cover. A job declaring no notebook passes through untouched. | `generate-job`, `submit` | Every notebook no clone path covers, every notebook absent at the pin, and the remedy for each |
 | 5 | `pin-published` | The declared remote can serve the pin — `git fetch --dry-run --depth 1` from a scratch repository. Credentialless that probe is anonymous; with `--repo-credential` it authenticates through the staged askpass material (see the Colab environment block) and an SSH-shaped `--repo-url` refuses by name. | `generate-job`, `submit` | The commit, the remote URL, the missing push addressed to `--repo-ref`, and git's own message |
 
-  **Why condition (1) exists, and why it is `status` and not `diff`.**
+  **Why the `clean-worktree` condition exists, and why it is `status` and not `diff`.**
   `resolve_clone_paths()` walks the WORKING TREE. Without this condition
   generation validated bytes the runner would never receive: a brand-new
   `run_search.py` that was never `git add`ed satisfied the import walk
@@ -757,7 +758,7 @@ executable — no test in this suite reaches the network or a real account).
   pathspec is what keeps generation possible at all, since `generate-job`
   writes its own untracked output under `<target>/tools/`.
 
-  **Why condition (2) refuses here and only reports at `read()`.** It is
+  **Why the `pin-is-head` condition refuses here and only reports at `read()`.** It is
   the same verdict, from the same one computation
   (`jobfolder._staleness_for()`), consumed two ways on purpose: it
   **refuses at a decision point** and **only reports** at `read()`.
@@ -774,15 +775,16 @@ executable — no test in this suite reaches the network or a real account).
   default-head`, so you can see what was pinned without opening the job
   folder. That source is stdout only — it describes how you typed an
   argument, not a fact about the job, and `run-config.json` records facts
-  about the job. The default is safe only because of conditions (1) and
-  (2): HEAD is the code that was validated precisely because the tree is
+  about the job. The default is safe only because of the `clean-worktree`
+  and `pin-is-head` conditions: HEAD is the code that was validated
+  precisely because the tree is
   clean over the clone paths and the pin is that commit. It is resolved
   locally, with `git rev-parse HEAD`, and never from the remote — the
   remote's tip was measured to be older than the entrypoint the operator
   needed, so a remote-derived default would pin code older than yours,
   pass every local check and die in the kernel after quota is spent. An
   explicit `--commit` is never substituted, discovered or overridden, and
-  meets the same three conditions.
+  meets every pin condition the same way.
 
   **No escape hatch.** There is deliberately no dirty-tree escape hatch:
   no flag accepts a dirty tree, a drifted pin or an unpublished commit,
@@ -793,7 +795,7 @@ executable — no test in this suite reaches the network or a real account).
   human artifact, and an automatic commit poisons the very history later
   used to say which code produced which number.
 
-  **The reachability probe** — condition (3) in detail. `generate-job`
+  **The reachability probe** — the `pin-published` condition in detail. `generate-job`
   refuses a `--commit` the declared
   `--repo-url` cannot serve. `git cat-file -e` proves only that the pin
   exists in the checkout you are standing in, which is never in doubt and

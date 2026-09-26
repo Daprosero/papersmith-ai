@@ -2070,7 +2070,7 @@ class SubmitTests(unittest.TestCase):
     """
 
     def setUp(self) -> None:
-        # `submit` now gates a job-folder submission on the three pin
+        # `submit` now gates a job-folder submission on the pin
         # conditions. This class's subject is the submit path itself —
         # product resolution, ledger placement, capacity — and its
         # fixtures are plain directories rather than git repositories, so
@@ -9201,9 +9201,9 @@ class ConsentGateTests(unittest.TestCase):
 
     def setUp(self) -> None:
         # Same reason `SubmitTests.setUp()` stubs this: this class's
-        # subject is the consent gate itself, not the three pin
+        # subject is the consent gate itself, not the pin
         # conditions, and its fixtures are plain directories, not git
-        # repositories. `SubmitPinGateTests` already drives those three
+        # repositories. `SubmitPinGateTests` already drives those pin
         # conditions against real git repos; nothing here duplicates that.
         patcher = unittest.mock.patch.object(
             JOBFOLDER, "verify_pin_preconditions", return_value=None
@@ -9757,7 +9757,7 @@ class AuthorizationGateTests(unittest.TestCase):
 
     def setUp(self) -> None:
         # Same reason `ConsentGateTests.setUp()` stubs this: this class's
-        # subject is the authorization gate itself, not the three pin
+        # subject is the authorization gate itself, not the pin
         # conditions `SubmitPinGateTests` already drives against real git
         # repos.
         patcher = unittest.mock.patch.object(
@@ -10365,7 +10365,7 @@ class JobFolderTests(unittest.TestCase):
         # than git repositories at all. `verify_pin_preconditions()` is
         # the WHOLE-precondition seam, so stubbing that one name is what
         # keeps this class offline and deterministic; stubbing only the
-        # probe would leave the two local conditions refusing every
+        # probe would leave the local conditions refusing every
         # generation here.
         patcher = unittest.mock.patch.object(
             JOBFOLDER, "verify_pin_preconditions", return_value=None
@@ -11853,15 +11853,17 @@ class CommitReachabilityTests(unittest.TestCase):
         matters enough to write down. These three tests each have one
         subject: the reachability refusal, and that `generate_job()`
         reaches it. Once generation asks git two further local questions
-        first, a double that raised for every argv made condition (1)
-        refuse first, and a bare `Mock(returncode=0)` made `result.stdout`
+        first, a double that raised for every argv made the
+        `clean-worktree` condition refuse first, and a bare
+        `Mock(returncode=0)` made `result.stdout`
         an auto-`Mock` whose `.splitlines()` is a truthy `Mock`, so a
         clean tree read as dirty. Both outcomes are the double being
         wrong about git, not the guard being wrong about the pin.
         Answering `rev-parse HEAD` with a commit and `status --porcelain`
         with the empty string is what real git does in the fixture these
-        tests were always describing. It stays silent about conditions (1)
-        and (2), which is exactly why those two are locked against real
+        tests were always describing. It stays silent about the
+        `clean-worktree` and `pin-is-head` conditions, which is exactly
+        why those two are locked against real
         git repositories in `CleanWorkingTreeTests` and `PinIsHeadTests`
         and never through this double.
         """
@@ -11917,8 +11919,9 @@ class CommitReachabilityTests(unittest.TestCase):
         the one that actually surfaces.
 
         The double answers the two local questions as real git does for a
-        clean tree, so the refusal observed here really is condition (3)'s
-        and not condition (1)'s wearing the same words — every refusal in
+        clean tree, so the refusal observed here really is the
+        `pin-published` condition's and not the `clean-worktree`
+        condition's wearing the same words — every refusal in
         this module carries git's own text forward, which would otherwise
         make the two indistinguishable by substring.
         """
@@ -12183,9 +12186,10 @@ class CleanWorkingTreeTests(unittest.TestCase):
         )
 
     def setUp(self) -> None:
-        # Condition (3) reaches a network. Every `repo_url` here is
-        # `example.invalid`; stubbed so this class stays offline and so a
-        # refusal here can only be condition (1)'s.
+        # The `pin-published` condition reaches a network. Every
+        # `repo_url` here is `example.invalid`; stubbed so this class
+        # stays offline and so a refusal here can only be the
+        # `clean-worktree` condition's.
         patcher = unittest.mock.patch.object(
             JOBFOLDER, "_verify_commit_reachable", return_value=None
         )
@@ -12301,7 +12305,7 @@ class CleanWorkingTreeTests(unittest.TestCase):
             invoke_asset=invoke,
         )
 
-    # -- condition (1) ---------------------------------------------------
+    # -- clean-worktree ---------------------------------------------------
 
     def test_a_modified_tracked_file_under_a_clone_path_refuses_naming_it(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -12869,14 +12873,194 @@ class PinConditionDoctrineTests(unittest.TestCase):
         self.assertIn("only reports", text)
 
 
+_ORDINAL_PIN_CONDITION_RE = re.compile(
+    r"\bcondition(?:s)?\b\s*\(\s*[1-5]\s*\)(?:\s*and\s*\(\s*[1-5]\s*\))?",
+    re.IGNORECASE,
+)
+_HARDCODED_PIN_CONDITION_COUNT_RE = re.compile(
+    r"\b(two|three|four|five)\b(?:\s+\S+){0,2}\s+condition(?:s)?\b",
+    re.IGNORECASE,
+)
+_PIN_CONDITION_TABLE_ROW_RE = re.compile(r"^\s*\|.*\|\s*$")
+_PY_COMMENT_LEADER_RE = re.compile(r"^(\s*)#\s?")
+
+
+def _mask_pin_condition_table_rows(text: str) -> str:
+    """Blank every SKILL.md table-row line, byte-length preserved, so a
+    later line-number report stays accurate.
+
+    The table's own `#` column is a position too, but it is positional
+    BY CONSTRUCTION -- `PinConditionDoctrineTests` above already holds
+    its order to `PIN_CONDITIONS` -- so it is excluded by removing the
+    row's text before scanning, never by weakening either pattern below
+    to tolerate it.
+    """
+    return "\n".join(
+        " " * len(line) if _PIN_CONDITION_TABLE_ROW_RE.match(line) else line
+        for line in text.split("\n")
+    )
+
+
+def _bridge_py_comment_leaders(text: str) -> str:
+    """Drop each line's leading `#` marker (and one following space),
+    line count and every newline position preserved.
+
+    A prose sentence wrapped across a multi-line `#` comment reads
+    continuously to a person; to a regex scanning raw text it does not,
+    because the marker sits exactly where the sentence continues onto
+    the next line. Removing it is what lets a match started on one
+    comment line reach the word that finishes it on the next one.
+    """
+    return "\n".join(
+        _PY_COMMENT_LEADER_RE.sub(r"\1", line) for line in text.split("\n")
+    )
+
+
+def _pin_condition_prose_violations(
+    text: str, *, mask_tables: bool = False, bridge_comments: bool = False
+):
+    """Every place `text` names a pin condition by position, or states
+    how many pin conditions there are, as a sorted list of
+    `(line_number, matched_text)` pairs.
+
+    A position is a name that an insertion breaks: everything after the
+    insertion point in an ordered tuple shifts to mean something
+    different, and unlike the callables in this skill's own registry --
+    keyed by id, so an insertion cannot silently misfile one -- prose
+    that names a member by position has no such protection. A
+    spelled-out total is the same failure in a plural: it is a claim
+    about the whole tuple's size rather than about one of its members,
+    and it goes stale on the identical insertion. Both are therefore
+    banned from prose in favor of the one name an insertion cannot
+    break: the backtick id already carried in the tuple itself.
+    """
+    scanned = text
+    if mask_tables:
+        scanned = _mask_pin_condition_table_rows(scanned)
+    if bridge_comments:
+        scanned = _bridge_py_comment_leaders(scanned)
+    found = []
+    for pattern in (_ORDINAL_PIN_CONDITION_RE, _HARDCODED_PIN_CONDITION_COUNT_RE):
+        for match in pattern.finditer(scanned):
+            line_number = scanned.count("\n", 0, match.start()) + 1
+            found.append((line_number, match.group(0)))
+    found.sort()
+    return found
+
+
+class PinConditionOrdinalGuardTests(unittest.TestCase):
+    """A pin condition already has one stable name: its `id` in
+    `PIN_CONDITIONS` (`clean-worktree`, `pin-is-head`,
+    `declared-paths-exist`, `declared-notebook-reachable`,
+    `pin-published`). Prose across this skill used to name a condition
+    by where it sits in that tuple instead, and separately used to
+    spell out how many members the tuple has. Both habits share one
+    failure mode: `PIN_CONDITIONS` gained a new member in the middle of
+    the tuple, every position after the insertion point came to mean a
+    different condition than it used to, and the tuple's size changed
+    -- but nothing in the language of "where" or "how many" carries a
+    signal that either fact just went stale. The callables this skill
+    dispatches through are keyed by id for exactly this reason, and
+    `PinConditionDoctrineTests` above already holds SKILL.md's table to
+    that id and to that order. This class extends the same discipline
+    to every sentence OUTSIDE the table: name a condition by its id, in
+    backticks, and never state the tuple's size in words.
+
+    The table's own `#` column is the one place a position legitimately
+    appears -- positional by construction, and already the thing the
+    class above holds to `PIN_CONDITIONS`'s order -- so its rows are
+    removed before either pattern below ever sees them.
+
+    Self-reference: this guard's own module is one of the four files it
+    reads, so nothing above may spell out the exact shapes it forbids
+    as one contiguous token, and the positive control just below builds
+    those shapes from separate fragments at runtime rather than writing
+    either one literally in this file. Do not collapse that assembly
+    into a single string "for clarity" -- a literal instance living
+    here would make this file fail its own guard.
+    """
+
+    # (path, mask_tables, bridge_comments). SKILL.md has a table's `#`
+    # column to mask and no `#`-comment wrapping; the three `.py` files
+    # have no table but do wrap sentences across `#` comment lines.
+    _SCANNED_FILES = (
+        (SKILL_MD, True, False),
+        (JOBFOLDER_SCRIPT, False, True),
+        (REMOTE_CLI_SCRIPT, False, True),
+        (Path(__file__).resolve(), False, True),
+    )
+
+    def test_every_scanned_file_was_actually_found_and_read(self) -> None:
+        """Non-vacuity: a mistyped path that resolves to nothing, or to an
+        empty file, would make every assertion below pass over an empty
+        set and read as a clean result it never earned.
+        """
+        for path, _, _ in self._SCANNED_FILES:
+            self.assertTrue(path.is_file(), f"not a file, cannot be scanned: {path}")
+            size = path.stat().st_size
+            self.assertGreater(
+                size, 0,
+                f"{path} read as zero bytes -- a path typo looks exactly "
+                "like this, and the scan below would then be vacuously "
+                "clean",
+            )
+
+    def test_the_detector_fires_on_an_assembled_violation(self) -> None:
+        """Positive control. Built from separate fragments and joined only
+        at runtime -- see this class's own docstring for why a literal
+        instance may not appear in this file.
+        """
+        assembled_ordinal = "".join(["cond", "ition", " (", "3", ")"])
+        assembled_count = "".join(["thr", "ee", " conditions"])
+        sample = f"the {assembled_ordinal} refuses; {assembled_count} landed first"
+
+        violations = _pin_condition_prose_violations(sample)
+
+        self.assertEqual(
+            len(violations), 2,
+            f"the detector did not fire on both assembled violations: {violations}",
+        )
+        matched = [text for _, text in violations]
+        self.assertTrue(
+            any("(3)" in text for text in matched),
+            f"the ordinal half of the positive control never matched: {matched}",
+        )
+        self.assertTrue(
+            any("conditions" in text.lower() for text in matched),
+            f"the count half of the positive control never matched: {matched}",
+        )
+
+    def test_no_bare_ordinal_or_hardcoded_count_pin_condition_reference(self) -> None:
+        """Zero positional or counted pin-condition references across
+        SKILL.md, jobfolder.py, remote_cli.py and this test module
+        itself -- every one of them must instead name the condition by
+        its backtick id, or drop the count entirely.
+        """
+        offenses = []
+        for path, mask_tables, bridge_comments in self._SCANNED_FILES:
+            text = path.read_text(encoding="utf-8")
+            for line_number, matched in _pin_condition_prose_violations(
+                text, mask_tables=mask_tables, bridge_comments=bridge_comments
+            ):
+                offenses.append(f"{path}:{line_number}: {matched!r}")
+        self.assertEqual(
+            offenses, [],
+            "pin condition named by position, or its count spelled out, "
+            "instead of named by id -- replace each with the backtick id "
+            "PIN_CONDITIONS already gives it, and drop any count "
+            "entirely:\n  " + "\n  ".join(offenses),
+        )
+
+
 class CommitDefaultTests(unittest.TestCase):
     """`--commit` may be omitted, and then defaults to the target's HEAD.
 
     This is the only requirement in this change that ADDS convenience, and
-    it is safe only because the three conditions landed first. HEAD is a
-    trustworthy pin exactly when condition (1) proves the working tree
-    holds the same bytes as the commit, and condition (2) proves the pin
-    is that commit. Ship the default without them and you ship the silent-
+    it is safe only because every pin condition landed first. HEAD is a
+    trustworthy pin exactly when the `clean-worktree` condition proves the
+    working tree holds the same bytes as the commit, and the `pin-is-head`
+    condition proves the pin is that commit. Ship the default without
+    them and you ship the silent-
     wrong-pin behaviour this whole change exists to remove, wearing a
     friendlier interface.
 
@@ -13040,8 +13224,9 @@ class CommitDefaultTests(unittest.TestCase):
     # -- the default is not independent of the conditions ------------------
 
     def test_omitting_the_commit_with_a_dirty_tree_refuses_and_writes_nothing(self) -> None:
-        """The default cannot exist independently of condition (1). HEAD is
-        a safe pin only because the tree is proven to hold the same bytes.
+        """The default cannot exist independently of the `clean-worktree`
+        condition. HEAD is a safe pin only because the tree is proven to
+        hold the same bytes.
         """
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "repo"
@@ -14178,8 +14363,9 @@ class StalenessTests(unittest.TestCase):
         # preconditions — every `repo_url` here is `example.invalid`, a
         # fixture, never a real remote, and several tests here
         # deliberately generate into a non-repository or against a pin
-        # absent from history, which are exactly the states conditions (1)
-        # and (2) forbid at a decision point and `read()` only reports.
+        # absent from history, which are exactly the states the
+        # `clean-worktree` and `pin-is-head` conditions forbid at a
+        # decision point and `read()` only reports.
         # The whole-precondition seam is stubbed, not just the probe.
         patcher = unittest.mock.patch.object(
             JOBFOLDER, "verify_pin_preconditions", return_value=None
@@ -14513,7 +14699,7 @@ class SubmitPinGateTests(unittest.TestCase):
     submission that had already occurred, which is not a gate — it is a
     receipt with a warning printed on it.
 
-    The gate runs the same three conditions, from the same one function
+    The gate runs the same pin conditions, from the same one function
     `generate-job` calls, against the job folder's OWN declared pin, clone
     paths and remote. It sits after `product_for()` and before the digest
     walk, the plan, `adapter.submit()` and `LEDGER.append()`, so a refusal
@@ -14522,7 +14708,7 @@ class SubmitPinGateTests(unittest.TestCase):
     It discriminates on `run-config.json`'s PRESENCE, deliberately not on
     `_job_folder_staleness()`, which returns `None` on two different paths:
     the legacy shape AND a `run-config.json` it cannot read. Reusing it
-    would let a job folder skip all three conditions by being unreadable,
+    would let a job folder skip every pin condition by being unreadable,
     which is the worse half of this change's own defect class. A legacy
     entrypoint skipping the conditions is not a finding — it has no
     declared pin, no declared clone paths and no declared remote, so there
@@ -14611,7 +14797,7 @@ class SubmitPinGateTests(unittest.TestCase):
     def _ledger_path(self, target: Path) -> Path:
         return target.resolve() / "FEM-TOLLA" / ".remote-execution" / "ledger.jsonl"
 
-    # -- the three conditions, at submit time ----------------------------
+    # -- the pin conditions, at submit time ----------------------------
 
     def test_a_dirty_tree_refuses_with_no_adapter_call_and_no_ledger_line(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -14829,7 +15015,7 @@ class SubmitPinGateTests(unittest.TestCase):
     def test_a_malformed_run_config_refuses_rather_than_skipping_every_condition(self) -> None:
         """`_job_folder_staleness()` returns `None` for BOTH the legacy
         shape and an unreadable `run-config.json`. Discriminating on that
-        return value would let a job folder skip all three conditions by
+        return value would let a job folder skip every pin condition by
         being unreadable — a new refusal path this change adds
         deliberately, and the one place it is stricter than the spec's own
         wording. Precedent: `cmd_smoke_record` already refuses to swallow
@@ -15058,7 +15244,7 @@ class StalenessRoutingTests(unittest.TestCase):
         reporting and is wrong for gating. `_job_folder_staleness()`
         returns `None` on two paths — the legacy shape and an unreadable
         config — so a gate that inherited that tolerance would let a job
-        folder skip all three pin conditions by being malformed, which is
+        folder skip every pin condition by being malformed, which is
         the worse half of the defect this change exists to close.
 
         This is a new refusal path the spec does not name, adopted
@@ -19123,7 +19309,7 @@ class PublishedPinResolutionTests(unittest.TestCase):
 
     Generating a job folder writes files under `tools/`, and committing them
     moves HEAD past what the remote has. The next generation then defaults to
-    that unpublished HEAD and condition (3) refuses — correctly, since a runner
+    that unpublished HEAD and the `pin-published` condition refuses — correctly, since a runner
     cannot fetch it — over a commit that touched nothing the runner clones. The
     author is told to push a commit whose entire content is the job folder they
     are in the middle of regenerating.
@@ -22090,6 +22276,123 @@ class ColabSessionLifecycleTests(unittest.TestCase):
                 "a session that vanishes mid-read is unknown, never a refusal "
                 "(ledger S2-J6)",
             )
+
+    def test_colab_poll_surfaces_the_reason_the_executor_recorded(self) -> None:
+        """A non-zero exit must carry WHY, because the executor already
+        wrote it down.
+
+        `assets/colab/executor.py` records `status.json["error"]` on
+        purpose, bounded on purpose (`ERROR_MAX_CHARS`, so a runaway
+        traceback cannot turn a completion signal into megabytes). `poll()`
+        read `exitCode` out of that same object and reported the number
+        alone, so the one field written specifically to explain the failure
+        reached nobody -- a field written and read by no one.
+
+        The cost is not theoretical: a run whose notebook could not start
+        surfaced as `unit process exited 1` beside a log holding an
+        unrelated warning, and the actual reason sat in `status.json` the
+        whole time.
+
+        The sibling case above writes a `status.json` with NO `error` key
+        and still expects the bare sentence; both are the contract.
+
+        The recorded reason here deliberately avoids the words "not
+        found". `_looks_like_not_found()` matches that substring anywhere
+        in the helper's output, and the helper's output carries this very
+        `status.json`, so a reason containing those words is read as a
+        VANISHED SESSION instead of a failed run. That is a separate
+        defect with its own entry; this test must not depend on it, in
+        either direction.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = _ColabCLISimulator(tmp)
+            name = "psmith-x-00000000"
+            sid = "colab/" + name
+            session_dir = sim.session_dir(name)
+            adapter = self._adapter(sim)
+
+            sim.scenario()
+            sim.seed_session(name)
+            session_dir.mkdir(parents=True, exist_ok=True)
+            (session_dir / "launch.json").write_text(
+                json.dumps({"pid": 99, "started": "2026-09-20T00:00:00Z"}),
+                encoding="utf-8",
+            )
+            (session_dir / "status.json").write_text(
+                json.dumps({
+                    "exitCode": 1,
+                    "finishedAt": "2026-09-20T00:02:00Z",
+                    "error": "NoSuchKernel: no kernel named python3 is installed",
+                }),
+                encoding="utf-8",
+            )
+            state = adapter.poll(sid)
+            self.assertEqual(state.state, "failed")
+            self.assertIn("unit process exited 1", state.detail)
+            self.assertIn(
+                "NoSuchKernel: no kernel named python3 is installed", state.detail,
+                "the executor recorded the reason and poll dropped it, so the "
+                "caller is told a number and has to go digging for what the "
+                "run already knew")
+
+    def test_colab_poll_never_lets_the_runs_own_words_answer_for_the_service(
+            self) -> None:
+        """A recorded error containing the service's "no such session"
+        wording is still a FAILED run, never a vanished session.
+
+        `_looks_like_not_found()` matches that wording anywhere in a
+        command's output, and it has to read output rather than the exit
+        code, which is measured to be 0 even for a session that does not
+        exist. But the state read's output carries the RUN's own words --
+        `status.json` verbatim, error text included -- on its last line.
+        Scanning that line let the run answer a question about the
+        service.
+
+        The consequence is the wrong direction, not merely a wrong label.
+        `unknown` means evidence is MISSING, so a caller waiting for a
+        terminal state keeps polling or retries; `failed` means stop and
+        look. Measured: changing ONLY the wording of the recorded error,
+        with every other byte of the scenario identical, flipped the
+        verdict from `failed` to `unknown`.
+
+        And it was not hypothetical. The error a run produces when its
+        notebook kernel is missing is `NoSuchKernel: ... not found`, so
+        this defect would have masked exactly the environment gap that
+        `tests/test_forge_gate.py` now probes for.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = _ColabCLISimulator(tmp)
+            name = "psmith-x-00000000"
+            sid = "colab/" + name
+            session_dir = sim.session_dir(name)
+            adapter = self._adapter(sim)
+
+            sim.scenario()
+            sim.seed_session(name)
+            session_dir.mkdir(parents=True, exist_ok=True)
+            (session_dir / "launch.json").write_text(
+                json.dumps({"pid": 99, "started": "2026-09-20T00:00:00Z"}),
+                encoding="utf-8",
+            )
+            (session_dir / "status.json").write_text(
+                json.dumps({
+                    "exitCode": 1,
+                    "finishedAt": "2026-09-20T00:02:00Z",
+                    "error": "NoSuchKernel: kernelspec python3 not found",
+                }),
+                encoding="utf-8",
+            )
+            state = adapter.poll(sid)
+            self.assertEqual(
+                state.state, "failed",
+                "the run recorded an error whose wording happens to match the "
+                "service's own 'no such session' phrase, and the adapter read "
+                "the run's words as an answer about the service: a real "
+                "failure reported as missing evidence")
+            self.assertIn("unit process exited 1", state.detail)
+            self.assertIn(
+                "kernelspec python3 not found", state.detail,
+                "the reason must still travel, wording and all")
 
     def test_colab_poll_retries_idempotent_reads_once(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
