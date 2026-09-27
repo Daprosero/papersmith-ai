@@ -11,6 +11,9 @@ research-concept-r02(1).md
 research-concept-r02(1) 2.md
 .codegraph/
 .gga
+# Seguimiento ODD del harness Pi (y su espejo en Engram): estado de la máquina,
+# no del repo. Misma regla que `.atl/`.
+odd/
 # Node dependencies
 node_modules/
 
@@ -94,6 +97,15 @@ __pycache__/
 # El glob cubre los duplicados que crea Finder ("Target 2.md"), que son copias
 # byte a byte y quedaban fuera de una regla con el nombre exacto.
 Target*.md
+
+# El diagrama de flujo del proyecto sigue el mismo contrato que `.claude/skills`
+# o el kit: viaja la fuente tipada (`papersmith-flow.workflow.json`, que declara
+# su propio `output`), y se ignoran los derivados que la herramienta regenera
+# -- el HTML, sus capturas de verificación visual y el reporte del chequeo.
+# Ignorar la familia entera, no cada archivo nombrado: el próximo artefacto que
+# produzca la herramienta queda cubierto sin tocar esto.
+docs/papersmith-flow.html
+docs/papersmith-flow.visual-check.*
 
 # Permisos locales de Claude Code: rutas de máquina y comandos de una sesión
 .claude/settings.json

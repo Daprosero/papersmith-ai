@@ -1,0 +1,363 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "Papersmith AI — Current Pipeline Flow",
+    "locale": "en",
+    "quality_profile": "showcase",
+    "views": [
+      {
+        "id": "ingestion",
+        "label": "PDF to Markdown",
+        "focus": [
+          "pdfs",
+          "ocr",
+          "ingest",
+          "md"
+        ],
+        "note": "Local, keyless conversion; only the first run reaches the network for model weights."
+      },
+      {
+        "id": "deliberation",
+        "label": "Revision loop",
+        "focus": [
+          "ingest",
+          "deliberate",
+          "proposal",
+          "implement"
+        ],
+        "note": "Implementation findings return as a successor revision, so these two stages form a cycle."
+      },
+      {
+        "id": "execution",
+        "label": "Remote measurement",
+        "focus": [
+          "implement",
+          "creds",
+          "remote",
+          "workers",
+          "ledger"
+        ],
+        "note": "The only credential that crosses is a file path; the ledger is the durable record."
+      }
+    ],
+    "output": "docs/papersmith-flow.html",
+    "legend": {
+      "mode": "auto",
+      "entries": {
+        "backend": {
+          "label": "Forge stage"
+        },
+        "security": {
+          "label": "Credential store"
+        },
+        "messagebus": {
+          "label": "Remote execution"
+        },
+        "database": {
+          "label": "On-disk artifact"
+        },
+        "cloud": {
+          "label": "Remote worker"
+        },
+        "external": {
+          "label": "Input / local engine"
+        }
+      }
+    }
+  },
+  "lanes": [
+    {
+      "id": "external",
+      "label": "Local Engines, Credentials & Workers"
+    },
+    {
+      "id": "forge",
+      "label": "Forge Pipeline"
+    },
+    {
+      "id": "artifacts",
+      "label": "On-Disk Artifacts"
+    }
+  ],
+  "phases": [
+    {
+      "id": "intake",
+      "label": "Ingest",
+      "fromCol": 0,
+      "toCol": 1
+    },
+    {
+      "id": "author",
+      "label": "Deliberate + implement",
+      "fromCol": 2,
+      "toCol": 3,
+      "variant": "emphasis"
+    },
+    {
+      "id": "measure",
+      "label": "Execute + measure",
+      "fromCol": 4,
+      "toCol": 5,
+      "variant": "dashed"
+    }
+  ],
+  "mainPath": [
+    "pdfs",
+    "ingest",
+    "deliberate",
+    "implement",
+    "remote",
+    "workers"
+  ],
+  "semanticChecks": {
+    "allowedRoots": [
+      "pdfs",
+      "ocr",
+      "creds"
+    ],
+    "allowedTerminals": [
+      "md",
+      "proposal",
+      "target",
+      "ledger",
+      "workers"
+    ],
+    "requiredPaths": [
+      {
+        "from": "pdfs",
+        "to": "workers"
+      }
+    ]
+  },
+  "nodes": [
+    {
+      "id": "pdfs",
+      "lane": "forge",
+      "col": 0,
+      "type": "external",
+      "label": "Reference PDFs",
+      "sublabel": "guidance/<root>/*.pdf",
+      "width": 126
+    },
+    {
+      "id": "ingest",
+      "lane": "forge",
+      "col": 1,
+      "type": "backend",
+      "label": "Paper Ingestion",
+      "sublabel": "extract_pdf.py",
+      "tag": "own .venv",
+      "width": 126
+    },
+    {
+      "id": "deliberate",
+      "lane": "forge",
+      "col": 2,
+      "type": "backend",
+      "label": "Deliberation",
+      "sublabel": "cli.mjs --serve",
+      "tag": "resolve/preview/accept",
+      "width": 126
+    },
+    {
+      "id": "implement",
+      "lane": "forge",
+      "col": 3,
+      "type": "backend",
+      "label": "Implementation",
+      "sublabel": "implementation_cli.py",
+      "tag": "plan/apply/verify",
+      "width": 126
+    },
+    {
+      "id": "remote",
+      "lane": "forge",
+      "col": 4,
+      "type": "messagebus",
+      "label": "Remote Execution",
+      "sublabel": "remote_cli.py",
+      "width": 126
+    },
+    {
+      "id": "md",
+      "lane": "artifacts",
+      "col": 1,
+      "type": "database",
+      "label": "Lean Markdown",
+      "sublabel": "<stem>.md + figures",
+      "width": 126,
+      "yOffset": 40
+    },
+    {
+      "id": "proposal",
+      "lane": "artifacts",
+      "col": 2,
+      "type": "database",
+      "label": "Managed Revision",
+      "sublabel": "research-concept-rNN.md",
+      "width": 126,
+      "yOffset": 40
+    },
+    {
+      "id": "target",
+      "lane": "artifacts",
+      "col": 3,
+      "type": "database",
+      "label": "Target Repo Clone",
+      "sublabel": "implementations/<repo>/",
+      "width": 126,
+      "yOffset": 40
+    },
+    {
+      "id": "ledger",
+      "lane": "artifacts",
+      "col": 4,
+      "type": "database",
+      "label": "Execution Ledger",
+      "sublabel": "ledger.jsonl",
+      "width": 126,
+      "yOffset": 40
+    },
+    {
+      "id": "ocr",
+      "lane": "external",
+      "col": 1,
+      "type": "external",
+      "label": "Marker + llama.cpp",
+      "sublabel": "Surya OCR + layout",
+      "width": 126
+    },
+    {
+      "id": "creds",
+      "lane": "external",
+      "col": 3,
+      "type": "security",
+      "label": "Kaggle Accounts",
+      "sublabel": "accounts_cli.py",
+      "tag": "path only",
+      "width": 126
+    },
+    {
+      "id": "workers",
+      "lane": "external",
+      "col": 5,
+      "type": "cloud",
+      "label": "Kaggle Workers",
+      "sublabel": "kagglesdk adapter",
+      "width": 126
+    }
+  ],
+  "edges": [
+    {
+      "id": "drop",
+      "from": "pdfs",
+      "to": "ingest",
+      "label": "loose PDF drop",
+      "variant": "default"
+    },
+    {
+      "id": "engine-attach",
+      "from": "ocr",
+      "to": "ingest",
+      "label": "local OCR backend",
+      "variant": "dashed",
+      "role": "branch"
+    },
+    {
+      "id": "emit-md",
+      "from": "ingest",
+      "to": "md",
+      "label": "moves PDF into its folder",
+      "variant": "default",
+      "role": "branch"
+    },
+    {
+      "id": "seed",
+      "from": "ingest",
+      "to": "deliberate",
+      "label": "guide corpus seeds v1",
+      "variant": "emphasis"
+    },
+    {
+      "id": "publish",
+      "from": "deliberate",
+      "to": "proposal",
+      "label": "publish + receipt",
+      "variant": "default",
+      "role": "branch"
+    },
+    {
+      "id": "adopt",
+      "from": "deliberate",
+      "to": "implement",
+      "label": "approved revision rNN",
+      "variant": "emphasis"
+    },
+    {
+      "id": "materialize",
+      "from": "implement",
+      "to": "target",
+      "label": "clone-scoped writes only",
+      "variant": "security",
+      "role": "branch"
+    },
+    {
+      "id": "job",
+      "from": "implement",
+      "to": "remote",
+      "label": "generate-job",
+      "variant": "default"
+    },
+    {
+      "id": "token",
+      "from": "creds",
+      "to": "remote",
+      "label": "token file path, never the key",
+      "variant": "security",
+      "role": "branch"
+    },
+    {
+      "id": "dispatch",
+      "from": "remote",
+      "to": "workers",
+      "label": "submit / poll / fetch",
+      "variant": "emphasis"
+    },
+    {
+      "id": "record",
+      "from": "remote",
+      "to": "ledger",
+      "label": "append-only events",
+      "variant": "default",
+      "role": "branch"
+    },
+    {
+      "id": "successor",
+      "from": "implement",
+      "to": "deliberate",
+      "label": "handoff opens a successor",
+      "variant": "dashed",
+      "role": "return",
+      "route": "up-channel"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "emerald",
+      "title": "Three isolated interpreters",
+      "items": [
+        "Root .venv runs the forge CLIs and their tests",
+        "paper-ingestion/.venv holds the Marker stack alone"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Where the network is touched",
+      "items": [
+        "Ingestion pulls Surya weights once, then runs offline",
+        "Deliberation is keyless: no model or network call"
+      ]
+    }
+  ]
+}
