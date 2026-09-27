@@ -11,6 +11,40 @@ reader expects a kept one.
 Versions follow [semantic versioning](https://semver.org): while the first
 number is `0`, breaking changes can still arrive without a major bump.
 
+## 0.5.0
+
+### Added
+
+- **Pi relays the off-path push tripwire, and refuses by returning instead of
+  throwing.** `.pi/extensions/refuse-offpath-push.ts` is generated for every Pi
+  workspace and loaded by Pi from the project `.pi/` directory. It shells out to
+  `remote-execution`'s own `refuse_offpath_push.py` with the payload OpenCode
+  already sends, so the predicate keeps exactly one authority and a second
+  service is covered by that service's own `PUSH_SURFACE`, never by editing the
+  relay.
+
+  It could not be a copy of the OpenCode plugin. Pi treats a failed `tool_call`
+  handler as a fail-safe block, so the OpenCode relay's `throw` to refuse would
+  instead block every `bash` command in the session. This relay refuses by
+  returning `{ block: true, reason }`, and its whole handler body is wrapped so
+  that any unexpected failure -- including while degrading -- warns once and
+  then allows. A tripwire that silently fails open is bad; one that fails closed
+  onto unrelated commands is worse.
+
+  The default export is load-bearing: Pi loads extensions with
+  `jiti.import(path, { default: true })` and rejects a module that is not a
+  function, which takes every `pi` command down with it rather than just the
+  extension's own tools. The gate loads the real generated artifact the same
+  way, so that contract is proven instead of assumed.
+
+### Internal
+
+- **`.pi/` was ignored wholesale, so a Pi extension could not be versioned.** It
+  now follows the split `.opencode/` already drew: `.pi/skills` (the harness
+  link) and `.pi/gentle-ai/` (the generated persona) stay ignored, while
+  `.pi/extensions/` is a source artifact projected by
+  `scripts/sync-repo-harness.py` like every other harness surface.
+
 ## 0.4.0
 
 ### Added
