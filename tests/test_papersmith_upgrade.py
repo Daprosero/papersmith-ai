@@ -132,7 +132,26 @@ class UpgradeTests(unittest.TestCase):
         assert result["active_tools"] == ["claude", "pi"]
         assert config.load_workspace_config(workspace)["active_tools"] == ["claude", "pi"]
         assert (workspace / "CLAUDE.md").is_file()
-        assert (workspace / "PI.md").is_file()
+        assert (workspace / ".pi/APPEND_SYSTEM.md").is_file()
+
+    def test_upgrade_preserves_operator_edits_to_the_pi_settings_seed(self) -> None:
+        """``.pi/settings.json`` is seeded once, then owned by the operator.
+
+        Its whole reason for being a seed rather than a generated projection is
+        that the operator may edit it; ``upgrade`` must therefore leave an
+        edited copy byte-for-byte, exactly as it treats ``papersmith.yaml``.
+        """
+        tmp_path = self.new_tmp()
+        workspace = _workspace(tmp_path)
+        settings = workspace / ".pi" / "settings.json"
+        assert settings.is_file()
+        edited = '{\n  "skills": ["../skills"],\n  "theme": "operator"\n}\n'
+        settings.write_text(edited, encoding="utf-8")
+
+        result = upgrade_module.upgrade(workspace)
+
+        assert settings.read_text(encoding="utf-8") == edited
+        assert ".pi/settings.json" not in result["changed_files"]
 
     def test_upgrade_refuses_missing_manifest(self) -> None:
         tmp_path = self.new_tmp()

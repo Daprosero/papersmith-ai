@@ -219,8 +219,8 @@ test("the extension resolves the workspace root by walking up from ctx.cwd", { s
   assert.equal(await invoke(bash("ls -la"), nested), undefined);
 });
 
-test("the generated PI.md documents the safety extension", { skip: UNAVAILABLE }, async () => {
-  const text = fs.readFileSync(path.join(WORKSPACE, "PI.md"), "utf8");
+test("the generated Pi entrypoint documents the safety extension", { skip: UNAVAILABLE }, async () => {
+  const text = fs.readFileSync(path.join(WORKSPACE, ".pi", "APPEND_SYSTEM.md"), "utf8");
   assert.match(text, /## Safety extension/);
   assert.match(text, /\.pi\/extensions\/refuse-offpath-push\.ts/);
   assert.match(text, /refuse_offpath_push\.py/);

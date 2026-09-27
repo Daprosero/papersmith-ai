@@ -104,7 +104,8 @@ class GeneratedWorkspaceTests(unittest.TestCase):
             "papersmith.yaml",
             "CLAUDE.md",
             "OPENCODE.md",
-            "PI.md",
+            ".pi/APPEND_SYSTEM.md",
+            ".pi/settings.json",
             ".pi/gentle-ai/persona.json",
             ".pi/extensions/refuse-offpath-push.ts",
             ".antigravity/rules.md",
@@ -156,7 +157,7 @@ class UpgradeCommandTests(unittest.TestCase):
 class HarnessProjectionTests(unittest.TestCase):
     """The workspace ships the script its package.json advertises for harness wiring."""
 
-    HARNESS_LINKS = (".claude/skills", ".pi/skills", ".opencode/skills", ".antigravity/skills")
+    HARNESS_LINKS = (".claude/skills", ".opencode/skills", ".antigravity/skills")
 
     def test_projection_script_wires_every_harness(self) -> None:
         workspace = make_workspace(new_tmp(self))
@@ -181,6 +182,9 @@ class HarnessProjectionTests(unittest.TestCase):
         self.assertEqual(second.returncode, 0, second.stderr)
         for relpath in self.HARNESS_LINKS:
             self.assertTrue((workspace / relpath).is_symlink(), f"{relpath} must survive a re-run")
+        # Pi is deliberately not linked: it discovers the canonical tree through
+        # `.pi/settings.json`, and a link would load every skill twice.
+        self.assertFalse((workspace / ".pi/skills").exists())
 
 
 class HarnessCommandProjectionTests(unittest.TestCase):
@@ -208,9 +212,17 @@ class HarnessCommandProjectionTests(unittest.TestCase):
                 self.assertIn("$ARGUMENTS", body)
                 self.assertIn("skills/paper-ingestion/SKILL.md", body)
 
-    def test_non_command_harnesses_receive_no_command_directory(self) -> None:
+    def test_pi_and_antigravity_receive_no_command_or_prompt_directory(self) -> None:
+        """Pi has no command files because it exposes ``/skill:<name>`` natively.
+
+        Pi loads the workspace's skills through ``.pi/settings.json`` and, with
+        ``enableSkillCommands`` defaulting to true, already surfaces each as a
+        native ``/skill:<name>``. Generating ``.pi/commands`` or ``.pi/prompts``
+        would duplicate nine commands that exist without a file.
+        """
         workspace = make_workspace(new_tmp(self))
         self.assertFalse((workspace / ".pi/commands").exists())
+        self.assertFalse((workspace / ".pi/prompts").exists())
         self.assertFalse((workspace / ".antigravity/commands").exists())
 
     def test_opencode_json_is_valid_and_declares_no_plugin_key(self) -> None:
@@ -257,7 +269,7 @@ class RenderedSetLifecycleTests(unittest.TestCase):
     """
 
     KIT_COMMAND_NAMES = HarnessCommandProjectionTests.COMMAND_NAMES
-    STATIC_ENTRYPOINTS = ("OPENCODE.md", "PI.md", ".antigravity/rules.md")
+    STATIC_ENTRYPOINTS = ("OPENCODE.md", ".pi/APPEND_SYSTEM.md", ".antigravity/rules.md")
 
     @staticmethod
     def _init_subset(base: Path, tools: str) -> Path:

@@ -54,10 +54,11 @@ KIT_ENTRIES = (
     "requirements.txt",
 )
 
-# Paths ``upgrade`` must never overwrite or delete. ``papersmith.yaml`` and
-# ``package.json`` are seeded once at init (see ``init._write_workspace_seed``)
-# and then belong to the user like ``README.md`` does; the rest is research
-# state the user produces under the topology ``init`` scaffolds.
+# Paths ``upgrade`` must never overwrite or delete. ``papersmith.yaml``,
+# ``package.json`` and ``.pi/settings.json`` are seeded once at init (see
+# ``init._write_workspace_seed``) and then belong to the user like ``README.md``
+# does; the rest is research state the user produces under the topology
+# ``init`` scaffolds.
 PRESERVE_PATTERNS = (
     "guidance/**",
     "proposals/**",
@@ -67,6 +68,7 @@ PRESERVE_PATTERNS = (
     "kaggle-inbox/**",
     "papersmith.yaml",
     "package.json",
+    ".pi/settings.json",
     "README.md",
     ".env*",
 )
