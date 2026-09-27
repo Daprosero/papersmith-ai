@@ -15,6 +15,25 @@ number is `0`, breaking changes can still arrive without a major bump.
 
 ### Added
 
+- **Pi's entrypoint is now a surface Pi actually reads.** The generator wrote a
+  root `PI.md`, which is not a Pi context file at all: Pi's own resource loader
+  takes the first of `AGENTS.override.md`, `AGENTS.md`, `AGENTS.MD`,
+  `CLAUDE.md`, `CLAUDE.MD`, so a Pi workspace read `CLAUDE.md` and was routed to
+  the `.claude/` surfaces. The entrypoint is now `.pi/APPEND_SYSTEM.md`, which
+  Pi appends to the project system prompt. The accepted trade-off is stated in
+  the file's own text rather than left to be discovered: a trusted project
+  `.pi/APPEND_SYSTEM.md` takes precedence over the operator's
+  `~/.pi/agent/APPEND_SYSTEM.md`, and the two are never combined, so a
+  workspace's append suppresses the operator's own inside that workspace.
+
+- **Pi discovers the canonical `skills/` tree through `.pi/settings.json`.**
+  `init` seeds `{"skills": ["../skills"]}` when `pi` is declared -- project
+  settings resolve from the `.pi/` base directory, so the relative entry reaches
+  the tree without a symlink -- and `PRESERVE_PATTERNS` keeps `upgrade` from
+  clobbering an operator's edits, the same contract `papersmith.yaml` already
+  has. Pi exposes each loaded skill natively as `/skill:<name>`, so no
+  `.pi/commands/` or `.pi/prompts/` wrappers are generated.
+
 - **Pi relays the off-path push tripwire, and refuses by returning instead of
   throwing.** `.pi/extensions/refuse-offpath-push.ts` is generated for every Pi
   workspace and loaded by Pi from the project `.pi/` directory. It shells out to
@@ -39,11 +58,18 @@ number is `0`, breaking changes can still arrive without a major bump.
 
 ### Internal
 
+- **The harness link script no longer builds `.pi/skills`.** With the settings
+  entry in place a link would load every skill twice, and Pi settles a name
+  collision by keeping the first discovery and warning -- nine diagnostics for
+  doing the right thing. `.pi/skills` stays ignored only to cover stale links
+  left by earlier runs, not a link this repository still builds.
+
 - **`.pi/` was ignored wholesale, so a Pi extension could not be versioned.** It
-  now follows the split `.opencode/` already drew: `.pi/skills` (the harness
-  link) and `.pi/gentle-ai/` (the generated persona) stay ignored, while
-  `.pi/extensions/` is a source artifact projected by
-  `scripts/sync-repo-harness.py` like every other harness surface.
+  now follows the split `.opencode/` already drew: the generated persona under
+  `.pi/gentle-ai/` stays ignored, while `.pi/extensions/` is a source artifact
+  projected by `scripts/sync-repo-harness.py` like every other harness surface.
+  `.pi/APPEND_SYSTEM.md` and `.pi/settings.json` match no ignore rule and are
+  versioned.
 
 ## 0.4.0
 

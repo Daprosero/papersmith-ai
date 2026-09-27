@@ -133,8 +133,9 @@ que se lo pidas con `--allow-downgrade`.
 entorno micromamba aparte (CPU o CUDA, según lo que detecte), incluido el
 binario `llama-server` que el OCR necesita — **no** es Ollama ni una
 instalación de Homebrew. `npm run setup:harnesses` enlaza el árbol canónico
-`skills/` dentro de `.claude/skills`, `.pi/skills`, `.opencode/skills` y
-`.antigravity/skills`, con enlaces relativos e idempotentes (ver
+`skills/` dentro de `.claude/skills`, `.opencode/skills` y
+`.antigravity/skills`, con enlaces relativos e idempotentes (Pi descubre el
+árbol vía `.pi/settings.json`, sin enlace; ver
 [Harnesses y proyección de skills](#harnesses-y-proyección-de-skills)). La
 primera corrida de `papersmith ingest` descarga ~1.5 GB de pesos de Surya si el
 entorno no quedó pre-provisionado.
@@ -307,7 +308,7 @@ mi-paper/
 ├── experiments/                 # el protocolo experimental gestionado
 ├── implementations/             # repos destino; cada uno con su propio git
 ├── kaggle-inbox/                # lo que vuelve de los workers remotos
-├── CLAUDE.md / OPENCODE.md / PI.md / .antigravity/rules.md   # routing de harnesses
+├── CLAUDE.md / OPENCODE.md / .pi/APPEND_SYSTEM.md / .antigravity/rules.md   # routing de harnesses
 ├── papersmith.yaml              # configuración del workspace (la tuya, editable)
 ├── package.json                 # dependencias Node del workspace (jiti, typebox), la tuya, editable
 ├── requirements.txt
@@ -391,7 +392,7 @@ npm run setup:harnesses      # = bash scripts/setup-harnesses.sh
 | Harness | Dónde lee las skills | Documento de routing (workspace) |
 |---------|----------------------|-----------------------------------|
 | Claude Code | `.claude/skills/` | `CLAUDE.md` |
-| Pi | `.pi/skills/` | `PI.md` |
+| Pi | `.pi/settings.json` (apunta a `skills/`) | `.pi/APPEND_SYSTEM.md` |
 | OpenCode | `.opencode/skills/` | `OPENCODE.md` |
 | Google Antigravity | `.antigravity/skills/` | `.antigravity/rules.md` |
 
@@ -400,12 +401,16 @@ conviene saberlo: el workspace embarca el árbol `skills/` completo y el de
 agentes (`.claude/agents/`), y sus routing docs apuntan al árbol canónico
 `skills/*/SKILL.md`. Los documentos de routing son generated projections: la
 fuente real de cada agente es `.claude/agents/*.md` y la de cada skill es su
-`SKILL.md`. No edites las proyecciones a mano; se regeneran (y
-`papersmith audit --check-drift` avisa si una se desvió). Para que tu harness
-liste las skills como comandos `/`, corré `npm run setup:harnesses` dentro del
-workspace: enlaza el árbol embarcado en `.claude/skills`, `.pi/skills`,
-`.opencode/skills` y `.antigravity/skills`, igual de relativo e idempotente que
-en el checkout. En este checkout, las proyecciones de comandos slash
+`SKILL.md`. El de Pi es `.pi/APPEND_SYSTEM.md`, que Pi agrega al system prompt
+del proyecto en lugar de leerlo como documento suelto. No edites las
+proyecciones a mano; se regeneran (y `papersmith audit --check-drift` avisa si
+una se desvió). Pi descubre las skills a través de `.pi/settings.json`, cuya
+entrada `"../skills"` apunta al árbol canónico; por eso `npm run
+setup:harnesses` ya no enlaza `.pi/skills` (un enlace cargaría cada skill dos
+veces y Pi avisaría nueve veces por hacer lo correcto), y en su lugar enlaza el
+árbol embarcado en `.claude/skills`, `.opencode/skills` y
+`.antigravity/skills`, igual de relativo e idempotente que en el checkout. En
+este checkout, las proyecciones de comandos slash
 (`.claude/commands/`, `.opencode/commands/`), el plugin de seguridad de OpenCode
 y la extensión de seguridad de Pi —`.pi/extensions/refuse-offpath-push.ts`, el
 tripwire generado que delega cada invocación `bash` en el hook
@@ -445,7 +450,7 @@ establecerlo. Las compuertas las abrís y cerrás vos.
 Tres reglas que ordenan todo lo demás:
 
 - **La fuente de verdad es `.claude/agents/`.** Los routing docs de cada
-  harness (`CLAUDE.md`, `PI.md`, `OPENCODE.md`, `.antigravity/rules.md`) listan
+  harness (`CLAUDE.md`, `.pi/APPEND_SYSTEM.md`, `OPENCODE.md`, `.antigravity/rules.md`) listan
   a los quince enteros, y se generan: si querés cambiar un agente, se cambia
   ahí, no en la proyección.
 - **Cada agente declara la skill que carga** (`skills/<nombre>/SKILL.md`), y esa
@@ -2993,7 +2998,8 @@ papersmith-ai/
 - **Keyless y local-first**: la ingesta corre completamente offline y local, con
   Marker y `llama.cpp`.
 - **Proyección agnóstica de harness**: el árbol canónico `skills/` se proyecta a
-  `.claude/skills`, `.pi/skills`, `.opencode/skills` y `.antigravity/skills`.
+  `.claude/skills`, `.opencode/skills` y `.antigravity/skills`, y Pi lo descubre
+  vía `.pi/settings.json`.
 
 ---
 
