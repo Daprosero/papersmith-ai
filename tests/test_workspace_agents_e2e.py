@@ -129,6 +129,9 @@ class AgentRoutingTests(unittest.TestCase):
         self.assertIn("refuse-offpath-push.js", opencode)
         claude = (workspace / "CLAUDE.md").read_text(encoding="utf-8")
         self.assertIn(".claude/commands/", claude)
+        pi = (workspace / "PI.md").read_text(encoding="utf-8")
+        self.assertIn(".pi/extensions/refuse-offpath-push.ts", pi)
+        self.assertIn("refuse_offpath_push.py", pi)
         for doc_name in ("PI.md", ".antigravity/rules.md"):
             with self.subTest(doc=doc_name):
                 text = (workspace / doc_name).read_text(encoding="utf-8")

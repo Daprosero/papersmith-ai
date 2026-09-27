@@ -15,3 +15,14 @@ Read `papersmith.yaml`, `guidance/paper-guide/`, and the applicable
 Pi receives no generated slash commands — only the `claude` and `opencode`
 projections emit command files. Invoke a capability by name; read the applicable
 `skills/<name>/SKILL.md` first, since that file remains the source of truth.
+
+## Safety extension
+
+`.pi/extensions/refuse-offpath-push.ts` is generated and loaded by Pi from the
+project `.pi/` directory. It relays each `bash` invocation to the
+`remote-execution` skill's own `refuse_offpath_push.py`, so the predicate has
+exactly one authority and a second service is covered by that service's own
+adapter. It blocks — by returning `{ block: true, reason }` naming the matched
+surface — a command that names a service's push surface without also invoking
+`remote_cli.py`, and it degrades loudly rather than silently allowing when the
+guard cannot be loaded. It is a tripwire, not a gate.

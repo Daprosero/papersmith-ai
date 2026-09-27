@@ -29,7 +29,7 @@ ALL_TOOLS = ("claude", "opencode", "pi", "antigravity")
 TOOL_OUTPUTS = {
     "claude": ("CLAUDE.md",),
     "opencode": ("OPENCODE.md",),
-    "pi": ("PI.md", ".pi/gentle-ai/persona.json"),
+    "pi": ("PI.md", ".pi/gentle-ai/persona.json", ".pi/extensions/refuse-offpath-push.ts"),
     "antigravity": (".antigravity/rules.md",),
 }
 
@@ -286,6 +286,8 @@ def render_files(workspace: Path, context: dict[str, Any] | None = None,
         rendered[output] = render_package_template(template, ctx)
         if tool == "pi":
             rendered[".pi/gentle-ai/persona.json"] = render_package_template("persona.json.tpl", ctx)
+            rendered[".pi/extensions/refuse-offpath-push.ts"] = render_package_template(
+                "pi-extension.ts.tpl", ctx)
         if tool == "opencode":
             rendered["opencode.json"] = render_package_template("opencode.json.tpl", ctx)
             rendered[".opencode/plugins/refuse-offpath-push.js"] = render_package_template(

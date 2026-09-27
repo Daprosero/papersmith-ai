@@ -106,6 +106,7 @@ class GeneratedWorkspaceTests(unittest.TestCase):
             "OPENCODE.md",
             "PI.md",
             ".pi/gentle-ai/persona.json",
+            ".pi/extensions/refuse-offpath-push.ts",
             ".antigravity/rules.md",
             "README.md",
             "package.json",

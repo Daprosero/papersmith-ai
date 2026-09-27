@@ -69,6 +69,7 @@ class InitTests(unittest.TestCase):
             "OPENCODE.md",
             "PI.md",
             ".pi/gentle-ai/persona.json",
+            ".pi/extensions/refuse-offpath-push.ts",
             ".antigravity/rules.md",
             ".gitignore",
         ):

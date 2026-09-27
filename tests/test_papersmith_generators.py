@@ -92,6 +92,7 @@ class GeneratorsTests(unittest.TestCase):
             ".antigravity/rules.md",
             "opencode.json",
             ".opencode/plugins/refuse-offpath-push.js",
+            ".pi/extensions/refuse-offpath-push.ts",
         }
         expected |= {f".opencode/commands/{name}.md" for name in COMMAND_NAMES}
         expected |= {f".claude/commands/{name}.md" for name in COMMAND_NAMES}
@@ -148,15 +149,17 @@ class GeneratorsTests(unittest.TestCase):
         assert generated.returncode == 0, generated.stderr
         assert output.read_bytes() == original
 
-    def test_pi_generator_repairs_both_outputs(self) -> None:
+    def test_pi_generator_repairs_every_output(self) -> None:
         workspace = _workspace(self.new_tmp())
         (workspace / "PI.md").write_text("drift", encoding="utf-8")
         (workspace / ".pi/gentle-ai/persona.json").write_text("{}", encoding="utf-8")
+        (workspace / ".pi/extensions/refuse-offpath-push.ts").write_text("drift", encoding="utf-8")
         command = [sys.executable, str(ROOT / "scripts/gen-pi.py"), "--root", str(workspace)]
         result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True)
         assert result.returncode == 0, result.stderr
         assert '"mode": "gentleman"' in (workspace / ".pi/gentle-ai/persona.json").read_text()
         assert "drift" not in (workspace / "PI.md").read_text()
+        assert "drift" not in (workspace / ".pi/extensions/refuse-offpath-push.ts").read_text()
 
     def test_antigravity_check_is_exit_three_on_missing_output(self) -> None:
         workspace = _workspace(self.new_tmp())
