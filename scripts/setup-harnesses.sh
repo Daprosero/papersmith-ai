@@ -16,10 +16,12 @@
 #   .antigravity/skills  Google Antigravity
 #
 # Pi is deliberately absent. It discovers project skills through
-# `.pi/settings.json`, whose `"../skills"` entry points at the canonical tree,
-# so a link here would load every skill twice; Pi settles a name collision by
-# keeping the first discovery and warning, i.e. nine diagnostics for doing the
-# right thing. See the workspace seed in `src/papersmith/core/init.py`.
+# `.pi/settings.json`, whose `"../skills"` entry points at the canonical tree
+# -- no symlink needed, which matters because `ln -sfn` is the one mechanism
+# this repository never made portable and nothing tests on Windows. Pi dedupes
+# skills by canonical path, so keeping the link as well would not have
+# collided; it would have been a second mechanism for one job. See the
+# workspace seed in `src/papersmith/core/init.py`.
 #
 # Usage:
 #   npm run setup:harnesses

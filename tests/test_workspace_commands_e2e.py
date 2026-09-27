@@ -183,7 +183,9 @@ class HarnessProjectionTests(unittest.TestCase):
         for relpath in self.HARNESS_LINKS:
             self.assertTrue((workspace / relpath).is_symlink(), f"{relpath} must survive a re-run")
         # Pi is deliberately not linked: it discovers the canonical tree through
-        # `.pi/settings.json`, and a link would load every skill twice.
+        # `.pi/settings.json`, which needs no symlink. Pi dedupes skills by
+        # canonical path, so the link would not have collided -- it would just
+        # have been a second mechanism for the same job.
         self.assertFalse((workspace / ".pi/skills").exists())
 
 

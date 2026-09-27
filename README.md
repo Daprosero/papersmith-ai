@@ -406,8 +406,10 @@ del proyecto en lugar de leerlo como documento suelto. No edites las
 proyecciones a mano; se regeneran (y `papersmith audit --check-drift` avisa si
 una se desvió). Pi descubre las skills a través de `.pi/settings.json`, cuya
 entrada `"../skills"` apunta al árbol canónico; por eso `npm run
-setup:harnesses` ya no enlaza `.pi/skills` (un enlace cargaría cada skill dos
-veces y Pi avisaría nueve veces por hacer lo correcto), y en su lugar enlaza el
+setup:harnesses` ya no enlaza `.pi/skills` (Pi deduplica las skills por ruta
+canónica, así que el enlace no colisionaría: sería un segundo mecanismo para el
+mismo trabajo, y el que no necesita symlink es el que queda, mientras el que
+este repo nunca hizo portable es el que se va), y en su lugar enlaza el
 árbol embarcado en `.claude/skills`, `.opencode/skills` y
 `.antigravity/skills`, igual de relativo e idempotente que en el checkout. En
 este checkout, las proyecciones de comandos slash

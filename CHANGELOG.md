@@ -58,11 +58,13 @@ number is `0`, breaking changes can still arrive without a major bump.
 
 ### Internal
 
-- **The harness link script no longer builds `.pi/skills`.** With the settings
-  entry in place a link would load every skill twice, and Pi settles a name
-  collision by keeping the first discovery and warning -- nine diagnostics for
-  doing the right thing. `.pi/skills` stays ignored only to cover stale links
-  left by earlier runs, not a link this repository still builds.
+- **The harness link script no longer builds `.pi/skills`.** Pi discovers the
+  canonical tree through the settings entry, which needs no symlink, and Pi
+  dedupes skills by canonical path -- so keeping the link as well would not have
+  collided, it would have been a second mechanism for one job. The link is the
+  one this repository never made portable and never tested on Windows, so it is
+  the one that goes. `.pi/skills` stays ignored only to cover stale links left
+  by earlier runs, not a link this repository still builds.
 
 - **`.pi/` was ignored wholesale, so a Pi extension could not be versioned.** It
   now follows the split `.opencode/` already drew: the generated persona under

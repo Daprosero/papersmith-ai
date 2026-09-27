@@ -23,3 +23,10 @@ Pi loads every workspace skill and exposes it natively as `/skill:<name>`, so no
 command files are generated for Pi. Invoke a capability by asking for it by name
 or as `/skill:<name>`; the agent reads `skills/<name>/SKILL.md` before the work
 starts, and that file remains the source of truth.
+
+## Precedence
+
+A trusted project `.pi/APPEND_SYSTEM.md` takes precedence over the operator's
+own `~/.pi/agent/APPEND_SYSTEM.md`, and the two are never combined. This file
+therefore suppresses the operator's own system-prompt append inside this
+workspace.
