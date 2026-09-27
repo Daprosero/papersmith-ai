@@ -406,10 +406,12 @@ liste las skills como comandos `/`, corré `npm run setup:harnesses` dentro del
 workspace: enlaza el árbol embarcado en `.claude/skills`, `.pi/skills`,
 `.opencode/skills` y `.antigravity/skills`, igual de relativo e idempotente que
 en el checkout. En este checkout, las proyecciones de comandos slash
-(`.claude/commands/`, `.opencode/commands/`) y el plugin de seguridad de OpenCode
-se sincronizan con `python scripts/sync-repo-harness.py` (`--check` para CI; no
-tiene script en `package.json` porque el kit lo embarca y el script es sólo del
-repo).
+(`.claude/commands/`, `.opencode/commands/`), el plugin de seguridad de OpenCode
+y la extensión de seguridad de Pi —`.pi/extensions/refuse-offpath-push.ts`, el
+tripwire generado que delega cada invocación `bash` en el hook
+`refuse_offpath_push.py` de `remote-execution`— se sincronizan con
+`python scripts/sync-repo-harness.py` (`--check` para CI; no tiene script en
+`package.json` porque el kit lo embarca y el script es sólo del repo).
 
 ---
 

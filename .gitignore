@@ -21,7 +21,12 @@ skills/paper-ingestion/.venv/
 # canonical `skills/` tree is the only versioned copy; each harness link is
 # a relative symlink rebuilt on demand.
 .claude/skills
-.pi/
+# Pi follows the same split `.opencode/skills` (ignored) and
+# `.opencode/plugins/` (versioned) already use: the harness link and the
+# generated persona are derived, while `.pi/extensions/` is a source artifact
+# projected by `scripts/sync-repo-harness.py` and therefore versioned.
+.pi/skills
+.pi/gentle-ai/
 .opencode/skills
 .antigravity/skills
 
