@@ -5,6 +5,34 @@ verbs to any Model Context Protocol host over stdio. It is a thin projection:
 every tool wraps an existing `papersmith` CLI contract, so nothing is
 reimplemented and no new runtime dependency is added.
 
+## Scope: a server, not a registry
+
+Three different things carry the word "MCP" in this project, and confusing them
+is how a capability ends up wired in a place that cannot run it.
+
+1. **This server.** It is something papersmith *provides*. Its catalog is a data
+table of papersmith's own verbs (`registry.py`); a capability that does not
+stand on an existing CLI contract has no way in, and adding one is a data edit
+here rather than a code path. That closure is the point, not an accident.
+2. **The agent-side discovery connector.** `.mcp.json` at the repository root is
+something the *agent's host* reads, never the CLI. Its declared role is one
+thing — literature-search discovery for
+`no-claim-without-a-source-that-holds-it` — and it ships as an empty scaffold on
+purpose. `init` never creates, reads or overwrites one, and
+`tests/test_mcp_no_mcp_json.py` locks that as success criterion #6.
+3. **The host's own servers.** Code intelligence, knowledge graphs, browser
+drivers, memory stores: general coding-agent tooling that has nothing to do with
+paper-writing. These belong in the host's configuration, where the host can
+actually reach them — not here.
+
+So a code-intelligence server is not a missing entry in this catalog. Registering
+one would be a category error (it projects no papersmith CLI contract), and
+placing one in `.mcp.json` would silently widen a requirement-pinned file's role
+from "sources for claims" to "whatever the agent needs". A workspace that wants
+*this* server wired asks for the snippet — `papersmith mcp print-config
+--workspace <path>` prints it and writes nothing — and pastes it into the host.
+Wiring anything else is the operator's act, in the host's configuration.
+
 ## Requirements
 
 - Python 3.11 or newer.
