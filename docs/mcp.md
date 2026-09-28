@@ -16,33 +16,19 @@ reimplemented and no new runtime dependency is added.
 ## Wiring
 
 The server is launched by the client as a subprocess; there is nothing to run
-by hand. `papersmith mcp print-config` emits the snippet for the host you are
-configuring, with the bound workspace filled in — treat its output as
-authoritative.
-
-### Claude Code (`.mcp.json`)
-
-```json
-{
-  "mcpServers": {
-    "papersmith": {
-      "command": "papersmith",
-      "args": ["mcp", "serve", "--workspace", "/path/to/your/workspace"]
-    }
-  }
-}
-```
-
-### OpenCode (`opencode.json`)
+by hand. `papersmith mcp print-config` emits the snippet for OpenCode
+(`mcp.servers`, local command) with the bound workspace filled in — treat its
+output as authoritative.
 
 ```jsonc
 {
   "$schema": "https://opencode.ai/config.json",
   "mcp": {
-    "papersmith": {
-      "type": "local",
-      "command": ["papersmith", "mcp", "serve", "--workspace", "/path/to/your/workspace"],
-      "enabled": true
+    "servers": {
+      "papersmith": {
+        "type": "local",
+        "command": ["papersmith", "mcp", "serve", "--workspace", "/path/to/your/workspace"]
+      }
     }
   }
 }
@@ -88,7 +74,7 @@ and auto-approve sensibly.
 
 | Tool | What it wraps | readOnly | destructive | openWorld |
 |---|---|---|---|---|
-| `papersmith.workspace_init` | create a workspace under the bound root; skips npm unless asked | — | — | ✅ |
+| `papersmith.workspace_init` | create a workspace under the bound root; skips pnpm unless asked | — | — | ✅ |
 | `papersmith.workspace_upgrade` | sync framework files, preserving all research artifacts | — | ✅ | — |
 | `papersmith.target_set` | persist the default compute target | — | — | — |
 | `papersmith.ingest_add` | ingest a PDF or URL; long-running, may download model weights | — | — | ✅ |

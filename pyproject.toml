@@ -39,7 +39,6 @@ norecursedirs = [
   "build",
   "dist",
   "node_modules",
-  "skills",
   "src/papersmith/_kit",
 ]
 

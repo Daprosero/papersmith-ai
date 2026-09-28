@@ -60,10 +60,12 @@ def run_inspect(args) -> int:
 def run_print_config(args) -> int:
     root = _workspace(args.workspace)
     snippet = {
-        "mcpServers": {
-            "papersmith": {
-                "command": "papersmith",
-                "args": ["mcp", "serve", "--workspace", str(root)],
+        "mcp": {
+            "servers": {
+                "papersmith": {
+                    "type": "local",
+                    "command": ["papersmith", "mcp", "serve", "--workspace", str(root)],
+                }
             }
         }
     }

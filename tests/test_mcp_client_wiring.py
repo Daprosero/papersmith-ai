@@ -27,24 +27,25 @@ def workspace(tmp_path_factory) -> Path:
 def _snippet(workspace: Path) -> dict:
     completed = run_cli("mcp", "print-config", "--workspace", str(workspace))
     assert completed.returncode == 0, completed.stderr
-    return json.loads(completed.stdout)["mcpServers"]["papersmith"]
+    return json.loads(completed.stdout)["mcp"]["servers"]["papersmith"]
 
 
 def _argv(server: dict) -> list[str]:
     """Resolve the snippet's command, keeping its arguments exactly as written."""
-    found = shutil.which(server["command"])
+    command, *rest = server["command"]
+    found = shutil.which(command)
     if found:
-        return [found, *server["args"]]
-    sibling = Path(sys.executable).parent / server["command"]
+        return [found, *rest]
+    sibling = Path(sys.executable).parent / command
     if sibling.exists():
-        return [str(sibling), *server["args"]]
-    return [sys.executable, "-m", "papersmith.cli", *server["args"]]
+        return [str(sibling), *rest]
+    return [sys.executable, "-m", "papersmith.cli", *rest]
 
 
 def test_print_config_names_the_serve_command_for_the_bound_workspace(workspace: Path) -> None:
     server = _snippet(workspace)
-    assert server["command"] == "papersmith"
-    assert server["args"] == ["mcp", "serve", "--workspace", str(workspace)]
+    assert server["type"] == "local"
+    assert server["command"] == ["papersmith", "mcp", "serve", "--workspace", str(workspace)]
 
 
 def test_the_wired_command_completes_a_full_client_session(workspace: Path) -> None:

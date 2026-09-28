@@ -44,7 +44,7 @@ def test_print_config_prints_a_snippet_and_writes_nothing(workspace: Path) -> No
     completed = run_cli("mcp", "print-config", "--workspace", str(workspace), cwd=workspace)
     assert completed.returncode == 0
     snippet = json.loads(completed.stdout)
-    server = snippet["mcpServers"]["papersmith"]
-    assert server["command"] == "papersmith"
-    assert server["args"][:3] == ["mcp", "serve", "--workspace"]
+    server = snippet["mcp"]["servers"]["papersmith"]
+    assert server["type"] == "local"
+    assert server["command"][:3] == ["papersmith", "mcp", "serve"]
     assert sorted(path.name for path in workspace.iterdir()) == before

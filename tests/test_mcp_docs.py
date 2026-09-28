@@ -59,26 +59,27 @@ def test_every_resource_uri_is_documented(text: str, catalog: dict) -> None:
     assert documented == expected, sorted(expected ^ documented)
 
 
-def test_the_documented_claude_block_matches_print_config(tmp_path: Path) -> None:
+def test_the_documented_opencode_block_matches_print_config(tmp_path: Path) -> None:
     snippet = json.loads(
         run_cli("mcp", "print-config", "--workspace", str(tmp_path)).stdout
     )
-    expected = snippet["mcpServers"]["papersmith"]
-    blocks = [block for block in _json_blocks(DOC.read_text(encoding="utf-8")) if "mcpServers" in block]
-    assert blocks, "the document must show the Claude Code wiring"
-    server = blocks[0]["mcpServers"]["papersmith"]
-    assert server["command"] == expected["command"]
-    assert server["args"][:3] == expected["args"][:3] == ["mcp", "serve", "--workspace"]
+    expected = snippet["mcp"]["servers"]["papersmith"]
+    blocks = [block for block in _json_blocks(DOC.read_text(encoding="utf-8"))
+              if "servers" in block.get("mcp", {})]
+    assert blocks, "the document must show the OpenCode wiring"
+    server = blocks[0]["mcp"]["servers"]["papersmith"]
+    assert server["type"] == expected["type"] == "local"
+    assert server["command"][:3] == expected["command"][:3] == ["papersmith", "mcp", "serve"]
 
 
 def test_the_documented_opencode_block_is_a_local_command(text: str) -> None:
     blocks = [
         block
         for block in _json_blocks(text)
-        if "mcp" in block and "mcpServers" not in block
+        if "servers" in block.get("mcp", {})
     ]
     assert blocks, "the document must show the OpenCode wiring"
-    server = blocks[0]["mcp"]["papersmith"]
+    server = blocks[0]["mcp"]["servers"]["papersmith"]
     assert server["type"] == "local"
     assert server["command"][:3] == ["papersmith", "mcp", "serve"]
 
