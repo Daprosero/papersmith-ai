@@ -1,4 +1,7 @@
-"""Success criterion #6: no `.mcp.json` is generated, read, or overwritten."""
+"""Success criterion #6: no `.mcp.json` is generated, read, or overwritten.
+
+Discovery lives in `opencode.json` (`mcp.servers`) on this branch, so the
+never-rewritten anchor below is that file, not a `.mcp.json` scaffold."""
 
 from __future__ import annotations
 
@@ -23,7 +26,7 @@ def workspace(tmp_path_factory) -> Path:
 
 
 def test_the_repo_discovery_scaffold_is_never_rewritten(workspace: Path) -> None:
-    scaffold = REPO_ROOT / ".mcp.json"
+    scaffold = REPO_ROOT / "opencode.json"
     before = scaffold.read_bytes()
     call_many(workspace, [request("tools/list"), tool_call("papersmith.workspace_status")])
     run_cli("mcp", "inspect", cwd=workspace)

@@ -46,7 +46,7 @@ RELEASE_TAG = re.compile(r"^v(\d+\.\d+\.\d+)$")
 #: What a user receives. `tests/` is deliberately absent: a suite growing is
 #: not a reason to cut a release, and treating it as one would make every
 #: guard added here demand a version bump of its own.
-SHIPPED_ROOTS = ("src", "skills", "scripts")
+SHIPPED_ROOTS = ("src", ".opencode", "scripts")
 
 #: The attribute `pyproject.toml` must keep reading. Named here because the
 #: point of the assertion is that this exact indirection survives: any other

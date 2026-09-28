@@ -11,6 +11,24 @@ reader expects a kept one.
 Versions follow [semantic versioning](https://semver.org): while the first
 number is `0`, breaking changes can still arrive without a major bump.
 
+## 0.6.0
+
+Single-harness OpenCode-native variant, rebuilt from `main`:
+
+- Skills and agents live natively under `.opencode/skills/` and
+  `.opencode/agents/` (17 subagents, `mode: subagent`, model pinned per
+  agent in frontmatter). No Claude/Pi/Antigravity surfaces, no projection
+  symlinks, no `setup-harnesses.sh`.
+- `opencode.json` rewritten to the V2 schema (`permissions[]` with the
+  `shell` action, `mcp.servers`, `plugins[]`); default model
+  `opencode-go/mimo-v2.6-flash`, math gate `deliberation-publish` exclusive
+  on `opencode-go/mimo-v2.6-pro`.
+- `generators`/`manifest`/`init`/`upgrade`/`kit` serve `opencode` only;
+  `pnpm` replaces `npm`; byte-exact LF enforced via `.gitattributes`.
+- Root path derivations inside the moved skills re-anchored one level
+  deeper (`parents[4]`); skill-tree containment on both the write path
+  (`cmd_defect`) and the read path (`open_defects`).
+
 ## 0.5.1
 
 ### Added
