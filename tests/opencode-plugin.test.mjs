@@ -31,14 +31,19 @@ function makeTmp(prefix) {
 
 function generateWorkspace() {
   const destination = makeTmp("papersmith-plugin-");
-  const consoleScript = path.join(REPO_ROOT, ".venv", "bin", "papersmith");
+  const winScript = path.join(REPO_ROOT, ".venv", "Scripts", "papersmith.exe");
+  const posixScript = path.join(REPO_ROOT, ".venv", "bin", "papersmith");
+  const consoleScript = fs.existsSync(winScript)
+    ? winScript
+    : posixScript;
   const args = ["init", destination, "--remote", "local", "--no-npm"];
   let result;
   if (fs.existsSync(consoleScript)) {
     result = spawnSync(consoleScript, args, { cwd: REPO_ROOT, encoding: "utf8" });
   } else {
     const program = 'from papersmith.cli import main; raise SystemExit(main(' + JSON.stringify(args) + "))";
-    result = spawnSync("python3", ["-c", program], {
+    const interpreter = process.platform === "win32" ? "python" : "python3";
+    result = spawnSync(interpreter, ["-c", program], {
       cwd: REPO_ROOT,
       encoding: "utf8",
       env: { ...process.env, PYTHONPATH: path.join(REPO_ROOT, "src") },
@@ -77,20 +82,42 @@ function copyWorkspace(source) {
   return destination;
 }
 
+// The generated plugin is dependency-free (V2 `{id, setup}` shape, no
+// `@opencode/plugin` import), so plain `node --test` imports it directly.
+function fakeContext(root) {
+  const hooks = {};
+  return {
+    hooks,
+    ctx: {
+      location: { directory: root },
+      tool: {
+        hook: async (name, handler) => {
+          hooks[name] = handler;
+        },
+      },
+    },
+  };
+}
+
 async function loadPlugin(root) {
   const url = pathToFileURL(path.join(root, PLUGIN_RELATIVE)).href;
   const module = await import(url);
-  assert.equal(typeof module.server, "function", "the generated module must export `server`");
-  return module.server({ directory: root, worktree: root });
+  assert.equal(typeof module.default, "object", "the generated module must default-export a plugin definition");
+  assert.equal(module.default.id, "refuse-offpath-push");
+  assert.equal(typeof module.default.setup, "function");
+  const { hooks, ctx } = fakeContext(root);
+  await module.default.setup(ctx);
+  assert.equal(typeof hooks["execute.before"], "function", "setup must register the execute.before hook");
+  return hooks;
 }
 
 function invoke(hooks, command) {
-  return hooks["tool.execute.before"]({ tool: "bash" }, { args: { command } });
+  return hooks["execute.before"]({ tool: "shell", input: { command } });
 }
 
-test("generated plugin is emitted and exposes the bash pre-execution hook", { skip: UNAVAILABLE }, async () => {
+test("generated plugin default-exports a V2 definition with the shell pre-execution hook", { skip: UNAVAILABLE }, async () => {
   const hooks = await loadPlugin(WORKSPACE);
-  assert.equal(typeof hooks["tool.execute.before"], "function");
+  assert.equal(typeof hooks["execute.before"], "function");
 });
 
 test("plugin allows a clean command", { skip: UNAVAILABLE }, async () => {
@@ -103,13 +130,13 @@ test("plugin allows a clean command", { skip: UNAVAILABLE }, async () => {
   await invoke(hooks, "echo hello");
 });
 
-test("plugin ignores non-bash tools and empty commands", { skip: UNAVAILABLE }, async () => {
+test("plugin ignores non-shell tools and empty commands", { skip: UNAVAILABLE }, async () => {
   const root = copyWorkspace(WORKSPACE);
   plantAdapters(root, {
     "zz_surface.py": `PUSH_SURFACE = ("${SURFACE_TOKEN}",)\n`,
   });
   const hooks = await loadPlugin(root);
-  await hooks["tool.execute.before"]({ tool: "read" }, { args: { command: `x ${SURFACE_TOKEN}` } });
+  await hooks["execute.before"]({ tool: "read", input: { command: `x ${SURFACE_TOKEN}` } });
   await invoke(hooks, "");
   await invoke(hooks, undefined);
 });

@@ -151,7 +151,17 @@ class OpenCodeCompatTests(unittest.TestCase):
     def test_plugin_relays_to_the_skill_hook(self) -> None:
         self.assertTrue(PLUGIN.is_file(), f"{PLUGIN} does not exist")
         src = PLUGIN.read_text(encoding="utf-8")
-        self.assertIn("tool.execute.before", src)
+        # V2 shape without the package import: the loader only requires a
+        # default definition with an id and a setup function, so depending
+        # on `@opencode/plugin` would force every workspace to install it
+        # before this relay can load.
+        self.assertNotIn('from "@opencode/plugin"', src)
+        self.assertNotIn("Plugin.define", src)
+        self.assertIn('id: "refuse-offpath-push"', src)
+        self.assertIn("async setup(ctx)", src)
+        self.assertIn("ctx.tool.hook", src)
+        self.assertIn('"execute.before"', src)
+        self.assertIn('event.tool !== "shell"', src)
         self.assertIn(".opencode/skills/remote-execution/scripts/hooks/"
                       "refuse_offpath_push.py", src)
         self.assertIn("remote_cli.py", src)

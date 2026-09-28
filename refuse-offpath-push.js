@@ -15,10 +15,12 @@ import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import path from "node:path";
 
-// NOTE: no package import here on purpose (neither the scoped plugin
-// helper nor anything else). The V2 loader only requires a default-exported
-// definition shaped `{ id, setup }`; depending on a package would force
-// every workspace to install it before this relay can load.
+// NOTE: no `import { Plugin } from "@opencode/plugin"` here on purpose.
+// The V2 loader only requires a default-exported definition shaped
+// `{ id, setup }`; depending on the package would force every workspace to
+// install it before this relay can load. `Plugin.define` is that shape.
+
+const PLUGIN_ID = "refuse-offpath-push";
 
 const HOOK_RELATIVE = ".opencode/skills/remote-execution/scripts/hooks/refuse_offpath_push.py";
 const ADAPTERS_RELATIVE = ".opencode/skills/remote-execution/scripts/adapters";
@@ -193,7 +195,7 @@ function isStoreStub(result) {
 }
 
 export default {
-  id: "refuse-offpath-push",
+  id: PLUGIN_ID,
   async setup(ctx) {
     // `ctx.location.directory` is the project root the plugin loaded from.
     // Never cwd: the relay must find the skill's hook, not wherever the
