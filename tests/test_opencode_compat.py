@@ -162,6 +162,7 @@ class OpenCodeCompatTests(unittest.TestCase):
         self.assertIn("ctx.tool.hook", src)
         self.assertIn('"execute.before"', src)
         self.assertIn('event.tool !== "shell"', src)
+        self.assertIn("windowsHide: true", src)
         self.assertIn(".opencode/skills/remote-execution/scripts/hooks/"
                       "refuse_offpath_push.py", src)
         self.assertIn("remote_cli.py", src)

@@ -118,8 +118,24 @@ function run(interpreter, args, cwd, input) {
     input,
     encoding: "utf8",
     timeout: TIMEOUT_MS,
+    // On Windows every spawn without this opens a visible console window.
+    // The relay fires on each shell call, so that would flash constantly.
+    windowsHide: true,
     env: Object.assign({}, process.env),
   });
+}
+
+// First interpreter that ever answered 0/2 for this process. Tried first so
+// a working setup costs one spawn per call instead of re-walking candidates
+// (each failed candidate is another process, and on Windows another flash).
+let workingInterpreter = null;
+
+function candidatesInOrder(root) {
+  if (workingInterpreter === null) {
+    return interpreterCandidates(root);
+  }
+  return [workingInterpreter,
+    ...interpreterCandidates(root).filter((c) => c !== workingInterpreter)];
 }
 
 function probe(root) {
@@ -132,7 +148,7 @@ function probe(root) {
   if (missing.length) {
     return { ok: false, reason: "not found: " + missing.join(", ") };
   }
-  for (const interpreter of interpreterCandidates(root)) {
+  for (const interpreter of candidatesInOrder(root)) {
     const result = run(interpreter, ["-c", PROBE_SOURCE, root], root, null);
     if (result.error && result.error.code === "ENOENT") {
       continue;
@@ -145,6 +161,7 @@ function probe(root) {
     }
     try {
       const parsed = JSON.parse(String(result.stdout).trim());
+      workingInterpreter = interpreter;
       return { ok: Boolean(parsed.ok), reason: String(parsed.reason || "") };
     } catch (error) {
       return { ok: false, reason: "probe produced unreadable output" };
@@ -159,7 +176,7 @@ function classify(root, command) {
     return { kind: "degraded", reason: "hook not found at " + HOOK_RELATIVE };
   }
   const payload = JSON.stringify({ tool_name: "Bash", tool_input: { command } });
-  for (const interpreter of interpreterCandidates(root)) {
+  for (const interpreter of candidatesInOrder(root)) {
     const result = run(interpreter, [hook], root, payload);
     if (result.error && result.error.code === "ENOENT") {
       continue;
@@ -178,9 +195,11 @@ function classify(root, command) {
       continue;
     }
     if (result.status === 0) {
+      workingInterpreter = interpreter;
       return { kind: "allow" };
     }
     if (result.status === 2) {
+      workingInterpreter = interpreter;
       return { kind: "refuse", detail: String(result.stderr || "").trim() };
     }
     return { kind: "degraded", reason: "hook exited " + result.status };
