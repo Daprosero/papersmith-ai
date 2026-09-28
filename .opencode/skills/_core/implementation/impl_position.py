@@ -1322,7 +1322,7 @@ def open_defects(events: list[dict], forge_root: Path) -> list[dict]:
     compared.
     """
     forge_root = forge_root.resolve()
-    skills_root = forge_root / "skills"
+    skills_root = forge_root / ".opencode" / "skills"
     latest: dict[str, dict] = {}
     for event in events:
         if event.get("kind") != "defect":

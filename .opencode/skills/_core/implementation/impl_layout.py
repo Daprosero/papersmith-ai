@@ -2,11 +2,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-# The forge root: <root>/skills/_core/implementation/impl_layout.py.
+# The forge root: <root>/.opencode/skills/_core/implementation/impl_layout.py.
 #
-# Four path components, exactly as many as the CLI that used to own this
-# constant had from <root>/skills/proposal-implementation/scripts/. The
-# equality is a coincidence of two directory names, not a rule, and a test pins
+# Five path components, exactly as many as the CLI now owns from
+# <root>/.opencode/skills/proposal-implementation/scripts/. A test pins
 # it: a future move of either file changes the count in silence, and nothing
 # that reads a repository from the wrong root fails loudly.
 FORGE_ROOT = Path(__file__).resolve().parents[4]

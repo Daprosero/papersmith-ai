@@ -60,7 +60,7 @@ os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
 # .opencode/skills/paper-ingestion/scripts/extract_pdf.py -> repo root is parents[4]
 REPO_ROOT = Path(__file__).resolve().parents[4]
 CONFIG_PATH = REPO_ROOT / "papersmith.yaml"
-SETUP_SCRIPT = "./skills/paper-ingestion/setup.sh"
+SETUP_SCRIPT = "./.opencode/skills/paper-ingestion/setup.sh"
 
 VALID_MODES = ("fast", "balanced")
 VALID_ENGINES = ("marker",)

@@ -322,7 +322,7 @@ def section_citation_status(guidance_dir: Path, section_id: str) -> dict:
     loose PDF is a root to scan, and ingestion MOVES that PDF into
     `<paper>/<paper>.pdf` once it is processed -- so a name surviving here
     is exactly a citation this section still owes an ingestion pass
-    (`.claude/skills/paper-ingestion/SKILL.md`).
+    (`.opencode/skills/paper-ingestion/SKILL.md`).
 
     `write`'s own citation gate (`paper_cli._guard_section_citations_ready`)
     is the real caller: it reads this status for one block's own section,

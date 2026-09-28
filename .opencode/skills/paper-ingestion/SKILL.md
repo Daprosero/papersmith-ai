@@ -70,7 +70,7 @@ with one idempotent command that works on macOS, Linux, and Windows:
 
 ```
 python scripts/setup_env.py install
-# or, on macOS/Linux: ./skills/paper-ingestion/setup.sh
+# or, on macOS/Linux: ./.opencode/skills/paper-ingestion/setup.sh
 ```
 
 The provisioner installs both dependency kinds a `requirements.txt` alone cannot:

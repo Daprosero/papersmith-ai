@@ -14,7 +14,7 @@ silently skipped.
 
 The PDF lands as a LOOSE file directly under `guidance/<section-id>/` --
 exactly the shape `paper-ingestion`'s own contract discovers as a source
-root (`.claude/skills/paper-ingestion/SKILL.md`, "Exactly one level down":
+root (`.opencode/skills/paper-ingestion/SKILL.md`, "Exactly one level down":
 a folder nested inside a source root is never scanned). `resolve_
 destination` enforces this structurally: `cite_key` is guarded against any
 path separator, so the destination's parent can only ever be
