@@ -6,9 +6,9 @@ The generators cannot run at the repository root -- there is no
 ``generators.context_for_workspace``). This script therefore builds a throwaway
 workspace with the real ``papersmith init``, renders the projection there, and
 copies only the context-independent artifacts back into the checkout:
-``.opencode/commands/``, ``.opencode/plugins/``, and ``.claude/commands/``.
+``.opencode/commands/`` and ``.opencode/plugins/``.
 
-``opencode.json`` and the root routing docs are deliberately NOT copied: they
+``opencode.json`` and the root routing doc are deliberately NOT copied: they
 are context-dependent (they carry the workspace name/version) and at the root
 they are hand-maintained.
 
@@ -17,7 +17,7 @@ Run directly -- there is intentionally no ``package.json`` script for this:
     python scripts/sync-repo-harness.py [--check]
 
 ``package.json`` is a ``KIT_ENTRIES`` member copied into every workspace
-(``core/manifest.py``), while this script ships nowhere, so a repo-only npm
+(``core/manifest.py``), while this script ships nowhere, so a repo-only pnpm
 script would dangle in every generated workspace.
 """
 
@@ -40,9 +40,8 @@ from papersmith.generators import apply_generated, context_for_workspace  # noqa
 PROJECTION = (
     (".opencode/commands", ".opencode/commands"),
     (".opencode/plugins", ".opencode/plugins"),
-    (".claude/commands", ".claude/commands"),
 )
-GENERATED_TOOLS = ("opencode", "claude")
+GENERATED_TOOLS = ("opencode",)
 
 
 def _render(holder: Path) -> tuple[Path, list[str]]:

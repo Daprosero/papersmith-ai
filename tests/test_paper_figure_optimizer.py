@@ -20,13 +20,13 @@ import unittest
 from pathlib import Path
 
 FORGE_ROOT = Path(__file__).resolve().parents[1]
-SKILL_SCRIPTS = FORGE_ROOT / "skills" / "paper-writing" / "scripts"
+SKILL_SCRIPTS = FORGE_ROOT / ".opencode" / "skills" / "paper-writing" / "scripts"
 sys.path.insert(0, str(SKILL_SCRIPTS))
 import paper_figure  # noqa: E402
 import paper_latex  # noqa: E402
 import paper_tikz  # noqa: E402
 
-sys.path.insert(0, str(FORGE_ROOT / "skills" / "_core" / "implementation"))
+sys.path.insert(0, str(FORGE_ROOT / ".opencode" / "skills" / "_core" / "implementation"))
 from impl_refusals import Refused  # noqa: E402
 
 #: A figure the optimizer has real work to do on: two libraries it can prove

@@ -29,13 +29,13 @@ from pathlib import Path
 from typing import Mapping
 
 FORGE = Path(__file__).resolve().parents[1]
-SKILL_DIR = FORGE / "skills" / "experimental-implementation"
+SKILL_DIR = FORGE / ".opencode" / "skills" / "experimental-implementation"
 PROFILE_FILE = SKILL_DIR / "impl_profile.py"
 LAUNCHER = SKILL_DIR / "scripts" / "implementation_cli.py"
 SIBLING_LAUNCHER = (
-    FORGE / "skills" / "proposal-implementation" / "scripts"
+    FORGE / ".opencode" / "skills" / "proposal-implementation" / "scripts"
     / "implementation_cli.py")
-RESOLVER = FORGE / "skills/_core/implementation/impl_domain_profile.py"
+RESOLVER = FORGE / ".opencode/skills/_core/implementation/impl_domain_profile.py"
 
 _counter = itertools.count()
 
@@ -194,7 +194,7 @@ class CitationPatternGroupCountTests(unittest.TestCase):
 #: silently reads an earlier test's already-resolved profile (the exact
 #: scar `test_implementation_domain_mutation.py` records for its own
 #: mutation harness).
-ENGINE_DIR = FORGE / "skills" / "_core" / "implementation" / "engine"
+ENGINE_DIR = FORGE / ".opencode" / "skills" / "_core" / "implementation" / "engine"
 
 
 def _engine_with_documents(documents: list[dict]):
@@ -661,8 +661,8 @@ class DoctrineVocabularyLeakTests(unittest.TestCase):
         sys.path.insert(0, str(FORGE / "tests"))
         import forge_vocabulary  # noqa: E402  (path set above)
         for document in (SKILL_DIR / "SKILL.md",
-                         FORGE / ".claude" / "agents" / "experiments-build.md",
-                         FORGE / ".claude" / "agents" / "experiments-walk.md",
+                         FORGE / ".opencode" / "agents" / "experiments-build.md",
+                         FORGE / ".opencode" / "agents" / "experiments-walk.md",
                          PROFILE_FILE):
             with self.subTest(document=document.name):
                 text = document.read_text(encoding="utf-8")
@@ -932,11 +932,11 @@ class WalkPromisesOnlyWhatItPerformsTests(unittest.TestCase):
         SKILL.md and both walk agents' descriptions."""
         offenders = []
         for path, phrase in (
-                (FORGE / "skills/proposal-implementation/SKILL.md",
+                (FORGE / ".opencode/skills/proposal-implementation/SKILL.md",
                  "and `rehearse`"),
-                (FORGE / ".claude/agents/implementation-walk.md",
+                (FORGE / ".opencode/agents/implementation-walk.md",
                  "rehearse them on a worker"),
-                (FORGE / ".claude/agents/experiments-walk.md",
+                (FORGE / ".opencode/agents/experiments-walk.md",
                  "rehearse them on a worker")):
             if phrase in path.read_text(encoding="utf-8"):
                 offenders.append(f"{path.name}: {phrase!r}")
@@ -958,7 +958,7 @@ class FrontDoorIdentityTests(unittest.TestCase):
     """
 
     def _help(self, skill: str) -> str:
-        cli = (FORGE / "skills" / skill / "scripts"
+        cli = (FORGE / ".opencode" / "skills" / skill / "scripts"
                / "implementation_cli.py")
         # The launcher uses `setdefault`, so an IMPLEMENTATION_DOMAIN_PROFILE
         # left in this process's environment by a sibling test would be

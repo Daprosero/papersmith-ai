@@ -112,7 +112,7 @@ SUITE_ROOT = DEFINITION_MODULE.parent
 
 #: The forge itself, and the directory every skill it ships lives in.
 FORGE_ROOT = SUITE_ROOT.parent
-SKILLS_ROOT = FORGE_ROOT / "skills"
+SKILLS_ROOT = FORGE_ROOT / ".opencode" / "skills"
 
 
 def travelling_guidance_folders(root=None) -> set:

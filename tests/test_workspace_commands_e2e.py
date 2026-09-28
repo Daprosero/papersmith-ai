@@ -102,17 +102,13 @@ class GeneratedWorkspaceTests(unittest.TestCase):
             ".papersmith/config.json",
             ".papersmith/version",
             "papersmith.yaml",
-            "CLAUDE.md",
-            "OPENCODE.md",
-            "PI.md",
-            ".pi/gentle-ai/persona.json",
-            ".antigravity/rules.md",
+            "AGENTS.md",
+            "opencode.json",
             "README.md",
             "package.json",
-            "skills/paper-writing/SKILL.md",
-            "skills/proposal-deliberation/cli.mjs",
+            ".opencode/skills/paper-writing/SKILL.md",
+            ".opencode/skills/proposal-deliberation/cli.mjs",
             "scripts/setup_env.py",
-            "scripts/setup-harnesses.sh",
         ):
             self.assertTrue((workspace / relpath).exists(), relpath)
         rc, out, _ = capture(["status", str(workspace), "--json"])
@@ -125,19 +121,19 @@ class GeneratedWorkspaceTests(unittest.TestCase):
     def test_status_names_drift_without_failing(self) -> None:
         # Documented known gap: status reports drift by name and still exits 0.
         workspace = make_workspace(new_tmp(self))
-        claude = workspace / "CLAUDE.md"
-        claude.write_text(claude.read_text(encoding="utf-8") + "\n<!-- probe -->\n",
+        agents = workspace / "AGENTS.md"
+        agents.write_text(agents.read_text(encoding="utf-8") + "\n<!-- probe -->\n",
                           encoding="utf-8")
         rc, out, _ = capture(["status", str(workspace)])
         self.assertEqual(rc, SUCCESS)
-        self.assertIn("CLAUDE.md", out)
+        self.assertIn("AGENTS.md", out)
 
 
 class UpgradeCommandTests(unittest.TestCase):
 
     def test_upgrade_restores_framework_files_and_preserves_research(self) -> None:
         workspace = make_workspace(new_tmp(self))
-        skill = workspace / "skills/paper-ingestion/SKILL.md"
+        skill = workspace / ".opencode/skills/paper-ingestion/SKILL.md"
         original = skill.read_bytes()
         skill.write_bytes(b"tampered by the test\n")
         research = workspace / "guidance/paper-guide/notes.md"
@@ -153,33 +149,21 @@ class UpgradeCommandTests(unittest.TestCase):
 
 
 class HarnessProjectionTests(unittest.TestCase):
-    """The workspace ships the script its package.json advertises for harness wiring."""
+    """The skill tree lives natively under `.opencode/skills` -- no links."""
 
-    HARNESS_LINKS = (".claude/skills", ".pi/skills", ".opencode/skills", ".antigravity/skills")
-
-    def test_projection_script_wires_every_harness(self) -> None:
+    def test_skills_are_real_files_not_symlinks(self) -> None:
         workspace = make_workspace(new_tmp(self))
         package = (workspace / "package.json").read_text(encoding="utf-8")
-        self.assertIn("bash scripts/setup-harnesses.sh", package)
-        script = workspace / "scripts" / "setup-harnesses.sh"
-        self.assertTrue(script.is_file(), "the workspace must ship the script it advertises")
-
-        first = subprocess.run(
-            ["bash", str(script)], cwd=workspace, capture_output=True, text=True, timeout=60,
-        )
-        self.assertEqual(first.returncode, 0, first.stderr)
-        for relpath in self.HARNESS_LINKS:
-            link = workspace / relpath
-            self.assertTrue(link.is_symlink(), f"{relpath} must be a symlink")
-            self.assertEqual(os.readlink(link), os.path.relpath(workspace / "skills", link.parent))
-            self.assertTrue((link / "paper-ingestion" / "SKILL.md").is_file(), relpath)
-
-        second = subprocess.run(
-            ["bash", str(script)], cwd=workspace, capture_output=True, text=True, timeout=60,
-        )
-        self.assertEqual(second.returncode, 0, second.stderr)
-        for relpath in self.HARNESS_LINKS:
-            self.assertTrue((workspace / relpath).is_symlink(), f"{relpath} must survive a re-run")
+        self.assertNotIn("setup-harnesses", package)
+        self.assertFalse((workspace / "scripts" / "setup-harnesses.sh").exists())
+        skills = workspace / ".opencode" / "skills"
+        self.assertTrue((skills / "paper-ingestion" / "SKILL.md").is_file())
+        self.assertFalse(skills.is_symlink(), ".opencode/skills must be real files")
+        agents = workspace / ".opencode" / "agents"
+        self.assertTrue((agents / "paper-ingestion.md").is_file())
+        self.assertFalse(agents.is_symlink())
+        for leftover in (".claude", ".pi", ".antigravity"):
+            self.assertFalse((workspace / leftover).exists(), leftover)
 
 
 class HarnessCommandProjectionTests(unittest.TestCase):
@@ -198,26 +182,25 @@ class HarnessCommandProjectionTests(unittest.TestCase):
         "skill-audit",
     )
 
-    def test_init_projects_ten_commands_per_command_harness(self) -> None:
+    def test_init_projects_ten_commands(self) -> None:
         workspace = make_workspace(new_tmp(self))
-        for harness in (".opencode/commands", ".claude/commands"):
-            with self.subTest(harness=harness):
-                names = sorted(path.stem for path in (workspace / harness).glob("*.md"))
-                self.assertEqual(names, sorted(self.COMMAND_NAMES))
-                body = (workspace / harness / "paper-ingestion.md").read_text(encoding="utf-8")
-                self.assertIn("$ARGUMENTS", body)
-                self.assertIn("skills/paper-ingestion/SKILL.md", body)
+        names = sorted(path.stem for path in (workspace / ".opencode/commands").glob("*.md"))
+        self.assertEqual(names, sorted(self.COMMAND_NAMES))
+        body = (workspace / ".opencode/commands/paper-ingestion.md").read_text(encoding="utf-8")
+        self.assertIn("$ARGUMENTS", body)
+        self.assertIn(".opencode/skills/paper-ingestion/SKILL.md", body)
 
-    def test_non_command_harnesses_receive_no_command_directory(self) -> None:
+    def test_no_other_harness_command_directory_exists(self) -> None:
         workspace = make_workspace(new_tmp(self))
-        self.assertFalse((workspace / ".pi/commands").exists())
-        self.assertFalse((workspace / ".antigravity/commands").exists())
+        for leftover in (".claude", ".pi", ".antigravity"):
+            self.assertFalse((workspace / leftover).exists(), leftover)
 
-    def test_opencode_json_is_valid_and_declares_no_plugin_key(self) -> None:
+    def test_opencode_json_is_v2(self) -> None:
         workspace = make_workspace(new_tmp(self))
         payload = json.loads((workspace / "opencode.json").read_text(encoding="utf-8"))
         self.assertEqual(payload["$schema"], "https://opencode.ai/config.json")
-        self.assertIn("permission", payload)
+        self.assertIsInstance(payload["permissions"], list)
+        self.assertIn("servers", payload["mcp"])
         self.assertNotIn("plugin", payload,
                          "plugins are auto-discovered; a plugin key would duplicate that")
 
@@ -257,7 +240,6 @@ class RenderedSetLifecycleTests(unittest.TestCase):
     """
 
     KIT_COMMAND_NAMES = HarnessCommandProjectionTests.COMMAND_NAMES
-    STATIC_ENTRYPOINTS = ("OPENCODE.md", "PI.md", ".antigravity/rules.md")
 
     @staticmethod
     def _init_subset(base: Path, tools: str) -> Path:
@@ -266,36 +248,32 @@ class RenderedSetLifecycleTests(unittest.TestCase):
         assert rc == SUCCESS, f"init failed with exit {rc}"
         return workspace
 
-    def test_init_honours_a_subset_tool_selection(self) -> None:
-        """Criterion 3: a correctly scoped workspace has no drift and no surplus."""
-        workspace = self._init_subset(new_tmp(self), "claude")
-        self.assertTrue((workspace / "CLAUDE.md").is_file())
-        self.assertFalse((workspace / "OPENCODE.md").exists(),
-                         "init must render only the tool set it stored")
-        self.assertEqual(sorted(p.stem for p in (workspace / ".claude/commands").glob("*.md")),
+    def test_init_renders_the_single_tool_set(self) -> None:
+        """A correctly scoped workspace has no drift and no surplus."""
+        workspace = self._init_subset(new_tmp(self), "opencode")
+        self.assertTrue((workspace / "AGENTS.md").is_file())
+        self.assertTrue((workspace / "opencode.json").is_file())
+        self.assertEqual(sorted(p.stem for p in (workspace / ".opencode/commands").glob("*.md")),
                          sorted(self.KIT_COMMAND_NAMES))
         rc, out, _ = capture(["audit", str(workspace), "--check-drift"])
         self.assertEqual(rc, SUCCESS)
         self.assertIn("drift: clean", out)
 
-    def test_migration_keeps_static_entrypoints_and_names_them_as_surplus(self) -> None:
-        """Criterion 4: pre-Change-B subset workspaces are reported, never damaged."""
-        workspace = self._init_subset(new_tmp(self), "claude")
-        for relpath in self.STATIC_ENTRYPOINTS:
-            (workspace / relpath).write_text("pre-Change-B entrypoint\n", encoding="utf-8")
+    def test_foreign_entrypoints_are_left_alone(self) -> None:
+        """Files from another harness are user data here: kept, never tracked."""
+        workspace = self._init_subset(new_tmp(self), "opencode")
+        for relpath in ("FOREIGN.md", "PI.md"):
+            (workspace / relpath).write_text("foreign entrypoint\n", encoding="utf-8")
 
         rc, _, _ = capture(["upgrade", str(workspace)])
         self.assertEqual(rc, SUCCESS)
-        for relpath in self.STATIC_ENTRYPOINTS:
-            with self.subTest(relpath=relpath):
-                self.assertTrue((workspace / relpath).is_file(),
-                                "static entrypoints are never deleted")
+        for relpath in ("FOREIGN.md", "PI.md"):
+            self.assertTrue((workspace / relpath).is_file(),
+                            "foreign entrypoints are never deleted")
 
         rc, out, _ = capture(["audit", str(workspace), "--check-drift"])
-        self.assertEqual(rc, DRIFT_ERROR)
-        for relpath in self.STATIC_ENTRYPOINTS:
-            with self.subTest(relpath=relpath):
-                self.assertIn(relpath, out)
+        self.assertEqual(rc, SUCCESS)
+        self.assertIn("drift: clean", out)
 
     def test_orphan_removal_is_baselined_dynamic_paths_only(self) -> None:
         """Criteria 5 and 6: the M1 case, plus its data-loss-safe boundary.
@@ -305,7 +283,7 @@ class RenderedSetLifecycleTests(unittest.TestCase):
         command file that was never baselined survives.
         """
         workspace = make_workspace(new_tmp(self))
-        ghost = workspace / "skills/zz-ghost"
+        ghost = workspace / ".opencode/skills/zz-ghost"
         ghost.mkdir()
         (ghost / "SKILL.md").write_text(
             '---\nname: zz-ghost\ndescription: "Trigger: orphan fixture."\n---\n',
@@ -313,21 +291,19 @@ class RenderedSetLifecycleTests(unittest.TestCase):
         )
         rc, _, _ = capture(["upgrade", str(workspace)])
         self.assertEqual(rc, SUCCESS)
-        for harness in (".opencode/commands", ".claude/commands"):
-            self.assertTrue((workspace / harness / "zz-ghost.md").is_file(), harness)
+        harness = ".opencode/commands"
+        self.assertTrue((workspace / harness / "zz-ghost.md").is_file(), harness)
 
         shutil.rmtree(ghost)
         note = workspace / ".opencode/commands/user-note.md"
         note.write_text("hand written, never baselined\n", encoding="utf-8")
 
         result = upgrade_module.upgrade(workspace)
-        for harness in (".opencode/commands", ".claude/commands"):
-            with self.subTest(harness=harness):
-                orphan = f"{harness}/zz-ghost.md"
-                self.assertIn(orphan, result["removed"])
-                self.assertFalse((workspace / orphan).exists())
-                survivors = sorted(p.stem for p in (workspace / harness).glob("*.md"))
-                self.assertTrue(set(self.KIT_COMMAND_NAMES) <= set(survivors))
+        orphan = f"{harness}/zz-ghost.md"
+        self.assertIn(orphan, result["removed"])
+        self.assertFalse((workspace / orphan).exists())
+        survivors = sorted(p.stem for p in (workspace / harness).glob("*.md"))
+        self.assertTrue(set(self.KIT_COMMAND_NAMES) <= set(survivors))
         self.assertTrue(note.is_file(), "a never-baselined command file is user data")
 
     def test_command_drift_is_visible_to_audit_and_status_then_restored(self) -> None:
@@ -353,7 +329,7 @@ class RenderedSetLifecycleTests(unittest.TestCase):
     def test_malformed_skill_never_raises_from_derivation(self) -> None:
         """Criterion 8(a): a user's broken skill is reported, never fatal."""
         workspace = make_workspace(new_tmp(self))
-        broken = workspace / "skills/broken"
+        broken = workspace / ".opencode/skills/broken"
         broken.mkdir()
         (broken / "SKILL.md").write_text("# no front matter at all\n", encoding="utf-8")
 
@@ -385,8 +361,8 @@ class RenderedSetLifecycleTests(unittest.TestCase):
         ``main`` and fails here by erroring outright.
         """
         workspace = make_workspace(new_tmp(self))
-        (workspace / ".claude/agents/binary.md").write_bytes(b"\xff\xfe\x00 not utf-8")
-        broken = workspace / "skills/binary-skill"
+        (workspace / ".opencode/agents/binary.md").write_bytes(b"\xff\xfe\x00 not utf-8")
+        broken = workspace / ".opencode/skills/binary-skill"
         broken.mkdir()
         (broken / "SKILL.md").write_bytes(b"\xff\xfe not utf-8 either")
 
@@ -406,7 +382,7 @@ class RenderedSetLifecycleTests(unittest.TestCase):
         if hasattr(os, "geteuid") and os.geteuid() == 0:
             self.skipTest("root ignores directory permission bits")
         workspace = make_workspace(new_tmp(self))
-        locked = workspace / "skills/locked"
+        locked = workspace / ".opencode/skills/locked"
         locked.mkdir()
         (locked / "SKILL.md").write_text(
             '---\nname: locked\ndescription: "Trigger: locked fixture."\n---\n',
@@ -455,7 +431,7 @@ class RenderedSetLifecycleTests(unittest.TestCase):
         if not hasattr(os, "mkfifo") or not hasattr(signal, "setitimer"):
             self.skipTest("mkfifo / setitimer unavailable")
         workspace = make_workspace(new_tmp(self))
-        managed = workspace / "CLAUDE.md"
+        managed = workspace / "AGENTS.md"
         managed.unlink()
         os.mkfifo(managed)
 
@@ -479,7 +455,7 @@ class RenderedSetLifecycleTests(unittest.TestCase):
         if hasattr(os, "geteuid") and os.geteuid() == 0:
             self.skipTest("root ignores directory permission bits")
         workspace = make_workspace(new_tmp(self))
-        ghost = workspace / "skills/zz-ghost"
+        ghost = workspace / ".opencode/skills/zz-ghost"
         ghost.mkdir()
         (ghost / "SKILL.md").write_text(
             '---\nname: zz-ghost\ndescription: "Trigger: orphan fixture."\n---\n',
@@ -598,19 +574,19 @@ class DamagedWorkspaceTotalityTests(unittest.TestCase):
         if not hasattr(os, "mkfifo"):
             self.skipTest("mkfifo unavailable")
         workspace = make_workspace(new_tmp(self))
-        managed = workspace / "CLAUDE.md"
+        managed = workspace / "AGENTS.md"
         managed.unlink()
         os.mkfifo(managed)
 
         with self._alarm("upgrade blocked writing a FIFO"):
             with self._recorded_warnings() as caught:
                 result = upgrade_module.upgrade(workspace)
-        self.assertNotIn("CLAUDE.md", result["changed_files"])
-        self.assertIn("CLAUDE.md", result["unsynchronized"],
+        self.assertNotIn("AGENTS.md", result["changed_files"])
+        self.assertIn("AGENTS.md", result["unsynchronized"],
                       "a skipped write is surfaced to the caller, not only warned")
         stat_mode = managed.lstat().st_mode
         self.assertTrue(stat_module.S_ISFIFO(stat_mode), "the FIFO is left as it was")
-        self.assertTrue(any("CLAUDE.md" in str(entry.message) for entry in caught),
+        self.assertTrue(any("AGENTS.md" in str(entry.message) for entry in caught),
                         "a skipped write is reported, not swallowed")
 
     def test_a_skipped_write_never_disappears_from_the_baseline(self) -> None:
@@ -625,7 +601,7 @@ class DamagedWorkspaceTotalityTests(unittest.TestCase):
         if not hasattr(os, "mkfifo"):
             self.skipTest("mkfifo unavailable")
         workspace = make_workspace(new_tmp(self))
-        managed = workspace / "CLAUDE.md"
+        managed = workspace / "AGENTS.md"
         managed.unlink()
         os.mkfifo(managed)
 
@@ -635,12 +611,12 @@ class DamagedWorkspaceTotalityTests(unittest.TestCase):
 
         rc, out, _ = capture(["status", str(workspace), "--json"])
         self.assertEqual(rc, SUCCESS)
-        self.assertIn("CLAUDE.md", json.loads(out)["framework"]["drifted_files"],
+        self.assertIn("AGENTS.md", json.loads(out)["framework"]["drifted_files"],
                       "status must not report a false 'no drift' for a skipped path")
 
         rc, out, _ = capture(["audit", str(workspace), "--check-drift"])
         self.assertEqual(rc, DRIFT_ERROR)
-        self.assertIn("CLAUDE.md", out)
+        self.assertIn("AGENTS.md", out)
 
     def test_a_written_but_unhashable_path_stays_visible_as_drift(self) -> None:
         """A write can succeed and still leave the path unhashable.
@@ -654,28 +630,28 @@ class DamagedWorkspaceTotalityTests(unittest.TestCase):
         if hasattr(os, "geteuid") and os.geteuid() == 0:
             self.skipTest("root ignores file permission bits")
         workspace = make_workspace(new_tmp(self))
-        managed = workspace / "CLAUDE.md"
+        managed = workspace / "AGENTS.md"
         os.chmod(managed, 0o200)
         self.addCleanup(os.chmod, managed, 0o644)
 
         with self._recorded_warnings():
             result = upgrade_module.upgrade(workspace)
-        self.assertNotIn("CLAUDE.md", result["unsynchronized"],
+        self.assertNotIn("AGENTS.md", result["unsynchronized"],
                          "the write succeeded, so this is not a skip")
 
         rc, out, _ = capture(["status", str(workspace), "--json"])
         self.assertEqual(rc, SUCCESS)
-        self.assertIn("CLAUDE.md", json.loads(out)["framework"]["drifted_files"],
+        self.assertIn("AGENTS.md", json.loads(out)["framework"]["drifted_files"],
                       "an unhashable managed path is drift, not silence")
 
         rc, out, _ = capture(["audit", str(workspace), "--check-drift"])
         self.assertEqual(rc, DRIFT_ERROR)
-        self.assertIn("CLAUDE.md", out)
+        self.assertIn("AGENTS.md", out)
 
     def test_a_directory_at_a_rendered_path_is_reported_not_fatal(self) -> None:
         """``write_bytes`` on a directory raised ``IsADirectoryError`` untyped."""
         workspace = make_workspace(new_tmp(self))
-        managed = workspace / "CLAUDE.md"
+        managed = workspace / "AGENTS.md"
         managed.unlink()
         managed.mkdir()
         (managed / "keep.txt").write_text("user data\n", encoding="utf-8")
@@ -683,8 +659,8 @@ class DamagedWorkspaceTotalityTests(unittest.TestCase):
         with self._recorded_warnings() as caught:
             result = upgrade_module.upgrade(workspace)
         self.assertTrue((managed / "keep.txt").is_file(), "user data is untouched")
-        self.assertNotIn("CLAUDE.md", result["changed_files"])
-        self.assertTrue(any("CLAUDE.md" in str(entry.message) for entry in caught))
+        self.assertNotIn("AGENTS.md", result["changed_files"])
+        self.assertTrue(any("AGENTS.md" in str(entry.message) for entry in caught))
 
     def test_audit_agrees_with_status_on_an_unreadable_rendered_file(self) -> None:
         """A mode-000 *regular* file: the gate passes, the read does not.
@@ -696,17 +672,17 @@ class DamagedWorkspaceTotalityTests(unittest.TestCase):
         if hasattr(os, "geteuid") and os.geteuid() == 0:
             self.skipTest("root ignores file permission bits")
         workspace = make_workspace(new_tmp(self))
-        managed = workspace / "CLAUDE.md"
+        managed = workspace / "AGENTS.md"
         os.chmod(managed, 0o000)
         self.addCleanup(os.chmod, managed, 0o644)
 
         rc, out, _ = capture(["status", str(workspace), "--json"])
         self.assertEqual(rc, SUCCESS)
-        self.assertIn("CLAUDE.md", json.loads(out)["framework"]["drifted_files"])
+        self.assertIn("AGENTS.md", json.loads(out)["framework"]["drifted_files"])
 
         rc, out, _ = capture(["audit", str(workspace), "--check-drift"])
         self.assertEqual(rc, DRIFT_ERROR)
-        self.assertIn("CLAUDE.md", out)
+        self.assertIn("AGENTS.md", out)
 
     def test_a_non_utf8_workspace_config_is_a_typed_error(self) -> None:
         """A config read is a user error, never an untyped decode traceback."""
@@ -937,7 +913,7 @@ class DamagedWorkspaceTotalityTests(unittest.TestCase):
         to do after removing a local skill.
         """
         workspace = make_workspace(new_tmp(self))
-        ghost = workspace / "skills/zz-ghost"
+        ghost = workspace / ".opencode/skills/zz-ghost"
         ghost.mkdir()
         (ghost / "SKILL.md").write_text(
             '---\nname: zz-ghost\ndescription: "Trigger: orphan fixture."\n---\n',
@@ -946,8 +922,7 @@ class DamagedWorkspaceTotalityTests(unittest.TestCase):
         with self._recorded_warnings():
             upgrade_module.upgrade(workspace)
         shutil.rmtree(ghost)
-        for harness in (".opencode/commands", ".claude/commands"):
-            (workspace / harness / "zz-ghost.md").unlink()
+        (workspace / ".opencode/commands/zz-ghost.md").unlink()
 
         with self._recorded_warnings():
             result = upgrade_module.upgrade(workspace)
@@ -1041,12 +1016,12 @@ class AuditCommandTests(unittest.TestCase):
         self.assertEqual(rc, SUCCESS)
         self.assertIn("drift: clean", out)
 
-        claude = workspace / "CLAUDE.md"
+        claude = workspace / "AGENTS.md"
         claude.write_text(claude.read_text(encoding="utf-8") + "\n<!-- audit probe -->\n",
                           encoding="utf-8")
         rc, out, _ = capture(["audit", str(workspace), "--check-drift"])
         self.assertEqual(rc, DRIFT_ERROR)
-        self.assertIn("CLAUDE.md", out)
+        self.assertIn("AGENTS.md", out)
         self.assertIn("<!-- audit probe -->", claude.read_text(encoding="utf-8"))
 
 

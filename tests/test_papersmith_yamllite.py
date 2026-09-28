@@ -59,7 +59,7 @@ execution_profiles:
     timeout_seconds: 300
   sweep_training:
     target: "kaggle-gpu-pool"
-    bootstrap: "skills/remote-execution/assets/runner_bootstrap.py"
+    bootstrap: ".opencode/skills/remote-execution/assets/runner_bootstrap.py"
     entrypoint: "python implementations/{paper_slug}/src/train.py"
     sharding:
       enabled: true

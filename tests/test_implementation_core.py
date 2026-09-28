@@ -21,7 +21,7 @@ import unittest
 from pathlib import Path
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
-CORE = REPOSITORY_ROOT / "skills/_core/implementation"
+CORE = REPOSITORY_ROOT / ".opencode/skills/_core/implementation"
 sys.path.insert(0, str(CORE))
 
 from domain_profile import seeded_profile  # noqa: E402  (tests/ on path)
@@ -35,13 +35,13 @@ import impl_position  # noqa: E402
 import impl_references  # noqa: E402
 import impl_refusals  # noqa: E402
 
-CLI_SCRIPT = REPOSITORY_ROOT / "skills/proposal-implementation/scripts/implementation_cli.py"
+CLI_SCRIPT = REPOSITORY_ROOT / ".opencode/skills/proposal-implementation/scripts/implementation_cli.py"
 #: The engine source (meaning 2, design.md M2): what `CoreNamesNoDomainTests`
 #: reads for `PRODUCT_DIRS`/`SOURCE_ROOTS` -- the launcher above exposes
 #: none of the engine's attributes (design.md D1), so this lock must load
 #: the engine directly, never the launcher it used to be the same file as.
 ENGINE_SCRIPT = (REPOSITORY_ROOT
-                 / "skills/_core/implementation/engine/implementation_engine.py")
+                 / ".opencode/skills/_core/implementation/engine/implementation_engine.py")
 
 
 def _git(cwd: Path, *args: str) -> None:
@@ -200,7 +200,7 @@ class NonForgeInterpreterGuardTests(unittest.TestCase):
         self.addCleanup(setattr, sys, "prefix", self._original_prefix)
 
     def test_a_forge_owned_venv_prefix_is_refused(self):
-        sys.prefix = str(impl_layout.FORGE_ROOT / "skills" / "some-skill" / ".venv")
+        sys.prefix = str(impl_layout.FORGE_ROOT / ".opencode" / "skills" / "some-skill" / ".venv")
         with self.assertRaises(impl_refusals.Refused) as caught:
             impl_guards.require_non_forge_interpreter()
         self.assertEqual(caught.exception.code, "FORGE_INTERPRETER")
@@ -372,7 +372,7 @@ class CoreNamesNoDomainTests(unittest.TestCase):
         module = importlib.util.module_from_spec(spec)
         sys.modules[spec.name] = module
         with seeded_profile(REPOSITORY_ROOT
-                            / "skills/proposal-implementation/impl_profile.py"):
+                            / ".opencode/skills/proposal-implementation/impl_profile.py"):
             spec.loader.exec_module(module)
         return module
 
@@ -395,7 +395,7 @@ class CoreNamesNoDomainTests(unittest.TestCase):
         core existed -- a coincidence of two directory names, not a rule.
         """
         self.assertEqual(impl_layout.FORGE_ROOT, REPOSITORY_ROOT)
-        self.assertTrue((impl_layout.FORGE_ROOT / "skills").is_dir())
+        self.assertTrue((impl_layout.FORGE_ROOT / ".opencode" / "skills").is_dir())
         self.assertEqual(impl_layout.WORKSPACE,
                          REPOSITORY_ROOT / "implementations")
 

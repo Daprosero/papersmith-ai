@@ -236,7 +236,7 @@ def _paper_child(
     *,
     timeout: float | None = None,
 ) -> ChildPlan:
-    script = workspace / "skills" / "paper-writing" / "scripts" / "paper_cli.py"
+    script = workspace / ".opencode" / "skills" / "paper-writing" / "scripts" / "paper_cli.py"
     argv = [str(script), *verb]
     for spec in flags:
         value = arguments.get(spec.name)

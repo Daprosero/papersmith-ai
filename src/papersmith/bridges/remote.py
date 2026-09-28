@@ -86,7 +86,7 @@ def execute(workspace: str | Path, args) -> int:
     root = Path(workspace).expanduser().resolve()
     command = command_args(args)
     result = run_script(
-        root, "skills/remote-execution/scripts/remote_cli.py", command,
+        root, ".opencode/skills/remote-execution/scripts/remote_cli.py", command,
         prefer_micromamba=True,
     )
     return emit_result(result)

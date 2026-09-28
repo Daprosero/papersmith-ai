@@ -46,11 +46,10 @@ VERSION_MARKER = ".papersmith/version"
 # needs the same bytes this repository ships — like ``skills``, not like
 # ``guidance/paper-guide``.
 KIT_ENTRIES = (
-    "skills",
+    ".opencode/skills",
     "sections",
-    ".claude/agents",
+    ".opencode/agents",
     "scripts/setup_env.py",
-    "scripts/setup-harnesses.sh",
     "requirements.txt",
 )
 
@@ -74,7 +73,7 @@ PRESERVE_PATTERNS = (
 _SKIP_DIRS = {".venv", "node_modules", "__pycache__", ".pytest_cache", ".micromamba", ".git"}
 _SKIP_SUFFIXES = (".pyc", ".pyo")
 _KEEP_HIDDEN = {".gitignore", ".gitkeep"}
-_STORE_DIR = "skills/kaggle-accounts/store"
+_STORE_DIR = ".opencode/skills/kaggle-accounts/store"
 
 
 def _timestamp() -> str:

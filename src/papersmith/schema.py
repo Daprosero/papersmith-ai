@@ -13,7 +13,7 @@ from typing import Any
 
 from .errors import UserError
 
-KNOWN_TOOLS = ("claude", "opencode", "pi", "antigravity")
+KNOWN_TOOLS = ("opencode",)
 KNOWN_SKILLS = (
     "paper-ingestion",
     "proposal-deliberation",

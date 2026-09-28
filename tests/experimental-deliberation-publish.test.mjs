@@ -36,8 +36,8 @@ import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
 const repoRoot = process.cwd();
-const engineDir = path.join(repoRoot, 'skills/_core/deliberation/engine');
-const profilePath = path.join(repoRoot, 'skills/experimental-deliberation/profile.ts');
+const engineDir = path.join(repoRoot, '.opencode/skills/_core/deliberation/engine');
+const profilePath = path.join(repoRoot, '.opencode/skills/experimental-deliberation/profile.ts');
 const piRoot = path.resolve('.');
 
 const LINEAGE = 'domain-shift-baseline-sweep';

@@ -28,8 +28,8 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-AGENTS = ROOT / ".claude" / "agents"
-SKILLS = ROOT / "skills"
+AGENTS = ROOT / ".opencode" / "agents"
+SKILLS = ROOT / ".opencode" / "skills"
 
 # Skills that declare no north at all -- neither a Python `OBJECTIVE_FLOW`
 # nor a TypeScript `profile.ts` `objective`. Pinned by name, not discovered,
@@ -298,7 +298,7 @@ def bound_skill(path: Path) -> str:
     weaker filename guess.
     """
     body = path.read_text(encoding="utf-8")
-    named = re.findall(r"skills/([\w-]+)/SKILL\.md", body)
+    named = re.findall(r".opencode/skills/([\w-]+)/SKILL\.md", body)
     assert named, f"{path.name} names no skill to load"
     return named[0]
 
@@ -312,8 +312,14 @@ class AgentBindingTests(unittest.TestCase):
         self.assertTrue(self.agents(), "no agent definitions to hold")
 
     def test_every_agent_names_its_own_file(self) -> None:
+        # OpenCode format: the filename IS the name, so `name:` is absent.
+        # When present it must still equal the stem -- a stale rename aid,
+        # not a second source of truth.
         for path in self.agents():
-            self.assertEqual(frontmatter(path).get("name"), path.stem, path.name)
+            declared = frontmatter(path).get("name")
+            if declared is None:
+                continue
+            self.assertEqual(declared, path.stem, path.name)
 
     def test_every_agent_names_a_skill_that_exists(self) -> None:
         """By its PATH in the body, never by its filename.
@@ -326,7 +332,7 @@ class AgentBindingTests(unittest.TestCase):
         """
         for path in self.agents():
             body = path.read_text(encoding="utf-8")
-            named = re.findall(r"skills/([\w-]+)/SKILL\.md", body)
+            named = re.findall(r".opencode/skills/([\w-]+)/SKILL\.md", body)
             self.assertTrue(named, f"{path.name} names no skill to load")
             for skill in named:
                 self.assertTrue((SKILLS / skill / "SKILL.md").is_file(),
@@ -371,9 +377,19 @@ class AgentBindingTests(unittest.TestCase):
 
     def test_every_agent_states_its_tools(self) -> None:
         """An agent that declares none inherits everything, which is the
-        capability restriction silently not applied."""
+        capability restriction silently not applied.
+
+        OpenCode format declares `mode: subagent`, a `model:`, and a
+        `permissions:` list instead of Claude's `tools:` line -- same
+        restriction, native syntax."""
         for path in self.agents():
-            self.assertTrue(frontmatter(path).get("tools"), path.name)
+            body = path.read_text(encoding="utf-8")
+            self.assertIn("\nmode: subagent", body,
+                          f"{path.name} is not declared as a subagent")
+            model = frontmatter(path).get("model")
+            self.assertTrue(model, f"{path.name} pins no `model:`")
+            self.assertIn("\npermissions:", body,
+                          f"{path.name} declares no `permissions:` block")
 
     def test_every_agent_names_both_ends_of_its_stretch(self) -> None:
         """An agent whose stretch has no ends is not a stretch, it is a job

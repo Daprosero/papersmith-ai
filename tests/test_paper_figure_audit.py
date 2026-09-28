@@ -15,8 +15,8 @@ import unittest
 from pathlib import Path
 
 FORGE_ROOT = Path(__file__).resolve().parents[1]
-SKILL_SCRIPTS = FORGE_ROOT / "skills" / "paper-writing" / "scripts"
-CORE_FIGURE = FORGE_ROOT / "skills" / "_core" / "figure"
+SKILL_SCRIPTS = FORGE_ROOT / ".opencode" / "skills" / "paper-writing" / "scripts"
+CORE_FIGURE = FORGE_ROOT / ".opencode" / "skills" / "_core" / "figure"
 sys.path.insert(0, str(SKILL_SCRIPTS))
 import paper_block  # noqa: E402
 import paper_coupling_evidence  # noqa: E402

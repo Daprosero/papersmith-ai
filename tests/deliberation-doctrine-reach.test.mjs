@@ -16,7 +16,7 @@
 // cannot drift from the code without one of the two moving first.
 //
 // Scope is DERIVED, never listed: every skill whose `profile.ts` declares an
-// `objective`, plus every `.claude/agents/*.md` bound to one of those skills by
+// `objective`, plus every `.opencode/agents/*.md` bound to one of those skills by
 // its own `Skill:` path. A new agent bound to a deliberation domain is checked
 // the day it is written, without this file being told about it.
 import assert from 'node:assert/strict';
@@ -24,9 +24,9 @@ import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
 
-const ENGINE_PATH = path.resolve('skills/_core/deliberation/engine/cli.mjs');
-const SKILLS_DIR = path.resolve('skills');
-const AGENTS_DIR = path.resolve('.claude/agents');
+const ENGINE_PATH = path.resolve('.opencode/skills/_core/deliberation/engine/cli.mjs');
+const SKILLS_DIR = path.resolve('.opencode/skills');
+const AGENTS_DIR = path.resolve('.opencode/agents');
 const engine = await readFile(ENGINE_PATH, 'utf8');
 
 // The measured reach. `EMISSION` counts every site that attaches the north to
@@ -80,7 +80,7 @@ async function doctrineDocuments() {
 	for (const entry of agents) {
 		if (!entry.isFile() || !entry.name.endsWith('.md')) continue;
 		const text = await readFile(path.join(AGENTS_DIR, entry.name), 'utf8');
-		const bound = text.match(/\.claude\/skills\/([\w-]+)\/SKILL\.md/);
+		const bound = text.match(/\.opencode\/skills\/([\w-]+)\/SKILL\.md/);
 		if (!bound || !skills.includes(bound[1])) continue;
 		docs.push({ label: `agents/${entry.name}`, skill: bound[1], kind: 'agent', text });
 	}

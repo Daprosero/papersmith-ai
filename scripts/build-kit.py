@@ -29,7 +29,7 @@ from papersmith.core import manifest  # noqa: E402
 
 def assemble(quiet: bool = False) -> None:
     files = manifest.walk_kit_files(ROOT)
-    if not any(rel.startswith("skills/") for rel in files):
+    if not any(rel.startswith(".opencode/skills/") for rel in files):
         raise SystemExit(f"refusing to build a kit without skills/ files from {ROOT}")
 
     if KIT.exists():

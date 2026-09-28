@@ -285,7 +285,7 @@ class MutationTests(unittest.TestCase):
         self.assertEqual(real_digests["name"], captured["name"])
 
 
-ENGINE_DIR = FORGE / "skills" / "_core" / "implementation" / "engine"
+ENGINE_DIR = FORGE / ".opencode" / "skills" / "_core" / "implementation" / "engine"
 
 
 class AgreementCheckTests(unittest.TestCase):
@@ -579,7 +579,7 @@ class AgreementDisagreeZ7MutationTests(unittest.TestCase):
         self.addCleanup(shutil.rmtree, target_dir, ignore_errors=True)
         shutil.copytree(roots.fixture_a, target_dir, dirs_exist_ok=True)
 
-        skill_dir = FORGE / "skills" / "experimental-implementation"
+        skill_dir = FORGE / ".opencode" / "skills" / "experimental-implementation"
         env = os.environ.copy()
         env["IMPLEMENTATION_DOMAIN_PROFILE"] = str(skill_dir / "impl_profile.py")
         env["IMPLEMENTATION_PROPOSALS"] = str(roots.proposals)
@@ -657,7 +657,7 @@ class AcknowledgeZ8MutationTests(unittest.TestCase):
         self.addCleanup(shutil.rmtree, target_dir, ignore_errors=True)
         shutil.copytree(roots.fixture_a, target_dir, dirs_exist_ok=True)
 
-        skill_dir = FORGE / "skills" / "experimental-implementation"
+        skill_dir = FORGE / ".opencode" / "skills" / "experimental-implementation"
         env = os.environ.copy()
         env["IMPLEMENTATION_DOMAIN_PROFILE"] = str(skill_dir / "impl_profile.py")
         env["IMPLEMENTATION_PROPOSALS"] = str(roots.proposals)
@@ -720,7 +720,7 @@ class AgreeRegistrationZ10MutationTests(unittest.TestCase):
         (scratch_core / "core" / "engine" / "implementation_engine.py").write_text(
             mutated_source, encoding="utf-8")
 
-        sibling_profile = (FORGE / "skills" / "proposal-implementation"
+        sibling_profile = (FORGE / ".opencode" / "skills" / "proposal-implementation"
                            / "impl_profile.py")
         sibling_cases_path = SEAL_DIR / "cases.json"
         code = (
@@ -805,7 +805,7 @@ class AgreeSuggestionKeyZ11MutationTests(unittest.TestCase):
         # call).
         scratch_forge = Path(tempfile.mkdtemp(prefix="z11-forge-"))
         self.addCleanup(shutil.rmtree, scratch_forge, ignore_errors=True)
-        scratch_core_dir = scratch_forge / "skills" / "_core" / "implementation"
+        scratch_core_dir = scratch_forge / ".opencode" / "skills" / "_core" / "implementation"
         shutil.copytree(ENGINE_DIR.parent, scratch_core_dir,
                         ignore=shutil.ignore_patterns("__pycache__"))
         (scratch_core_dir / "engine" / "implementation_engine.py").write_text(
@@ -829,7 +829,7 @@ class AgreeSuggestionKeyZ11MutationTests(unittest.TestCase):
         # (`os.environ.setdefault`), which this test bypasses entirely by
         # invoking the scratch `implementation_engine.py` module directly.
         env["IMPLEMENTATION_DOMAIN_PROFILE"] = str(
-            FORGE / "skills" / "experimental-implementation"
+            FORGE / ".opencode" / "skills" / "experimental-implementation"
             / "impl_profile.py")
 
         scratch_engine = str(scratch_core_dir / "engine" / "implementation_engine.py")

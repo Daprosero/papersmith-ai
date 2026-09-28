@@ -24,7 +24,7 @@ include = ["papersmith*"]
 papersmith = [
   "templates/*.tpl",
   "_kit/**/*",
-  "_kit/.claude/agents/*.md",
+  "_kit/.opencode/agents/*.md",
   "_kit/guidance/paper-guide/.gitkeep",
   "_kit/skills/kaggle-accounts/store/.gitignore",
 ]

@@ -8,7 +8,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const execFileAsync = promisify(execFile);
-const exportsPath = path.join(root, 'skills/_core/deliberation/engine/exports.ts');
+const exportsPath = path.join(root, '.opencode/skills/_core/deliberation/engine/exports.ts');
 const { createJiti } = await import('jiti');
 const jiti = createJiti(import.meta.url);
 const v2 = await jiti.import(exportsPath);

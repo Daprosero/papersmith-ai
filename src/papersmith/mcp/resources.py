@@ -77,7 +77,7 @@ def _read_runs(workspace: Path) -> str:
 
 
 def _read_paper(argv: list[str], workspace: Path) -> str:
-    script = workspace / "skills" / "paper-writing" / "scripts" / "paper_cli.py"
+    script = workspace / ".opencode" / "skills" / "paper-writing" / "scripts" / "paper_cli.py"
     return _child_text(ChildPlan("paper", tuple([str(script), *argv])), workspace)
 
 

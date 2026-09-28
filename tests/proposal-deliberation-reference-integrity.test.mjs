@@ -17,8 +17,8 @@ const jiti = createJiti(import.meta.url, { alias: {
 	'@earendil-works/pi-ai': path.join(piRoot, 'node_modules/@earendil-works/pi-ai/dist/index.js'),
 	typebox: path.join(piRoot, 'node_modules/typebox/build/index.mjs'),
 } });
-const v2 = await jiti.import(path.resolve('skills/_core/deliberation/engine/exports.ts'));
-const engine = path.resolve('skills/_core/deliberation/engine');
+const v2 = await jiti.import(path.resolve('.opencode/skills/_core/deliberation/engine/exports.ts'));
+const engine = path.resolve('.opencode/skills/_core/deliberation/engine');
 
 /**
  * A non-mathematical `declares`/`cites` vocabulary, built by hand for this test only: a

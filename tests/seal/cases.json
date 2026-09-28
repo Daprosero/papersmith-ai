@@ -424,7 +424,7 @@
    "--session",
    "seal-s1",
    "--file",
-   "<FORGE>/skills/_core/implementation/impl_refusals.py",
+   "<FORGE>/.opencode/skills/_core/implementation/impl_refusals.py",
    "--detail",
    "found an issue"
   ]

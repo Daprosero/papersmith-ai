@@ -21,8 +21,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PLUGIN_RELATIVE = ".opencode/plugins/refuse-offpath-push.js";
-const HOOK_RELATIVE = "skills/remote-execution/scripts/hooks/refuse_offpath_push.py";
-const ADAPTERS_RELATIVE = "skills/remote-execution/scripts/adapters";
+const HOOK_RELATIVE = ".opencode/skills/remote-execution/scripts/hooks/refuse_offpath_push.py";
+const ADAPTERS_RELATIVE = ".opencode/skills/remote-execution/scripts/adapters";
 const SURFACE_TOKEN = "zz_plugin_test_surface";
 
 function makeTmp(prefix) {

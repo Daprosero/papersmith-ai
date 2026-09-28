@@ -16,7 +16,7 @@ import { pathToFileURL } from 'node:url';
 const root = process.cwd();
 const { createJiti } = await import('jiti');
 const jiti = createJiti(import.meta.url);
-const v2 = await jiti.import(path.join(root, 'skills/_core/deliberation/engine/exports.ts'));
+const v2 = await jiti.import(path.join(root, '.opencode/skills/_core/deliberation/engine/exports.ts'));
 
 const digest = (value) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 

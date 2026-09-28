@@ -28,7 +28,7 @@ Sanctioned as a tmpdir fixture profile by `impl_domain_profile._resolve()`'s
 own comment: a "must live under FORGE_ROOT" rule "was considered and
 rejected" for exactly this case. Not picked up as a third skill by
 `test_implementation_domain_lock.py`'s `discover_profiles()`, which globs
-`.claude/skills/*/impl_profile.py` only -- this file lives under `tests/`.
+`.opencode/skills/*/impl_profile.py` only -- this file lives under `tests/`.
 """
 from __future__ import annotations
 
@@ -103,7 +103,7 @@ PROFILE = {
          "dataset_marker": None,
          # `the-agreement-nothing-computes` (Slice D, task 2.7/tasks.md
          # "the two new required leaves; invisible to `discover_profiles()`",
-         # this file lives under `tests/`, not `.claude/skills/*/`):
+         # this file lives under `tests/`, not `.opencode/skills/*/`):
          # syntactically complete, real content is irrelevant, exactly this
          # module's own docstring convention.
          "block_locator": {

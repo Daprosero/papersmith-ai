@@ -8,7 +8,7 @@ import { pathToFileURL } from 'node:url';
 const root = process.cwd();
 const { createJiti } = await import('jiti');
 const jiti = createJiti(import.meta.url);
-const workspace = await jiti.import(path.join(root, 'skills/_core/deliberation/engine/proposal-workspace.ts'));
+const workspace = await jiti.import(path.join(root, '.opencode/skills/_core/deliberation/engine/proposal-workspace.ts'));
 
 const MARKER = '<!-- proposal-workspace:artifact:v1 -->\n';
 

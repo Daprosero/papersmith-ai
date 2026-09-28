@@ -12,8 +12,8 @@ from papersmith.mcp import registry
 from papersmith.mcp.server import catalog
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-PAPER_CLI = REPO_ROOT / "skills" / "paper-writing" / "scripts" / "paper_cli.py"
-SKILL_SCRIPTS = REPO_ROOT / "skills" / "paper-writing" / "scripts"
+PAPER_CLI = REPO_ROOT / ".opencode" / "skills" / "paper-writing" / "scripts" / "paper_cli.py"
+SKILL_SCRIPTS = REPO_ROOT / ".opencode" / "skills" / "paper-writing" / "scripts"
 sys.path.insert(0, str(SKILL_SCRIPTS))
 import paper_cli  # noqa: E402
 

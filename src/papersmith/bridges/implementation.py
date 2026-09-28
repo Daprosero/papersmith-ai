@@ -54,7 +54,7 @@ def execute(workspace: str | Path, args) -> int:
     command, forwarded = command_args(args)
     result = run_script(
         root,
-        "skills/proposal-implementation/scripts/implementation_cli.py",
+        ".opencode/skills/proposal-implementation/scripts/implementation_cli.py",
         [command, *forwarded],
     )
     return emit_result(result)

@@ -171,7 +171,7 @@ class TestHelpers(unittest.TestCase):
         assert (workspace / ".papersmith" / "manifest.json").is_file()
         assert (workspace / ".papersmith" / "config.json").is_file()
         assert (workspace / "papersmith.yaml").is_file()
-        assert (workspace / "CLAUDE.md").is_file()
+        assert (workspace / "AGENTS.md").is_file()
         snapshot = status_module.status(workspace)
         assert snapshot["project_name"] == "e2e-paper"
 
@@ -286,19 +286,19 @@ class TestInitStatus(unittest.TestCase):
         tmp_path = self.new_tmp()
         workspace = _make_workspace(tmp_path)
         _link_node_modules(workspace)
-        (workspace / "CLAUDE.md").write_text(
-            (workspace / "CLAUDE.md").read_text(encoding="utf-8") + "\n<!-- dirty probe -->\n",
+        (workspace / "AGENTS.md").write_text(
+            (workspace / "AGENTS.md").read_text(encoding="utf-8") + "\n<!-- dirty probe -->\n",
             encoding="utf-8",
         )
         snapshot = status_module.status(workspace)
-        assert "CLAUDE.md" in snapshot["framework"]["drifted_files"]
+        assert "AGENTS.md" in snapshot["framework"]["drifted_files"]
         buffer = io.StringIO()
         with contextlib.redirect_stdout(buffer):
             rc = main(["status", str(workspace)])
         # NOTE: status reports drift but still exits 0 in current CLI;
         # the "fail" is the drift detection naming the path, not a non-zero exit.
         assert rc == 0
-        assert "CLAUDE.md" in buffer.getvalue()
+        assert "AGENTS.md" in buffer.getvalue()
 
 
 # --- Unit 2: Ingest/deliberate/implement/remote/run/audit legs + journey ---
@@ -621,16 +621,16 @@ class TestRunAudit(unittest.TestCase):
         with contextlib.redirect_stdout(clean):
             assert main(["audit", str(workspace), "--check-drift"]) == 0
         assert "drift: clean" in clean.getvalue()
-        (workspace / "CLAUDE.md").write_text(
-            (workspace / "CLAUDE.md").read_text(encoding="utf-8") + "\n<!-- drift probe -->\n",
+        (workspace / "AGENTS.md").write_text(
+            (workspace / "AGENTS.md").read_text(encoding="utf-8") + "\n<!-- drift probe -->\n",
             encoding="utf-8")
         drifted = io.StringIO()
         with contextlib.redirect_stdout(drifted):
             rc = main(["audit", str(workspace), "--check-drift"])
         assert rc == DRIFT_ERROR, "drift probe must report gaps, never fix them"
         assert "drift" in drifted.getvalue().lower()
-        assert "CLAUDE.md" in drifted.getvalue(), "drift report must name the path"
-        assert "<!-- drift probe -->" in (workspace / "CLAUDE.md").read_text(encoding="utf-8"), \
+        assert "AGENTS.md" in drifted.getvalue(), "drift report must name the path"
+        assert "<!-- drift probe -->" in (workspace / "AGENTS.md").read_text(encoding="utf-8"), \
             "audit must expose drift as findings only, never repair it"
 
 

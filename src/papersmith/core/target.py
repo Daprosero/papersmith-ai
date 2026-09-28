@@ -47,7 +47,7 @@ def check_target(workspace: str | Path, name: str | None = None) -> tuple[int, d
     if provider == "local":
         return SUCCESS, {"name": target_name, "provider": provider, "reachable": shutil.which("python") is not None or bool(sys.executable)}
     if provider == "kaggle":
-        script = root / "skills/kaggle-accounts/scripts/accounts_cli.py"
+        script = root / ".opencode/skills/kaggle-accounts/scripts/accounts_cli.py"
         result = run_script(root, script, ["list", "--json"], timeout=30)
         return (SUCCESS if result.returncode == 0 else EXECUTION_ERROR), {
             "name": target_name, "provider": provider, "reachable": result.returncode == 0,

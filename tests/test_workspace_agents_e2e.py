@@ -2,8 +2,8 @@
 
 Layer purpose. ``test_agents.py`` holds the deep two-way binding contract for
 the repository's own copies; this module proves the *shipped* copies — the
-``.claude/agents`` tree every ``papersmith init`` workspace carries — arrive
-whole, parse, resolve the skill each stretch loads, and reach every harness
+``.opencode/agents`` tree every ``papersmith init`` workspace carries — arrive
+whole, parse, resolve the skill each stretch loads, and reach the OpenCode
 routing document. An agent that only exists in the repository is not a shipped
 subagent.
 
@@ -23,8 +23,8 @@ from papersmith.generators import check_generated
 
 from workspace_series import REPO_ROOT, make_workspace, new_tmp
 
-ROUTING_DOCS = ("CLAUDE.md", "OPENCODE.md", "PI.md", ".antigravity/rules.md")
-SKILL_BINDING = re.compile(r"skills/([\w-]+)/SKILL\.md")
+ROUTING_DOCS = ("AGENTS.md",)
+SKILL_BINDING = re.compile(r".opencode/skills/([\w-]+)/SKILL\.md")
 
 
 def frontmatter(path: Path) -> dict[str, str]:
@@ -45,14 +45,14 @@ def frontmatter(path: Path) -> dict[str, str]:
 
 
 def agent_files(workspace: Path) -> list[Path]:
-    return sorted((workspace / ".claude" / "agents").glob("*.md"))
+    return sorted((workspace / ".opencode" / "agents").glob("*.md"))
 
 
 class AgentShippingTests(unittest.TestCase):
 
     def test_every_repository_agent_ships_in_the_workspace(self) -> None:
         workspace = make_workspace(new_tmp(self))
-        repo = {path.name for path in (REPO_ROOT / ".claude/agents").glob("*.md")}
+        repo = {path.name for path in (REPO_ROOT / ".opencode/agents").glob("*.md")}
         shipped = {path.name for path in agent_files(workspace)}
         self.assertTrue(repo, "the repository must define agents")
         self.assertEqual(shipped, repo, "the workspace must ship the whole agent tree")
@@ -76,11 +76,14 @@ class AgentContractTests(unittest.TestCase):
         for path in agent_files(workspace):
             with self.subTest(agent=path.name):
                 metadata = frontmatter(path)
-                self.assertEqual(metadata.get("name"), path.stem)
+                # The filename is the name; a `name:` key, when present,
+                # must agree with it.
+                self.assertEqual(metadata.get("name", path.stem), path.stem)
                 self.assertTrue(metadata.get("description", "").strip(),
                                 "an agent without a description opens every session blind")
-                self.assertTrue(metadata.get("tools", "").strip(),
-                                "an agent must declare the tools it may use")
+                self.assertEqual(metadata.get("mode"), "subagent")
+                self.assertTrue(metadata.get("model", "").strip(),
+                                "an agent must pin the model it runs on")
 
     def test_every_agent_skill_binding_resolves_in_the_workspace(self) -> None:
         workspace = make_workspace(new_tmp(self))
@@ -90,7 +93,7 @@ class AgentContractTests(unittest.TestCase):
                 self.assertTrue(named, f"{path.name} names no skill to load")
                 for skill in named:
                     self.assertTrue(
-                        (workspace / "skills" / skill / "SKILL.md").is_file(),
+                        (workspace / ".opencode" / "skills" / skill / "SKILL.md").is_file(),
                         f"{path.name} names {skill}, which the workspace does not ship",
                     )
 
@@ -102,34 +105,27 @@ class AgentRoutingTests(unittest.TestCase):
         metadata = {path.stem: frontmatter(path) for path in agent_files(workspace)}
         for doc_name in ROUTING_DOCS:
             text = (workspace / doc_name).read_text(encoding="utf-8")
-            self.assertIn("skills/", text, f"{doc_name} must route to the skill tree")
+            self.assertIn(".opencode/skills/", text, f"{doc_name} must route to the skill tree")
             for stem, fields in metadata.items():
                 with self.subTest(doc=doc_name, agent=stem):
-                    self.assertIn(f"- `{fields['name']}`", text)
+                    self.assertIn(f"- `{stem}`", text)
                     self.assertIn(fields["description"], text)
 
     def test_generated_projections_are_clean_and_tamper_evident(self) -> None:
         workspace = make_workspace(new_tmp(self))
         self.assertEqual(check_generated(workspace), [],
                          "a fresh workspace must carry no generator drift")
-        pi = workspace / "PI.md"
-        pi.write_text("drift\n", encoding="utf-8")
-        self.assertIn("PI.md", check_generated(workspace))
+        agents = workspace / "AGENTS.md"
+        agents.write_text("drift\n", encoding="utf-8")
+        self.assertIn("AGENTS.md", check_generated(workspace))
 
     def test_agent_tree_is_declared_the_single_source_of_truth(self) -> None:
         workspace = make_workspace(new_tmp(self))
-        claude = (workspace / "CLAUDE.md").read_text(encoding="utf-8")
-        self.assertIn(".claude/agents/", claude)
-        self.assertIn("single source of truth", claude)
+        doc = (workspace / "AGENTS.md").read_text(encoding="utf-8")
+        self.assertIn(".opencode/agents", doc)
 
     def test_generated_routing_docs_document_their_command_surface(self) -> None:
         workspace = make_workspace(new_tmp(self))
-        opencode = (workspace / "OPENCODE.md").read_text(encoding="utf-8")
-        self.assertIn(".opencode/commands/", opencode)
-        self.assertIn("refuse-offpath-push.js", opencode)
-        claude = (workspace / "CLAUDE.md").read_text(encoding="utf-8")
-        self.assertIn(".claude/commands/", claude)
-        for doc_name in ("PI.md", ".antigravity/rules.md"):
-            with self.subTest(doc=doc_name):
-                text = (workspace / doc_name).read_text(encoding="utf-8")
-                self.assertIn("no generated slash commands", text)
+        doc = (workspace / "AGENTS.md").read_text(encoding="utf-8")
+        self.assertIn(".opencode/commands/", doc)
+        self.assertIn("refuse-offpath-push.js", doc)

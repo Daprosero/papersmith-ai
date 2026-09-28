@@ -1,0 +1,2 @@
+# Byte-exact suite: tests compare file bytes, so every checkout must be LF.
+* text=auto eol=lf

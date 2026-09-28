@@ -10,7 +10,7 @@
     "types": ["node"]
   },
   "include": [
-    ".claude/skills/_core/deliberation/engine/**/*.ts",
-    ".claude/skills/*/*.ts"
+    ".opencode/skills/_core/deliberation/engine/**/*.ts",
+    ".opencode/skills/*/*.ts"
   ]
 }

@@ -15,7 +15,7 @@ import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
 const repoRoot = process.cwd();
-const engineDir = path.join(repoRoot, 'skills/_core/deliberation/engine');
+const engineDir = path.join(repoRoot, '.opencode/skills/_core/deliberation/engine');
 const piRoot = path.resolve('.');
 const aiRoot = path.join(piRoot, 'node_modules/@earendil-works/pi-ai/dist');
 const { createJiti } = await import(pathToFileURL(path.join(piRoot, 'node_modules/jiti/lib/jiti.mjs')).href);

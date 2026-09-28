@@ -7,12 +7,12 @@ import { pathToFileURL } from 'node:url';
 
 const { createJiti } = await import('jiti');
 const jiti = createJiti(import.meta.url);
-const workspaceModule = await jiti.import(path.resolve('skills/_core/deliberation/engine/proposal-workspace.ts'));
-const v2 = await jiti.import(path.resolve('skills/_core/deliberation/engine/exports.ts'));
+const workspaceModule = await jiti.import(path.resolve('.opencode/skills/_core/deliberation/engine/proposal-workspace.ts'));
+const v2 = await jiti.import(path.resolve('.opencode/skills/_core/deliberation/engine/exports.ts'));
 // The name of the one file `derive` accepts belongs to the host-chosen domain
 // profile, not to this suite. Read it off the profile so the routing this test
 // pins stays the same test under any domain.
-const { DOMAIN } = await jiti.import(path.resolve('skills/_core/deliberation/engine/domain-profile.ts'));
+const { DOMAIN } = await jiti.import(path.resolve('.opencode/skills/_core/deliberation/engine/domain-profile.ts'));
 const deriveBase = DOMAIN.deriveBase;
 
 test('explicit sourceFilename routes exact composite selection only through its managed document state', async () => {

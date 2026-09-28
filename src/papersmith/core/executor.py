@@ -87,7 +87,7 @@ def _local_job(root: Path, profile_name: str, job_id: str, job: dict[str, Any], 
 
 
 def _remote_command(root: Path, job: dict[str, Any], target: dict, *, consent: str | None) -> list[str]:
-    script = root / "skills" / "remote-execution" / "scripts" / "remote_cli.py"
+    script = root / ".opencode" / "skills" / "remote-execution" / "scripts" / "remote_cli.py"
     entrypoint = None
     for token in shlex.split(job["entrypoint"]):
         if token.startswith("-") or token in {"python", "python3", "pytest", "papermill"}:

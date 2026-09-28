@@ -17,7 +17,7 @@ cómputo remoto, desarrollo y solución de problemas.
 3. [Puesta en marcha](#puesta-en-marcha)
 4. [Cómo funciona — el orden](#cómo-funciona--el-orden)
 5. [El workspace por dentro](#el-workspace-por-dentro)
-6. [Harnesses y proyección de skills](#harnesses-y-proyección-de-skills)
+6. [OpenCode, nativo](#opencode-nativo)
 7. [Los agentes](#los-agentes)
 8. [Anatomía de cada skill](#anatomía-de-cada-skill)
 9. [Los comandos del CLI](#los-comandos-del-cli)
@@ -113,9 +113,8 @@ pipx install "git+https://github.com/Daprosero/papersmith-ai@v0.2.0"
 # 2. Runtime aislado de ingestión (micromamba: Python 3.12, PyTorch, Surya OCR, llama-server)
 python3 scripts/setup_env.py install
 
-# 3. Dependencias de Node y proyección de skills a los harnesses
-npm install
-npm run setup:harnesses
+# 3. Dependencias de Node (el árbol OpenCode ya vive nativo en el checkout)
+pnpm install
 ```
 
 Las dos formas de la línea 1 no son equivalentes. `pipx install .` toma el
@@ -132,10 +131,9 @@ que se lo pidas con `--allow-downgrade`.
 `scripts/setup_env.py install` provisiona **todo** el stack de ingestión en un
 entorno micromamba aparte (CPU o CUDA, según lo que detecte), incluido el
 binario `llama-server` que el OCR necesita — **no** es Ollama ni una
-instalación de Homebrew. `npm run setup:harnesses` enlaza el árbol canónico
-`skills/` dentro de `.claude/skills`, `.pi/skills`, `.opencode/skills` y
-`.antigravity/skills`, con enlaces relativos e idempotentes (ver
-[Harnesses y proyección de skills](#harnesses-y-proyección-de-skills)). La
+instalación de Homebrew. Las skills y los agentes viven nativos bajo
+`.opencode/skills/` y `.opencode/agents/`: no hay proyección ni symlinks que
+mantener. La
 primera corrida de `papersmith ingest` descarga ~1.5 GB de pesos de Surya si el
 entorno no quedó pre-provisionado.
 
@@ -294,8 +292,8 @@ mi-paper/
 │   ├── manifest.json            #   hashes de todo lo que generó el framework
 │   ├── runs_ledger.jsonl        #   cada corrida despachada, en orden
 │   └── version                  #   versión del framework que lo creó
-├── .claude/agents/              # los catorce subagentes (fuente única de verdad)
-├── skills/                      # la copia del kit: las diez skills + _core
+├── .opencode/agents/              # los diecisiete subagentes (fuente única de verdad)
+├── .opencode/skills/              # la copia del kit: las diez skills + _core
 │   └── _core/                   #   los dos motores compartidos (deliberación, implementación)
 ├── sections/                    # los diez contratos de sección (viajan CON contenido, como skills/)
 ├── guidance/
@@ -307,7 +305,8 @@ mi-paper/
 ├── experiments/                 # el protocolo experimental gestionado
 ├── implementations/             # repos destino; cada uno con su propio git
 ├── kaggle-inbox/                # lo que vuelve de los workers remotos
-├── CLAUDE.md / OPENCODE.md / PI.md / .antigravity/rules.md   # routing de harnesses
+├── AGENTS.md                    # routing de OpenCode (generado, no editar)
+├── opencode.json                # permisos, modelo, MCP y plugins (tuyo, editable)
 ├── papersmith.yaml              # configuración del workspace (la tuya, editable)
 ├── package.json                 # dependencias Node del workspace (jiti, typebox), la tuya, editable
 ├── requirements.txt
@@ -376,37 +375,28 @@ ingerido.
 
 ---
 
-## Harnesses y proyección de skills
+## OpenCode, nativo
 
-`skills/` en la raíz del repositorio es la **fuente única de verdad**. Cada
-harness lee skills desde su propia carpeta, así que el script de proyección
-enlaza el árbol canónico en cada una con enlaces **relativos** e idempotentes:
-correrlo de nuevo converge al mismo layout y el checkout sigue siendo
-relocalizable.
+`.opencode/skills/` en la raíz del repositorio es la **fuente única de
+verdad** y `.opencode/agents/` la de los subagentes. No hay proyección ni
+symlinks: OpenCode los lee donde están, en el checkout y en cada workspace
+generado.
 
-```bash
-npm run setup:harnesses      # = bash scripts/setup-harnesses.sh
-```
+| Qué | Dónde vive |
+|-----|------------|
+| Skills | `.opencode/skills/*/SKILL.md` |
+| Subagentes (17, `mode: subagent`, modelo pineado) | `.opencode/agents/*.md` |
+| Comandos `/` (uno por skill, generado) | `.opencode/commands/*.md` |
+| Routing del proyecto | `AGENTS.md` (generado) |
+| Permisos, modelo, MCP | `opencode.json` |
 
-| Harness | Dónde lee las skills | Documento de routing (workspace) |
-|---------|----------------------|-----------------------------------|
-| Claude Code | `.claude/skills/` | `CLAUDE.md` |
-| Pi | `.pi/skills/` | `PI.md` |
-| OpenCode | `.opencode/skills/` | `OPENCODE.md` |
-| Google Antigravity | `.antigravity/skills/` | `.antigravity/rules.md` |
-
-Dentro de un **workspace** generado, la historia es ligeramente distinta y
-conviene saberlo: el workspace embarca el árbol `skills/` completo y el de
-agentes (`.claude/agents/`), y sus routing docs apuntan al árbol canónico
-`skills/*/SKILL.md`. Los documentos de routing son generated projections: la
-fuente real de cada agente es `.claude/agents/*.md` y la de cada skill es su
+Dentro de un **workspace** generado, el workspace embarca el árbol
+`.opencode/skills/` completo y el de agentes (`.opencode/agents/`).
+`AGENTS.md` es una proyección generada: la
+fuente real de cada agente es `.opencode/agents/*.md` y la de cada skill es su
 `SKILL.md`. No edites las proyecciones a mano; se regeneran (y
-`papersmith audit --check-drift` avisa si una se desvió). Para que tu harness
-liste las skills como comandos `/`, corré `npm run setup:harnesses` dentro del
-workspace: enlaza el árbol embarcado en `.claude/skills`, `.pi/skills`,
-`.opencode/skills` y `.antigravity/skills`, igual de relativo e idempotente que
-en el checkout. En este checkout, las proyecciones de comandos slash
-(`.claude/commands/`, `.opencode/commands/`) y el plugin de seguridad de OpenCode
+`papersmith audit --check-drift` avisa si una se desvió). En este checkout, los
+comandos slash (`.opencode/commands/`) y el plugin de seguridad de OpenCode
 se sincronizan con `python scripts/sync-repo-harness.py` (`--check` para CI; no
 tiene script en `package.json` porque el kit lo embarca y el script es sólo del
 repo).
@@ -415,12 +405,14 @@ repo).
 
 ## Los agentes
 
-Un workspace trae **quince subagentes** en `.claude/agents/`. No son
-reemplazos del CLI: son tiradas cortas de trabajo que tu harness lanza (por
-ejemplo, con la Task tool) cuando vos se lo pedís. La forma es siempre la
+Un workspace trae **diecisiete subagentes** en `.opencode/agents/`. No son
+reemplazos del CLI: son tiradas cortas de trabajo que OpenCode lanza (con la
+herramienta `subagent`) cuando vos se lo pedís. La forma es siempre la
 misma — **una tirada entre dos compuertas del operador**: el agente decide
 nada, pregunta nada, y termina reportando qué encontró y cuánto costó
-establecerlo. Las compuertas las abrís y cerrás vos.
+establecerlo. Las compuertas las abrís y cerrás vos. Cada uno pinea su modelo
+(`opencode-go/*`) en su frontmatter; el reparto está sellado en
+`tests/test_opencode_compat.py`.
 
 | Agente | Para qué entra | Skill que carga |
 |--------|----------------|-----------------|
@@ -439,14 +431,14 @@ establecerlo. Las compuertas las abrís y cerrás vos.
 | `figure-auditor` | Compara los componentes declarados en el manifest contra la prosa de la sección y los pasos del pipeline; reporta veredicto estructurado. | `paper-writing` |
 | `insumos-observer` | Lee las cuatro fuentes de entrada declaradas del paper —`proposals/`, `experiments/`, el código del repo destino y sus propias salidas de corrida— y reporta, por cada hecho observable, si se cumple y con qué evidencia. Nunca decide un valor ni corre `declare`. | `paper-writing` |
 | `audit-report` | Audita un sujeto que enumera un conjunto cerrado —operaciones, subcomandos, códigos, assets— buscando la brecha entre lo que su código acepta y lo que su documentación promete. Reporta; nunca repara. | `skill-audit` |
+| `figure-describer` | Describe cada figura ingerida como comentario HTML invisible junto a su referencia, para que los agentes sin visión entiendan cada imagen. Requiere visión; corre tras la extracción. | `paper-ingestion` |
 
 Tres reglas que ordenan todo lo demás:
 
-- **La fuente de verdad es `.claude/agents/`.** Los routing docs de cada
-  harness (`CLAUDE.md`, `PI.md`, `OPENCODE.md`, `.antigravity/rules.md`) listan
-  a los quince enteros, y se generan: si querés cambiar un agente, se cambia
+- **La fuente de verdad es `.opencode/agents/`.** `AGENTS.md` lista
+  a los diecisiete enteros, y se genera: si querés cambiar un agente, se cambia
   ahí, no en la proyección.
-- **Cada agente declara la skill que carga** (`skills/<nombre>/SKILL.md`), y esa
+- **Cada agente declara la skill que carga** (`.opencode/skills/<nombre>/SKILL.md`), y esa
   atadura se verifica: un agente que apunte a una skill que el workspace no
   embarca no llega.
 - **Algunos agentes no son invocados por ningún camino de código**
@@ -565,7 +557,7 @@ consecuencia que conviene entender antes de usarla:
 > irrepetible por diseño. Ingerí primero, deliberá después.
 
 **Qué necesita antes.** Una única preparación por máquina: correr
-`./.claude/skills/paper-ingestion/setup.sh`. Es idempotente y hace dos cosas:
+`./.opencode/skills/paper-ingestion/setup.sh`. Es idempotente y hace dos cosas:
 instala el binario `llama-server` (el motor de OCR; no es un paquete de pip) y crea
 el entorno virtual con `marker-pdf` adentro. La primera ingesta real descarga los
 modelos (~1,5 GB) y los cachea; de ahí en más funciona offline.
@@ -674,7 +666,7 @@ Claves que respeta de `papersmith.yaml`, bajo el bloque `paper_ingestion:`: `eng
 - **Sólo revierte lo que creó.** Una carpeta que ya existía nunca se borra.
 
 **Limitaciones conocidas.** Ninguna abierta hoy. La que figuraba acá
-—`.claude/agents/paper-ingestion.md` describía una interfaz que el script no tiene:
+—`.opencode/agents/paper-ingestion.md` describía una interfaz que el script no tiene:
 `--output-dir`, `--force`, un manifiesto versionado y extracción con PyMuPDF— **ya no
 aplica**: esa definición se corrigió y hoy sólo nombra la skill y delega el contrato en
 ella. Medido: el script expone `--list`, `--file` e `--into`, no importa PyMuPDF y no
@@ -839,7 +831,7 @@ La `r01` no se puede retirar nunca, ni tampoco una revisión que tenga descendie
 | Ciclo de vida | `revision-lifecycle-store.ts`, `revision-lifecycle-transaction.ts` | Retiro y restauración transaccionales, con reversión en orden inverso si algo falla a mitad. |
 | Concurrencia | `mutation-lock.ts` | Impide dos publicaciones simultáneas sobre el mismo archivo. |
 | Token de aceptación | `successor-acceptance-registry.ts` | Ata una vista previa a su aceptación. Vive en memoria, es de un solo uso y muere con el proceso: no se puede aceptar mañana una previa de hoy. |
-| Agente delegado | `.claude/agents/deliberation-publish.md` | El tramo **terminal**, y arranca recién después de que vos aceptaste: resuelve la entrada, compone el reemplazo sustituyendo **adentro** de ella en vez de devolver un bloque pelado, y publica. `Read`, `Bash`, `Glob`, `Grep` — **sin `Write` ni `Edit`**, porque sólo el motor escribe. La deliberación misma no está en su tramo y no puede estarlo: eso no lo cierra nada más que vos. |
+| Agente delegado | `.opencode/agents/deliberation-publish.md` | El tramo **terminal**, y arranca recién después de que vos aceptaste: resuelve la entrada, compone el reemplazo sustituyendo **adentro** de ella en vez de devolver un bloque pelado, y publica. `Read`, `Bash`, `Glob`, `Grep` — **sin `Write` ni `Edit`**, porque sólo el motor escribe. La deliberación misma no está en su tramo y no puede estarlo: eso no lo cierra nada más que vos. |
 
 **Qué escribe en el disco.**
 
@@ -935,7 +927,7 @@ pasaría a ser un acto declarado.
 
 *Ninguna edición a mano está impedida; en el mejor caso se detecta después.* No hay en
 la forja ninguna barrera que frene a alguien —o a un agente— que abra un archivo
-gestionado y lo escriba por afuera del motor. `.claude/settings.json` tiene **un solo**
+gestionado y lo escriba por afuera del motor. `.opencode/settings.json` tiene **un solo**
 hook `PreToolUse` (`refuse_offpath_push.py`, con matcher `Bash`, y es de
 `remote-execution`, no de esta skill), y su clave `permissions` **no tiene ninguna
 entrada `deny`**. **Qué significa para vos:** todo lo que esta skill opone a una edición
@@ -1068,7 +1060,7 @@ distinto en cada uno de los dos flujos**. Vale la pena verla entera antes que na
 **De deliberación hacia acá, tres cosas distintas entran:**
 
 1. **Cuál es la revisión vigente.** Paso 1 de **los dos** flujos, sin excepción:
-   `node .claude/skills/proposal-deliberation/cli.mjs '{ "operation": "STATUS" }'`
+   `node .opencode/skills/proposal-deliberation/cli.mjs '{ "operation": "STATUS" }'`
    → se toma `latest`. La skill **nunca adivina la base y nunca mira `proposals/` a
    ojo**.
 2. **El texto de la revisión.** El motor sí lee el archivo: `revision_source()` lo
@@ -1276,8 +1268,8 @@ igual.
 | `assets/kit/nb/benchmark.py` | Entrena las dos implementaciones bajo una misma reducción acotada. Se niega a correr bajo un intérprete ajeno —porque el tiempo de pared y la memoria pico **son** la medición— y se niega a correr sin cableado declarado. |
 | `assets/kit/nb/verdict.py` | La lógica de juicio: sólo concede un ganador cuando las medias difieren más que el error estándar combinado, y por debajo de tres repeticiones **no da veredicto**, sólo imprime una estimación puntual. |
 | `assets/kit/nb/report_digest.py` | Hashea todo `src/` en un sello que el informe imprime y que `verify` recalcula, para poder probar que un informe está atado al código exacto que lo produjo. |
-| `.claude/agents/implementation-build.md` | El tramo **entre dos compuertas tuyas**: del mapa objeto-a-módulo aprobado al informe de hallazgos que vos decidís. Materializa el andamiaje, escribe un módulo por objeto matemático con su procedencia y sus tests de invariante, barre las configuraciones declaradas, y **falla sobre la admisibilidad de cada remedio ANTES de medirlo**. `Read`, `Write`, `Edit`, `Bash`, `Glob`, `Grep`. No decide ni pregunta: termina reportando qué encontró y cuánto costó establecerlo. |
-| `.claude/agents/implementation-walk.md` | El tramo **de las colocaciones ya decididas al lanzamiento que vos tenés que autorizar**: camina el flujo declarado acto por acto en su propio orden, corre los pasos locales, commitea el producto de cada uno, refresca la posición, y genera las carpetas de trabajo que un paso remoto necesita. `Read`, `Bash`, `Glob`, `Grep` — sin `Write`. **Se detiene en el lanzamiento y no tiene camino para enviar una campaña**, ni para ejecutar un ensayo: ningún acto del motor realiza un ensayo, y `walk` dejó de prometerlo — se detiene ahí y te dice que lo corras a mano, que es lo que la doctrina prescribió siempre. |
+| `.opencode/agents/implementation-build.md` | El tramo **entre dos compuertas tuyas**: del mapa objeto-a-módulo aprobado al informe de hallazgos que vos decidís. Materializa el andamiaje, escribe un módulo por objeto matemático con su procedencia y sus tests de invariante, barre las configuraciones declaradas, y **falla sobre la admisibilidad de cada remedio ANTES de medirlo**. `Read`, `Write`, `Edit`, `Bash`, `Glob`, `Grep`. No decide ni pregunta: termina reportando qué encontró y cuánto costó establecerlo. |
+| `.opencode/agents/implementation-walk.md` | El tramo **de las colocaciones ya decididas al lanzamiento que vos tenés que autorizar**: camina el flujo declarado acto por acto en su propio orden, corre los pasos locales, commitea el producto de cada uno, refresca la posición, y genera las carpetas de trabajo que un paso remoto necesita. `Read`, `Bash`, `Glob`, `Grep` — sin `Write`. **Se detiene en el lanzamiento y no tiene camino para enviar una campaña**, ni para ejecutar un ensayo: ningún acto del motor realiza un ensayo, y `walk` dejó de prometerlo — se detiene ahí y te dice que lo corras a mano, que es lo que la doctrina prescribió siempre. |
 | `walk` | Camina el flujo declarado hacia el rung al que apunta el encabezado de posición. Ejecuta los pasos locales, commitea el producto de cada uno y genera las carpetas de trabajo que un paso remoto necesita. **Se detiene en el lanzamiento**, y también en un ensayo: ningún acto del motor realiza uno. |
 | `step` | Corre **un** paso local declarado, aislado, bajo el venv del propio destino. Nunca el intérprete de la forja. |
 | `position` | El único escritor de la sección de posición de `<Name>/AGREED.md`. Marca qué se midió, qué falta y qué quedó sin medir, y ata cada marca a la revisión y a su sha256 — porque una revisión puede reescribirse en su lugar bajo el mismo nombre de archivo, y sólo el hash lo detecta. |
@@ -2022,8 +2014,8 @@ aparece cuando alguien pide la fuente. Por eso la validación externa corre
 | `preservation-experimental.ts` | `extractAtoms`/`violations`: los seis átomos que no pueden desaparecer en silencio (tabla, baseline, criterio de éxito, figura, URL, dataset) y las reglas duras de forma — tag de verificación, celda vacía, baseline con URL y año, dataset/scheme declarados exactamente una vez. |
 | `reference-experimental.ts` | `declares`/`cites`: un experimento declara `[exp:E1]`; una afirmación cita `[tests:E1]` o `(Exp. E1)` en prosa. Hace visible, mecánicamente, tanto la afirmación sin experimento como el experimento que no sostiene ninguna. |
 | `cli.mjs` | 13 líneas. Fija `DELIBERATION_DOMAIN_PROFILE` a este `profile.ts` y delega el resto entero — argumentos, modo stdin, códigos de salida — al `cli.mjs` del motor compartido. |
-| `.claude/agents/experimental-validation.md` | El tramo `validated`: busca y verifica, nunca compone. Termina cuando ningún hallazgo depende de la memoria en vez de una búsqueda de esta misma corrida. |
-| `.claude/agents/experimental-publish.md` | El tramo terminal: empieza donde el operador ya aceptó el cambio, termina con el sucesor publicado y vigente. No tiene `Write` ni `Edit` — sólo el motor escribe. |
+| `.opencode/agents/experimental-validation.md` | El tramo `validated`: busca y verifica, nunca compone. Termina cuando ningún hallazgo depende de la memoria en vez de una búsqueda de esta misma corrida. |
+| `.opencode/agents/experimental-publish.md` | El tramo terminal: empieza donde el operador ya aceptó el cambio, termina con el sucesor publicado y vigente. No tiene `Write` ni `Edit` — sólo el motor escribe. |
 | `_core/deliberation/engine/` (~50 archivos TS) | El motor compartido con `proposal-deliberation`, sin cambios para admitir este dominio. Ver el desglose completo en la sección de `proposal-deliberation`; un solo archivo — `revision-lifecycle-store.ts` — todavía escribe el marcador de artefacto como literal, a propósito, para un guard Python de cruce de lenguaje (ver **Limitaciones conocidas**). |
 
 **Los seguros.**
@@ -2442,9 +2434,9 @@ donde nada quedó afirmado sin que una corrida lo haya chequeado.
 | `scripts/paper_verify.py` | Ocho chequeos puros sobre esa evidencia (incluyendo `figure-semantics`) — cero I/O propio, reporte de sólo lectura. |
 | `scripts/paper_objective.py` | El norte declarado: `OBJECTIVE_FLOW`, leído por `tests/test_agents.py` vía `ast.literal_eval` — literales puros, sin llamadas ni imports. |
 | `sections/*.md` | Los diez contratos reales, versionados: front-matter JSON + prosa. Entrada real, no fixture. |
-| `.claude/agents/insumos-observer.md` | Lee las **cuatro fuentes declaradas** del paper —`proposals/`, `experiments/`, el código del repo destino y lo que devolvieron sus corridas— y reporta, por cada hecho observable, si está satisfecho y **con qué evidencia**. `Read`, `Glob`, `Grep`. **Nunca decide un valor y nunca corre `declare`**: su informe es lo que una persona lee antes de correrlo ella. El informe se pasa por archivo y `observe` lo valida contra el esquema — nunca se le cree a un agente su propia cuenta. |
-| `.claude/agents/style-sampler.md` | Resuelve el bloque equivalente, **entero**, de cada carpeta de `guidance/` que el registro clasifica como `style-reference`, y lo devuelve **verbatim, nunca recortado**. `Read`, `Glob`, `Grep`. Lo que devuelve es el único material contra el cual una prueba posterior de solapamiento puede comparar un borrador con estilo: si recortara, la prueba compararía contra algo que nadie escribió. |
-| `.claude/agents/figure-auditor.md` | Audita diagramas TikZ contra la prosa de su sección y el manifiesto declarado; corre `figure audit` y reporta el veredicto estructurado. |
+| `.opencode/agents/insumos-observer.md` | Lee las **cuatro fuentes declaradas** del paper —`proposals/`, `experiments/`, el código del repo destino y lo que devolvieron sus corridas— y reporta, por cada hecho observable, si está satisfecho y **con qué evidencia**. `Read`, `Glob`, `Grep`. **Nunca decide un valor y nunca corre `declare`**: su informe es lo que una persona lee antes de correrlo ella. El informe se pasa por archivo y `observe` lo valida contra el esquema — nunca se le cree a un agente su propia cuenta. |
+| `.opencode/agents/style-sampler.md` | Resuelve el bloque equivalente, **entero**, de cada carpeta de `guidance/` que el registro clasifica como `style-reference`, y lo devuelve **verbatim, nunca recortado**. `Read`, `Glob`, `Grep`. Lo que devuelve es el único material contra el cual una prueba posterior de solapamiento puede comparar un borrador con estilo: si recortara, la prueba compararía contra algo que nadie escribió. |
+| `.opencode/agents/figure-auditor.md` | Audita diagramas TikZ contra la prosa de su sección y el manifiesto declarado; corre `figure audit` y reporta el veredicto estructurado. |
 
 **Los seguros.**
 
@@ -2624,7 +2616,7 @@ iteración de cada chequeo declarado está acotada o deriva del sujeto.
 | `references/probes/skill-audit.*.json` (ocho archivos) | Las recetas de autoauditoría: `subcommands`, `structure`, `first-run`, `reading-a`/`reading-b`, `sensitivity`, `self-guarded-facts` (para `inversion`), `exits`, `enumeration-reach`. `skill-audit` es el único sujeto con las nueve dimensiones cubiertas. |
 | `references/probes/proposal-deliberation.accepted-operations.json`, `proposal-implementation.accepted-operations.json` | Recetas `roster` contra sujetos ajenos, con su propia tabla doctrinal como lado documentado. |
 | `references/probes/remote-execution.accepted-operations.json`, `remote-execution.smoke-subcommands.json` | Recetas `roster` contra `remote-execution`, top-level y anidada en `smoke record`. Las únicas dos que declaran `minInterpreterVersion` (ver Los seguros). |
-| `.claude/agents/audit-report.md` | El agente que corre el stretch. Sin `Edit`; sin `stretch:` en su frontmatter, porque esta skill no declara un norte al que un agente pueda amarrar una etapa — es legítimo, no un descuido, y así lo dice el propio archivo. |
+| `.opencode/agents/audit-report.md` | El agente que corre el stretch. Sin `Edit`; sin `stretch:` en su frontmatter, porque esta skill no declara un norte al que un agente pueda amarrar una etapa — es legítimo, no un descuido, y así lo dice el propio archivo. |
 
 **Los seguros.**
 
@@ -2751,7 +2743,7 @@ papersmith init ~/papers/sparse-ae \
 | `--topic TEXT` | Tema de investigación |
 | `--tools TEXT` | Runtimes a provisionar, separados por coma |
 | `--remote {kaggle,local,slurm}` | Target de cómputo por defecto (por defecto: `kaggle`) |
-| `--no-npm` | Saltea el `npm install` best-effort (uso offline/hermético) |
+| `--no-npm` | Saltea el `pnpm install` best-effort (uso offline/hermético) |
 
 Crea `.papersmith/`, `guidance/{paper-guide,reference-papers,data-paper}/`,
 `proposals/`, `paper/`, `experiments/`, `implementations/`, `kaggle-inbox/`,
@@ -2905,7 +2897,7 @@ Audita la estructura y consistencia del workspace. Hoy está atado al sujeto
 
 > **Nota:** `kaggle-accounts` (validate/remove/list/discover/materialize) no
 > tiene todavía un subcomando `papersmith` — corre como
-> `python3 skills/kaggle-accounts/scripts/accounts_cli.py …` o indirectamente
+> `python .opencode/skills/kaggle-accounts/scripts/accounts_cli.py …` o indirectamente
 > vía `target check`.
 
 ### `papersmith mcp {serve,inspect,print-config}`
@@ -2949,7 +2941,7 @@ detalle de ese contrato vive en la sección de `remote-execution` de la
 [Anatomía](#anatomía-de-cada-skill).
 
 **Credenciales y backends.** `remote-execution` soporta múltiples backends (`kaggle`, `colab`):
-- **Kaggle**: corre contra el pool de workers configurados. Sus credenciales viven en el store de `kaggle-accounts` (`skills/kaggle-accounts/store/accounts.json`), nunca salen del disco y nunca se imprimen: `materialize` escribe el token de un worker a un archivo de texto y te dice **dónde**, jamás **qué**. `/kaggle-accounts` valida o remueve cuentas, y `papersmith target check kaggle` las prueba de costado. Un subcomando `papersmith accounts` todavía no existe (follow-up registrado): se invoca como `python3 skills/kaggle-accounts/scripts/accounts_cli.py {list,discover,validate,remove,materialize}`.
+- **Kaggle**: corre contra el pool de workers configurados. Sus credenciales viven en el store de `kaggle-accounts` (`.opencode/skills/kaggle-accounts/store/accounts.json`), nunca salen del disco y nunca se imprimen: `materialize` escribe el token de un worker a un archivo de texto y te dice **dónde**, jamás **qué**. `/kaggle-accounts` valida o remueve cuentas, y `papersmith target check kaggle` las prueba de costado. Un subcomando `papersmith accounts` todavía no existe (follow-up registrado): se invoca como `python .opencode/skills/kaggle-accounts/scripts/accounts_cli.py {list,discover,validate,remove,materialize}`.
 - **Colab**: corre contra sesiones administradas por `google-colab-cli` (`papersmith remote push --backend colab ...`). No es un target de workspace (no se pasa a `init --remote` ni a `target check`), sino un backend directo de `remote-execution`. Requiere tener `google-colab-cli` en `PATH` y el token resuelto en `~/.config/colab-cli/token.json`.
 
 **Cuota real.** Un envío real gasta cuota y horas de GPU. La doctrina de la casa
@@ -2967,7 +2959,7 @@ papersmith-ai/
 │   ├── core/                   # init, status, ingest, upgrade, executor, ledger
 │   ├── bridges/                # Node, Python, deliberación, ejecución remota
 │   └── mcp/                    # servidor stdio Model Context Protocol
-├── skills/                     # árbol canónico de skills, proyectado a los harnesses
+├── .opencode/skills/            # árbol nativo de skills (diez + _core)
 │   ├── _core/                  # motores compartidos de deliberación e implementación
 │   ├── paper-ingestion/        # Marker + Surya OCR + llama-server
 │   ├── proposal-deliberation/  # motor TypeScript: verificación por AST y máquina de estados
@@ -2978,9 +2970,13 @@ papersmith-ai/
 │   ├── remote-execution/       # despacho a cómputo distribuido (Kaggle T4/P100 / local)
 │   ├── kaggle-accounts/        # guardián de credenciales: identidades, nunca valores
 │   └── skill-audit/            # meta-auditor de superficies y promesas
+├── .opencode/agents/            # diecisiete subagentes, modelo pineado por archivo
+├── .opencode/commands/          # comandos / generados (uno por skill)
+├── AGENTS.md                    # routing del proyecto (generado)
+├── opencode.json                # permisos, modelo, MCP (V2)
 ├── guidance/                   # papers de referencia y lineamientos de dominio
 ├── tests/                      # suites Node.js + pytest (meta-auditorías incluidas)
-└── scripts/                    # provisión de entorno y setup de harnesses
+└── scripts/                    # provisión de entorno
 ```
 
 ### Garantías de ingeniería
@@ -2990,8 +2986,8 @@ papersmith-ai/
   ni fusiones de frontera no autorizadas.
 - **Keyless y local-first**: la ingesta corre completamente offline y local, con
   Marker y `llama.cpp`.
-- **Proyección agnóstica de harness**: el árbol canónico `skills/` se proyecta a
-  `.claude/skills`, `.pi/skills`, `.opencode/skills` y `.antigravity/skills`.
+- **Árbol nativo OpenCode**: las skills viven en `.opencode/skills` y los
+  agentes en `.opencode/agents`, sin proyección.
 
 ---
 
@@ -3001,18 +2997,18 @@ Son **dos suites**, no una. Correr una sola y dar un veredicto es un error que
 este repositorio ya cometió, así que las dos van acá con su invocación exacta:
 
 ```bash
-npm test                                  # motor compartido de deliberación — 647 tests
+pnpm test                                  # motor compartido de deliberación — 647 tests
 .venv/bin/python -m pytest                # todo lo demás — 4172 passed, 7 skipped (4179 tests)
-npm run test:all                          # las dos, en orden
+pnpm test:all                          # las dos, en orden
 ```
 
 Medido el 2026-09-20: **647/647** del lado Node y
 **4172 passed** (7 salteados, 4179 recolectados) del lado Python (con `requirements.txt` provisionado).
-`npm run typecheck` corre `tsc` sobre el motor de deliberación y sale limpio.
+`pnpm typecheck` corre `tsc` sobre el motor de deliberación y sale limpio.
 
 **Dos trampas que parecen defectos del repositorio y no lo son.**
 
-*El script de npm fija el perfil de dominio.* `npm test` exporta
+*El script de npm fija el perfil de dominio.* `pnpm test` exporta
 `DELIBERATION_DOMAIN_PROFILE` antes de invocar `node --test`. Llamar `node
 --test` a secas falla cerrado, porque el motor no sirve ningún dominio propio y
 se niega a arrancar sin uno. Es la invocación la que está mal, no el motor. Lo
@@ -3033,7 +3029,7 @@ Los tests de una implementación materializada viven en su repositorio destino y
 en ningún otro lado; borrarlo borra sus tests.
 
 **Un ensayo live, opt-in.** Todo lo de arriba es hermético. Para probar los
-motores reales —`npm install`, provisión de entorno, una ingesta y un agente—
+motores reales —`pnpm install`, provisión de entorno, una ingesta y un agente—
 está `scripts/cli-paper-live-smoke.sh`, que se niega a correr sin
 `PAPERSMITH_LIVE=1` (y acepta `PAPERSMITH_LIVE_INGEST=<pdf>` y
 `PAPERSMITH_LIVE_AGENT=<nombre>` para extender el recorrido).
@@ -3062,18 +3058,17 @@ falta, en vez de inventarlo o saltearlo. Leé el código como una lista de
 tareas — dice exactamente qué entrada falta. No es un error tuyo.
 
 **"`node --test` a secas falla."** Por diseño: el motor de deliberación se niega
-a servir sin un perfil de dominio. Usá `npm test` (que lo fija) o el CLI de la
+a servir sin un perfil de dominio. Usá `pnpm test` (que lo fija) o el CLI de la
 skill. Lo mismo vale para los motores de implementación:
 `IMPLEMENTATION_DOMAIN_PROFILE_REQUIRED` significa que los estás invocando
 directo en vez de a través de `implementation_cli.py`, que es quien los arranca
 con su perfil.
 
-**"El workspace no tiene `.claude/skills`."** Es el estado por defecto: un
-workspace embarca el árbol `skills/` completo y `.claude/agents/`, y sus
-documentos de routing apuntan al árbol canónico `skills/*/SKILL.md`; los
-agentes leen las skills desde ahí. Si querés que tu harness las liste como
-comandos `/`, corré `npm run setup:harnesses` dentro del workspace: crea las
-proyecciones de los cuatro harness, relativas e idempotentes.
+**"El workspace no tiene comandos `/`."** No es el estado por defecto: un
+workspace embarca el árbol `.opencode/skills/` completo y `.opencode/agents/`,
+y `AGENTS.md` apunta al árbol canónico `.opencode/skills/*/SKILL.md`; los
+agentes leen las skills desde ahí. Los comandos `/` viven generados en
+`.opencode/commands/`.
 
 **"`papersmith audit` reporta drift."** Algún archivo generado cambió respecto
 del manifest. No lo edites a mano: corré `papersmith upgrade` (y `--force` si
@@ -3081,7 +3076,7 @@ hace falta) para volver a la versión del framework.
 
 **"No puedo correr `papersmith accounts`."** Todavía no existe (follow-up
 registrado). Usá
-`python3 skills/kaggle-accounts/scripts/accounts_cli.py {list,discover,validate,remove,materialize}`.
+`python .opencode/skills/kaggle-accounts/scripts/accounts_cli.py {list,discover,validate,remove,materialize}`.
 
 **"`status` sale con código 0 aunque haya drift."** Gap conocido y registrado:
 hoy el exit code no es estricto. Para un gate de CI, mirá el JSON (`--json`) en
@@ -3095,13 +3090,12 @@ la primera ingesta.
 
 ## Documentación relacionada
 
-- **Cada skill, su contrato literal**: `skills/<nombre>/SKILL.md` — la fuente de
+- **Cada skill, su contrato literal**: `.opencode/skills/<nombre>/SKILL.md` — la fuente de
   verdad de lo que una skill acepta y promete.
 - **Contexto del proyecto para agentes**: `openspec/project-context.md`.
 - **Lineamientos de dominio**: `guidance/paper-guide/` — la drop-zone que
   `proposal-deliberation` carga como contexto al inicio de cada deliberación.
-- **Provisión del entorno y de los harnesses**: `scripts/setup_env.py` y
-  `scripts/setup-harnesses.sh`.
+- **Provisión del entorno**: `scripts/setup_env.py`.
 - **Suites y gates**: `tests/` y los scripts de `package.json` (`test`,
   `test:all`, `typecheck`).
 - **Servidor MCP y catálogo de herramientas**: [docs/mcp.md](docs/mcp.md).

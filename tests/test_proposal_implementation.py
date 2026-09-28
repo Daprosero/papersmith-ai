@@ -32,16 +32,16 @@ FORGE = Path(__file__).resolve().parents[1]
 #: The published launcher (meaning 1: what a reader runs, what
 #: `CLI_INVOCATION` names) and, unchanged, the skill root's own anchor
 #: (meaning 3: `CLI.parent.parent`, below) -- this path never moved.
-CLI = FORGE / "skills/proposal-implementation/scripts/implementation_cli.py"
+CLI = FORGE / ".opencode/skills/proposal-implementation/scripts/implementation_cli.py"
 #: The engine source (meaning 2: what source-reading guards parse, and what
 #: `impl` resolves to below) -- separate from `CLI` since the launcher
 #: deliberately exposes none of the engine's own attributes (design.md D1,
 #: `tests/test_implementation_profile.py
 #: ::LauncherExposesNoEngineAttributeTests`).
-ENGINE = FORGE / "skills/_core/implementation/engine/implementation_engine.py"
+ENGINE = FORGE / ".opencode/skills/_core/implementation/engine/implementation_engine.py"
 sys.path.insert(0, str(ENGINE.parent))
 from domain_profile import seeded_profile  # noqa: E402  (path set above)
-with seeded_profile(FORGE / "skills/proposal-implementation/impl_profile.py"):
+with seeded_profile(FORGE / ".opencode/skills/proposal-implementation/impl_profile.py"):
     import implementation_engine as impl  # noqa: E402  (path set above)
 # `implementation_engine`'s own import of `impl_layout` etc. already put
 # `_core/implementation` on `sys.path`; this reaches the same module the
@@ -64,7 +64,7 @@ from forge_vocabulary import (  # noqa: E402  (path set above)
 # `FACT_SOURCE_ROOT`/`guidance/` registry already name every root a paper
 # in progress is read from -- reused here rather than re-spelled, so this
 # guard never carries a second, independent copy of that mapping.
-sys.path.insert(0, str(FORGE / "skills" / "paper-writing" / "scripts"))
+sys.path.insert(0, str(FORGE / ".opencode" / "skills" / "paper-writing" / "scripts"))
 import paper_declarations  # noqa: E402  (path set above)
 import paper_guidance  # noqa: E402  (path set above)
 
@@ -81,7 +81,7 @@ KIT = SKILL_ROOT / "assets" / "kit"
 #: that has ever drifted in this forge drifted. Reached by path, exactly the
 #: way `implementation_cli.py` already reaches that skill's `ledger.py`.
 OWNED_REPOSITORY_CELL = (
-    FORGE / "skills/remote-execution/assets/notebook_repo_root.py"
+    FORGE / ".opencode/skills/remote-execution/assets/notebook_repo_root.py"
 )
 PYPROJECT_TEMPLATE = SKILL_ROOT / "assets" / "pyproject.template.toml"
 
@@ -1553,7 +1553,7 @@ import importlib.util  # noqa: E402
 
 _digest_spec = importlib.util.spec_from_file_location(
     "report_digest",
-    FORGE / "skills/proposal-implementation/assets/kit/nb/report_digest.py",
+    FORGE / ".opencode/skills/proposal-implementation/assets/kit/nb/report_digest.py",
 )
 report_digest = importlib.util.module_from_spec(_digest_spec)
 _digest_spec.loader.exec_module(report_digest)
@@ -1700,7 +1700,7 @@ class ReportDigestHereRelocationTests(unittest.TestCase):
             package_dir.mkdir(parents=True)
             placed = package_dir / "report_digest.py"
             shutil.copy(
-                FORGE / ("skills/proposal-implementation/assets/kit"
+                FORGE / (".opencode/skills/proposal-implementation/assets/kit"
                          "/nb/report_digest.py"),
                 placed)
             spec = importlib.util.spec_from_file_location(
@@ -3069,8 +3069,8 @@ class HolderUndeclaredMutationTests(unittest.TestCase):
     what prevents it.
     """
 
-    CORE = FORGE / "skills" / "_core" / "implementation"
-    PROFILE = FORGE / "skills" / "proposal-implementation" / "impl_profile.py"
+    CORE = FORGE / ".opencode" / "skills" / "_core" / "implementation"
+    PROFILE = FORGE / ".opencode" / "skills" / "proposal-implementation" / "impl_profile.py"
 
     def _scratch_engine(self, mutate) -> Path:
         """A scratch copy of the whole `_core/implementation` tree (the
@@ -3270,7 +3270,7 @@ class HolderUndeclaredMutationTests(unittest.TestCase):
         env["IMPLEMENTATION_DOMAIN_PROFILE"] = str(self.PROFILE)
         script2 = (
             "import sys\n"
-            f"sys.path.insert(0, {str(FORGE / 'skills/_core/implementation/engine')!r})\n"
+            f"sys.path.insert(0, {str(FORGE / '.opencode/skills/_core/implementation/engine')!r})\n"
             "import implementation_engine as impl\n" + unmutated_code)
         proc2 = subprocess.run([sys.executable, "-c", script2],
                               capture_output=True, text=True, env=env)
@@ -3364,7 +3364,7 @@ class HolderUndeclaredMutationTests(unittest.TestCase):
         env["IMPLEMENTATION_DOMAIN_PROFILE"] = str(self.PROFILE)
         script2 = (
             "import sys\n"
-            f"sys.path.insert(0, {str(FORGE / 'skills/_core/implementation/engine')!r})\n"
+            f"sys.path.insert(0, {str(FORGE / '.opencode/skills/_core/implementation/engine')!r})\n"
             "import implementation_engine as impl\n" + unmutated_code)
         proc2 = subprocess.run([sys.executable, "-c", script2],
                               capture_output=True, text=True, env=env)
@@ -3382,8 +3382,8 @@ class HolderRepairAmbiguousMutationTests(unittest.TestCase):
     OBSERVED behavior proves the restored guard is what forces the stop.
     """
 
-    CORE = FORGE / "skills" / "_core" / "implementation"
-    PROFILE = FORGE / "skills" / "proposal-implementation" / "impl_profile.py"
+    CORE = FORGE / ".opencode" / "skills" / "_core" / "implementation"
+    PROFILE = FORGE / ".opencode" / "skills" / "proposal-implementation" / "impl_profile.py"
 
     def _scratch_engine(self, mutate) -> Path:
         scratch = Path(tempfile.mkdtemp(prefix="holder-repair-mutation-"))
@@ -9602,7 +9602,7 @@ class MaterializeBenchmarkDeclarationTests(unittest.TestCase):
     is what reports it missing.
     """
 
-    KIT = FORGE / "skills/proposal-implementation/assets/kit"
+    KIT = FORGE / ".opencode/skills/proposal-implementation/assets/kit"
 
     @classmethod
     def setUpClass(cls):
@@ -10219,9 +10219,9 @@ class SearchDeclarationShapeTests(unittest.TestCase):
     template, so the first target to copy the example it was handed hit it.
     """
 
-    KIT_DECLARATION = (FORGE / "skills/proposal-implementation"
+    KIT_DECLARATION = (FORGE / ".opencode/skills/proposal-implementation"
                        / "assets/kit/src_benchmark/__init__.py")
-    DOCTRINE = FORGE / "skills/proposal-implementation/SKILL.md"
+    DOCTRINE = FORGE / ".opencode/skills/proposal-implementation/SKILL.md"
 
     MAPPING_SEARCH = {
         "what": "which free scalar this chooses",
@@ -12312,7 +12312,7 @@ class HarnessPlacementTests(unittest.TestCase):
     under `src/<Package>_Benchmark/`.
     """
 
-    SKILL = FORGE / "skills/proposal-implementation"
+    SKILL = FORGE / ".opencode/skills/proposal-implementation"
     KIT = SKILL / "assets/kit"
     NAME = "Example-Method"
     PACKAGE = "Example_Method"
@@ -12615,7 +12615,7 @@ class FidelityUndeclaredTests(unittest.TestCase):
     the nested block already uses, so the two say the same thing.
     """
 
-    KIT_DECLARATION = (FORGE / "skills/proposal-implementation"
+    KIT_DECLARATION = (FORGE / ".opencode/skills/proposal-implementation"
                        / "assets/kit/src_benchmark/__init__.py")
 
     DECLARED = (
@@ -12771,11 +12771,11 @@ class RevisionDiscoveryMarkerTests(unittest.TestCase):
     was, which is what keeps every hand-authored family working.
     """
 
-    STORE = (FORGE / "skills/_core/deliberation"
+    STORE = (FORGE / ".opencode/skills/_core/deliberation"
              / "engine/revision-lifecycle-store.ts")
     #: The marker's declaration, on the side that declares it. The store reads it
     #: from here now, so this is where the two languages meet.
-    PROFILE = FORGE / "skills/proposal-deliberation/profile.ts"
+    PROFILE = FORGE / ".opencode/skills/proposal-deliberation/profile.ts"
 
     DECLARATION = (
         "__benchmark__ = {\n"
@@ -12868,7 +12868,7 @@ class RevisionDiscoveryMarkerTests(unittest.TestCase):
         remembering to extend a literal.
         """
         declarantes = {}
-        for profile in sorted((FORGE / "skills").glob("*/profile.ts")):
+        for profile in sorted((FORGE / ".opencode" / "skills").glob("*/profile.ts")):
             found = re.search(r'^\s*marker:\s*"((?:[^"\\]|\\.)*)"\s*,?\s*$',
                               profile.read_text(encoding="utf-8"), re.MULTILINE)
             if found:
@@ -17270,7 +17270,7 @@ class JobNotebookPilotJoinTests(unittest.TestCase):
         than asserted here, so the day it stops this class says why instead of
         going quietly green on a state nothing can produce.
         """
-        jobfolder = FORGE / "skills/remote-execution/scripts/jobfolder.py"
+        jobfolder = FORGE / ".opencode/skills/remote-execution/scripts/jobfolder.py"
         source = jobfolder.read_text(encoding="utf-8")
         tree = ast.parse(source)
         kinds = None
@@ -20077,7 +20077,7 @@ class AbsentFileDigestTests(unittest.TestCase):
     def _forge(self):
         root = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, root, ignore_errors=True)
-        (root / "skills" / "some-skill").mkdir(parents=True)
+        (root / ".opencode" / "skills" / "some-skill").mkdir(parents=True)
         return root
 
     def _write(self, forge_root, rel, data):
@@ -20096,19 +20096,19 @@ class AbsentFileDigestTests(unittest.TestCase):
 
     def test_current_file_digest_hashes_a_regular_file(self):
         forge_root = self._forge()
-        path = self._write(forge_root, "skills/some-skill/mod.py", b"x = 1\n")
+        path = self._write(forge_root, ".opencode/skills/some-skill/mod.py", b"x = 1\n")
         self.assertEqual(impl_position.current_file_digest(path),
                          impl_position.digest_bytes(b"x = 1\n"))
 
     def test_current_file_digest_returns_the_sentinel_for_an_absent_path(self):
         forge_root = self._forge()
-        never = forge_root / "skills" / "some-skill" / "never.py"
+        never = forge_root / ".opencode" / "skills" / "some-skill" / "never.py"
         self.assertEqual(impl_position.current_file_digest(never),
                          impl_position.ABSENT_FILE_DIGEST)
 
     def test_current_file_digest_returns_the_sentinel_for_a_directory(self):
         forge_root = self._forge()
-        directory = forge_root / "skills" / "some-skill"
+        directory = forge_root / ".opencode" / "skills" / "some-skill"
         self.assertEqual(impl_position.current_file_digest(directory),
                          impl_position.ABSENT_FILE_DIGEST)
 
@@ -20122,7 +20122,7 @@ class AbsentFileDigestTests(unittest.TestCase):
 
     def test_open_defects_open_while_the_recorded_digest_still_matches(self):
         forge_root = self._forge()
-        path = self._write(forge_root, "skills/some-skill/mod.py", b"x = 1\n")
+        path = self._write(forge_root, ".opencode/skills/some-skill/mod.py", b"x = 1\n")
         rel = str(path.relative_to(forge_root))
         digest = impl_position.digest_bytes(b"x = 1\n")
         events = [{"kind": "defect", "file": rel, "fileSha256": digest}]
@@ -20130,7 +20130,7 @@ class AbsentFileDigestTests(unittest.TestCase):
 
     def test_open_defects_clears_the_moment_the_bytes_change(self):
         forge_root = self._forge()
-        path = self._write(forge_root, "skills/some-skill/mod.py", b"x = 1\n")
+        path = self._write(forge_root, ".opencode/skills/some-skill/mod.py", b"x = 1\n")
         rel = str(path.relative_to(forge_root))
         stale_digest = impl_position.digest_bytes(b"x = 1\n")
         path.write_bytes(b"x = 2\n")
@@ -20139,14 +20139,14 @@ class AbsentFileDigestTests(unittest.TestCase):
 
     def test_open_defects_missing_filesha256_key_fails_closed_open(self):
         forge_root = self._forge()
-        path = self._write(forge_root, "skills/some-skill/mod.py", b"x = 1\n")
+        path = self._write(forge_root, ".opencode/skills/some-skill/mod.py", b"x = 1\n")
         rel = str(path.relative_to(forge_root))
         events = [{"kind": "defect", "file": rel}]  # no fileSha256 key at all
         self.assertEqual(impl_position.open_defects(events, forge_root), events)
 
     def test_open_defects_latest_wins_per_file(self):
         forge_root = self._forge()
-        path = self._write(forge_root, "skills/some-skill/mod.py", b"x = 1\n")
+        path = self._write(forge_root, ".opencode/skills/some-skill/mod.py", b"x = 1\n")
         rel = str(path.relative_to(forge_root))
         current_digest = impl_position.digest_bytes(b"x = 1\n")  # matches the file's live bytes
         stale_digest = impl_position.digest_bytes(b"x = 0\n")    # never matches them
@@ -20169,7 +20169,7 @@ class AbsentFileDigestTests(unittest.TestCase):
         exhibit the property the refusal exists to keep unreachable.
         """
         forge_root = self._forge()
-        never = forge_root / "skills" / "some-skill" / "never.py"
+        never = forge_root / ".opencode" / "skills" / "some-skill" / "never.py"
         rel = str(never.relative_to(forge_root))
         events = [{"kind": "defect", "file": rel,
                   "fileSha256": impl_position.ABSENT_FILE_DIGEST}]
@@ -20456,7 +20456,7 @@ class KitScaffoldLevelsDeclarationJoinTests(unittest.TestCase):
     caller uses.
     """
 
-    KIT_INIT = (FORGE / "skills/proposal-implementation"
+    KIT_INIT = (FORGE / ".opencode/skills/proposal-implementation"
                 / "assets/kit/src_benchmark/__init__.py")
 
     def test_the_shipped_scaffold_s_annotated_levels_literal_is_readable(self):
@@ -20529,7 +20529,7 @@ class KitScaffoldLevelsDeclarationJoinTests(unittest.TestCase):
         is not exercised by the PR10 defect today; confirmed directly against
         the shipped file rather than assumed, not left as a guess.
         """
-        kit_benchmark = (FORGE / "skills/proposal-implementation"
+        kit_benchmark = (FORGE / ".opencode/skills/proposal-implementation"
                           / "assets/kit/nb/benchmark.py")
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
@@ -22238,7 +22238,7 @@ class DefectCommandTests(unittest.TestCase):
         return box
 
     def _forge_file(self, data=b"placeholder = True\n"):
-        path = (FORGE / "skills" / "proposal-implementation" / "scripts"
+        path = (FORGE / ".opencode" / "skills" / "proposal-implementation" / "scripts"
                / f"_defect_fixture_{os.getpid()}_{id(self)}.py")
         path.write_bytes(data)
         self.addCleanup(path.unlink, missing_ok=True)
@@ -22268,7 +22268,7 @@ class DefectCommandTests(unittest.TestCase):
         self.assertEqual(events[0]["fileSha256"], expected_digest)
         self.assertEqual(events[0]["session"], "s1")
         self.assertEqual(events[0]["detail"], "smoke does not import")
-        self.assertTrue(events[0]["file"].startswith("skills/"))
+        self.assertTrue(events[0]["file"].startswith(".opencode/skills/"))
 
     def test_repeat_declaration_with_no_detail_omits_the_key_rather_than_writing_null(self):
         box = self._box()
@@ -22295,7 +22295,7 @@ class DefectCommandTests(unittest.TestCase):
         """The bypass, closed (design decision 1): a declaration against an
         already-absent path is refused, never recorded with the sentinel."""
         box = self._box()
-        never = (FORGE / "skills" / "proposal-implementation" / "scripts"
+        never = (FORGE / ".opencode" / "skills" / "proposal-implementation" / "scripts"
                 / f"_defect_never_{os.getpid()}_{id(self)}.py")
         self.assertFalse(never.exists())
         proc = self.run_cli("defect", "--target", str(box), "--name", "Method",
@@ -22394,7 +22394,7 @@ class OpenDefectLadderTests(unittest.TestCase):
         return box
 
     def _forge_file(self, data=b"placeholder = True\n"):
-        path = (FORGE / "skills" / "proposal-implementation" / "scripts"
+        path = (FORGE / ".opencode" / "skills" / "proposal-implementation" / "scripts"
                / f"_open_defect_ladder_fixture_{os.getpid()}_{id(self)}_{len(self._fixtures)}.py")
         path.write_bytes(data)
         self.addCleanup(path.unlink, missing_ok=True)
@@ -22710,7 +22710,7 @@ class DiagnosticsAnsweringWhileDefectOpenTests(unittest.TestCase):
         return box
 
     def _forge_file(self, data=b"placeholder = True\n"):
-        path = (FORGE / "skills" / "proposal-implementation" / "scripts"
+        path = (FORGE / ".opencode" / "skills" / "proposal-implementation" / "scripts"
                / f"_open_defect_diag_fixture_{os.getpid()}_{id(self)}_{len(self._fixtures)}.py")
         path.write_bytes(data)
         self.addCleanup(path.unlink, missing_ok=True)
@@ -22826,7 +22826,7 @@ class HandoffSurfacesOpenDefectsTests(unittest.TestCase):
         return box
 
     def _forge_file(self, data=b"placeholder = True\n"):
-        path = (FORGE / "skills" / "proposal-implementation" / "scripts"
+        path = (FORGE / ".opencode" / "skills" / "proposal-implementation" / "scripts"
                / f"_handoff_defects_fixture_{os.getpid()}_{id(self)}.py")
         path.write_bytes(data)
         self.addCleanup(path.unlink, missing_ok=True)
@@ -22859,7 +22859,7 @@ class HandoffSurfacesOpenDefectsTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stdout)
         open_defects = json.loads(proc.stdout)["openDefects"]
         self.assertEqual(len(open_defects), 1)
-        self.assertTrue(open_defects[0]["file"].startswith("skills/"))
+        self.assertTrue(open_defects[0]["file"].startswith(".opencode/skills/"))
         self.assertEqual(open_defects[0]["session"], "s7")
         self.assertEqual(open_defects[0]["detail"], "smoke does not import")
 
@@ -25399,8 +25399,8 @@ class CreateOnAbsentMutationTests(unittest.TestCase):
     it in a scratch copy of the engine and observe the mutated build
     attempt a write outside an existing product dir."""
 
-    CORE = FORGE / "skills" / "_core" / "implementation"
-    PROFILE = FORGE / "skills" / "proposal-implementation" / "impl_profile.py"
+    CORE = FORGE / ".opencode" / "skills" / "_core" / "implementation"
+    PROFILE = FORGE / ".opencode" / "skills" / "proposal-implementation" / "impl_profile.py"
 
     def _scratch_engine(self, mutate) -> Path:
         scratch = Path(tempfile.mkdtemp(prefix="create-gate-mutation-"))
@@ -25468,9 +25468,9 @@ class SettleHeadingAbsentMutationTests(unittest.TestCase):
     `WORKSPACE`/`FORGE_ROOT` -- a scratch-copied tree computes a bogus one.
     """
 
-    ENGINE = (FORGE / "skills" / "_core" / "implementation" / "engine"
+    ENGINE = (FORGE / ".opencode" / "skills" / "_core" / "implementation" / "engine"
               / "implementation_engine.py")
-    CLI = (FORGE / "skills" / "proposal-implementation" / "scripts"
+    CLI = (FORGE / ".opencode" / "skills" / "proposal-implementation" / "scripts"
            / "implementation_cli.py")
 
     def _mutate_shipped_engine(self, mutate) -> None:
@@ -28547,7 +28547,7 @@ class OfferCommandTests(unittest.TestCase):
         indirect route to the shared honesty rule is a fact about the
         source, not merely a docstring's claim.
         """
-        core_source = (FORGE / "skills/_core/implementation"
+        core_source = (FORGE / ".opencode/skills/_core/implementation"
                       / "impl_availability.py").read_text(encoding="utf-8")
         tree = ast.parse(core_source)
         calls_position_honest = False
@@ -30405,7 +30405,7 @@ class StepCommandTests(unittest.TestCase):
         (`.get("kind") in {"step"}`, say) fails this test at the caller
         assertion even where the regex above cannot see it."""
         pattern = re.compile(r'kind[\'"]?\s*\)?\s*==\s*[\'"]step[\'"]')
-        remote_source = (FORGE / "skills" / "remote-execution"
+        remote_source = (FORGE / ".opencode" / "skills" / "remote-execution"
                          / "scripts" / "remote_cli.py").read_text(encoding="utf-8")
         self.assertIsNone(pattern.search(remote_source))
         position_source = Path(impl_position.__file__).read_text(encoding="utf-8")
@@ -30906,7 +30906,7 @@ class AnnotatedDeclarationReaderTests(unittest.TestCase):
         readers are not, and widening the repair to them would be repairing
         something that was never broken.
         """
-        hook = (FORGE / "skills/remote-execution/scripts/hooks"
+        hook = (FORGE / ".opencode/skills/remote-execution/scripts/hooks"
                 / "refuse_offpath_push.py")
         text = hook.read_text(encoding="utf-8")
         self.assertIn("getattr", text)
@@ -33690,7 +33690,7 @@ def raised_refusal_codes(source: Path, function: str) -> set[str]:
 #: The forge's shared implementation modules -- the far side of the file
 #: boundary `raised_refusal_codes` stops at, and where a third of the refusals
 #: a gating command can raise actually live.
-CORE_IMPLEMENTATION = FORGE / "skills/_core/implementation"
+CORE_IMPLEMENTATION = FORGE / ".opencode/skills/_core/implementation"
 
 #: A refusal code as every one of them is spelled: screaming snake case, two
 #: segments or more. Used only to recognise a code-shaped string constant when
@@ -37904,7 +37904,7 @@ class SkillRootValueTests(unittest.TestCase):
     def test_skill_root_names_the_skill_not_the_engines_own_parent(self):
         self.assertEqual(
             impl.SKILL_ROOT,
-            FORGE / "skills" / "proposal-implementation")
+            FORGE / ".opencode" / "skills" / "proposal-implementation")
         self.assertNotEqual(impl.SKILL_ROOT, ENGINE.parent)
 
     def test_a_wrong_skill_root_silently_breaks_every_kit_source_lookup(self):

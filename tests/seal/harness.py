@@ -30,14 +30,14 @@ _FORGE = Path(__file__).resolve().parents[2]
 #: invoked path (meaning 1), read back out of the engine's own profile-
 #: derived `CLI_PATH`. Import route only; argv still derives from
 #: `impl.CLI_INVOCATION`, unedited.
-_ENGINE_DIR = (_FORGE / "skills" / "_core" / "implementation"
+_ENGINE_DIR = (_FORGE / ".opencode" / "skills" / "_core" / "implementation"
               / "engine")
 if str(_ENGINE_DIR) not in sys.path:
     sys.path.insert(0, str(_ENGINE_DIR))
 
 from domain_profile import seeded_profile  # noqa: E402  (tests/ on path)
 
-with seeded_profile(_FORGE / "skills" / "proposal-implementation"
+with seeded_profile(_FORGE / ".opencode" / "skills" / "proposal-implementation"
                     / "impl_profile.py"):
     import implementation_engine as impl  # noqa: E402  (path set above)
 

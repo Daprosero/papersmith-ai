@@ -1,4 +1,0 @@
-{
-  "//": "Discovery connectors for paper-writing's literature-search capability (no-claim-without-a-source-that-holds-it). Agent-side only -- the CLI never reads this file and holds no resolution credential of its own (literature-search, Requirement: Discovery Runs Through the Agent's MCP). This is a starter scaffold naming the role, not a working credential: an operator wires a real academic-search MCP server here and fills in its own command/args/env. Resolution and metadata retrieval stay CLI-side over stdlib urllib against OpenAlex/Crossref/arXiv -- see papersmith.yaml's paper_writing.roles.resolution.",
-  "mcpServers": {}
-}

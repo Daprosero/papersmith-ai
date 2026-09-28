@@ -1,8 +1,7 @@
 """Deterministic runtime-document generators.
 
-Claude's ``.claude/agents`` directory is the workspace SSOT. The generated
-entrypoints only route each runtime to that SSOT and the workspace skills; they
-intentionally do not fork agent instructions between harnesses.
+OpenCode's ``.opencode/agents`` directory is the workspace SSOT. The generated
+entrypoints only route OpenCode to that SSOT and the workspace skills.
 """
 
 from __future__ import annotations
@@ -17,20 +16,17 @@ from .core.config import load_papersmith_yaml, load_workspace_config
 from .errors import UserError
 from .render import render_package_template
 
-ALL_TOOLS = ("claude", "opencode", "pi", "antigravity")
+ALL_TOOLS = ("opencode",)
 
 #: Each runtime's *static* entrypoints. Used to answer "is this a known runtime?"
 #: and, for a runtime a workspace does not declare, to name that runtime's
 #: surplus static files in ``audit``. It is deliberately not a complete
 #: rendered-path list and cannot become one: the dynamic
-#: ``.opencode/commands/<name>.md`` and ``.claude/commands/<name>.md`` files are
+#: ``.opencode/commands/<name>.md`` files are
 #: one per discovered skill. :func:`render_files` is the single authority for
 #: the path set.
 TOOL_OUTPUTS = {
-    "claude": ("CLAUDE.md",),
-    "opencode": ("OPENCODE.md",),
-    "pi": ("PI.md", ".pi/gentle-ai/persona.json"),
-    "antigravity": (".antigravity/rules.md",),
+    "opencode": ("AGENTS.md",),
 }
 
 #: Baseline marker for a managed path a run could not synchronize or remove.
@@ -73,7 +69,7 @@ def collect_agents(workspace: Path) -> list[dict[str, str]]:
     description instead of raising.
     """
     agents: list[dict[str, str]] = []
-    agent_dir = workspace / ".claude" / "agents"
+    agent_dir = workspace / ".opencode" / "agents"
     if not fs.is_dir(agent_dir):
         return agents
     try:
@@ -117,7 +113,7 @@ def _agents_block(workspace: Path) -> str:
     )
 
 
-COMMAND_TOOLS = ("opencode", "claude")
+COMMAND_TOOLS = ("opencode",)
 
 
 def derive_command_description(source: str) -> str:
@@ -187,7 +183,7 @@ def collect_commands(workspace: Path, *,
     are skipped silently; nested ``SKILL.md`` files are never command targets.
     """
     commands: list[dict[str, str]] = []
-    skills_dir = workspace / "skills"
+    skills_dir = workspace / ".opencode" / "skills"
     if not fs.is_dir(skills_dir):
         return commands
     try:
@@ -271,10 +267,7 @@ def render_files(workspace: Path, context: dict[str, Any] | None = None,
     ctx = _context_with_defaults(context or context_for_workspace(workspace))
     rendered: dict[str, str] = {".gitignore": render_package_template("gitignore.tpl", ctx)}
     templates = {
-        "claude": ("CLAUDE.md", "claude.md.tpl"),
-        "opencode": ("OPENCODE.md", "opencode.md.tpl"),
-        "pi": ("PI.md", "pi.md.tpl"),
-        "antigravity": (".antigravity/rules.md", "antigravity-rules.md.tpl"),
+        "opencode": ("AGENTS.md", "agents.md.tpl"),
     }
     commands: list[dict[str, str]] | None = None
     if any(tool in COMMAND_TOOLS for tool in tools):
@@ -284,19 +277,17 @@ def render_files(workspace: Path, context: dict[str, Any] | None = None,
             raise UserError(f"unsupported runtime generator: {tool}")
         output, template = templates[tool]
         rendered[output] = render_package_template(template, ctx)
-        if tool == "pi":
-            rendered[".pi/gentle-ai/persona.json"] = render_package_template("persona.json.tpl", ctx)
         if tool == "opencode":
             rendered["opencode.json"] = render_package_template("opencode.json.tpl", ctx)
             rendered[".opencode/plugins/refuse-offpath-push.js"] = render_package_template(
                 "opencode-plugin.js.tpl", ctx)
         if tool in COMMAND_TOOLS and commands:
-            prefix = ".opencode/commands" if tool == "opencode" else ".claude/commands"
+            prefix = ".opencode/commands"
             for command in commands:
                 command_ctx = dict(ctx)
                 command_ctx.update({
                     "skill_name": command["name"],
-                    "skill_path": f"skills/{command['name']}/SKILL.md",
+                    "skill_path": f".opencode/skills/{command['name']}/SKILL.md",
                     "description_yaml": yaml_double_quote(command["description"]),
                 })
                 rendered[f"{prefix}/{command['name']}.md"] = render_package_template(

@@ -30,7 +30,7 @@ def _surplus_static_files(root: Path, active: tuple[str, ...]) -> list[str]:
 
     A workspace created with a wider tool set keeps those files: they are
     ``reported`` here and never deleted. Dynamic outputs such as
-    ``.claude/commands/`` are deliberately excluded — a never-baselined command
+    ``.opencode/commands/`` are deliberately excluded — a never-baselined command
     file is user data, and a baselined one is handled by ``upgrade``'s orphan
     rule.
     """
@@ -46,15 +46,15 @@ def _surplus_static_files(root: Path, active: tuple[str, ...]) -> list[str]:
 
 def execute(workspace: str | Path, *, check_drift: bool = False) -> int:
     root = Path(workspace).expanduser().resolve()
-    spec = root / "skills/skill-audit/references/probes/skill-audit.subcommands.json"
+    spec = root / ".opencode/skills/skill-audit/references/probes/skill-audit.subcommands.json"
     if not fs.is_regular_file(spec):
         raise UserError(f"missing structural audit probe: {spec}")
     result = run_script(
         root,
-        "skills/skill-audit/scripts/audit_cli.py",
+        ".opencode/skills/skill-audit/scripts/audit_cli.py",
         [
             "roster",
-            "--subject", str(root / "skills/skill-audit"),
+            "--subject", str(root / ".opencode/skills/skill-audit"),
             "--probe-spec", str(spec),
             "--repo-root", str(root),
         ],

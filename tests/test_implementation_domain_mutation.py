@@ -47,8 +47,8 @@ import unittest
 from pathlib import Path
 
 FORGE = Path(__file__).resolve().parents[1]
-ENGINE_DIR = FORGE / "skills/_core/implementation/engine"
-REAL_PROFILE = FORGE / "skills/proposal-implementation/impl_profile.py"
+ENGINE_DIR = FORGE / ".opencode/skills/_core/implementation/engine"
+REAL_PROFILE = FORGE / ".opencode/skills/proposal-implementation/impl_profile.py"
 CASES_PATH = FORGE / "tests/seal/cases.json"
 
 import sys  # noqa: E402
@@ -470,7 +470,7 @@ class SeedForcedNoneMutationTests(unittest.TestCase):
         self.scratch_forge = Path(tempfile.mkdtemp(prefix="x5-forge-"))
         self.addCleanup(shutil.rmtree, self.scratch_forge, ignore_errors=True)
         self.scratch_core = (
-            self.scratch_forge / "skills" / "_core" / "implementation")
+            self.scratch_forge / ".opencode" / "skills" / "_core" / "implementation")
         shutil.copytree(ENGINE_DIR.parent, self.scratch_core,
                         ignore=shutil.ignore_patterns("__pycache__"))
         (self.scratch_forge / "implementations").mkdir(parents=True)
@@ -785,7 +785,7 @@ class KitLockHonestyTests(unittest.TestCase):
 
     def test_a_scratch_kit_mutation_reddens_the_agreement_and_the_shipped_file_is_untouched(self):
         real_module_path = (
-            FORGE / "skills/proposal-implementation/assets/kit/src/module.py")
+            FORGE / ".opencode/skills/proposal-implementation/assets/kit/src/module.py")
         real_source = real_module_path.read_text(encoding="utf-8")
         self.assertIn('"equations": ["{{EQUATION}}"],', real_source)
 

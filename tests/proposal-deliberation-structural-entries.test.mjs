@@ -17,7 +17,7 @@ const jiti = createJiti(import.meta.url, { alias: {
 	'@earendil-works/pi-ai': path.join(piRoot, 'node_modules/@earendil-works/pi-ai/dist/index.js'),
 	typebox: path.join(piRoot, 'node_modules/typebox/build/index.mjs'),
 } });
-const v2 = await jiti.import(path.resolve('skills/_core/deliberation/engine/exports.ts'));
+const v2 = await jiti.import(path.resolve('.opencode/skills/_core/deliberation/engine/exports.ts'));
 
 // 2.1.1: the exact structural-index snapshot for a table/figure-free document, captured
 // against the pre-change engine. Any drift here for a document with no tables or figures

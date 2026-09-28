@@ -10,7 +10,7 @@ const repositoryRoot = path.resolve('.');
 const typeboxEntry = createRequire(import.meta.url).resolve('typebox');
 const { createJiti } = await import('jiti');
 const jiti = createJiti(import.meta.url, { alias: { typebox: typeboxEntry } });
-const v2 = await jiti.import(path.join(repositoryRoot, 'skills/_core/deliberation/engine/exports.ts'));
+const v2 = await jiti.import(path.join(repositoryRoot, '.opencode/skills/_core/deliberation/engine/exports.ts'));
 
 const marker = '<!-- proposal-workspace:artifact:v1 -->\n';
 

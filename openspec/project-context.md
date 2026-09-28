@@ -4,12 +4,12 @@
 - Init date: `2026-09-09`
 - Artifact store: `both` (hybrid: `openspec/` files + Engram observations)
 - Strict TDD: `true` (marker in `openspec/config.yaml`; test runner present)
-- Full test command: `npm run test:all` (`npm test` + `pytest`)
+- Full test command: `pnpm test:all` (`pnpm test` + `pytest`)
 
 ## Workspace
 - Root: `/home/carlos/Documents/projects/papersmith-ai`
 - Git root: recognized by `git rev-parse`
-- Entrypoints: `CLAUDE.md`, `OPENCODE.md`, `PI.md`, `.antigravity/rules.md` (all route to `openspec/project-context.md`, `guidance/paper-guide/`, `skills/*/SKILL.md`)
+- Entrypoints: `AGENTS.md` (routes to `openspec/project-context.md`, `guidance/paper-guide/`, `.opencode/skills/*/SKILL.md`)
 - No `AGENTS.md`, `GEMINI.md`, or `.cursorrules` present
 
 ## Stack signals
@@ -18,22 +18,22 @@
 | Runtime | Mixed Python (>=3.11) + Node.js (ESM, `type: module`) repository |
 | Python | src-layout package `papersmith` (`src/papersmith/{core,bridges,mcp}`, `pipx install .`, entrypoint `papersmith.cli:main`) |
 | Python deps | `requests`, `nbformat`, `nbclient`, `ipykernel`, `numpy`, `pytest`, `torch`, `PyMuPDF`, `PyYAML`, `jsonschema`, `kagglesdk==0.1.37` (`requirements.txt`) |
-| Node deps | `jiti`, `typebox`, `typescript`, `@types/node` (`package.json`, `tsconfig.json`); `npm run typecheck` (`tsc`); no eslint/prettier |
+| Node deps | `jiti`, `typebox`, `typescript`, `@types/node` (`package.json`, `tsconfig.json`); `pnpm typecheck` (`tsc`); no eslint/prettier |
 | Config | `pyproject.toml` (setuptools src-layout, pytest `testpaths`, ruff lint `E,F,W,I`), `papersmith.yaml` (ingestion engine/mode) |
 | Measured runtime | `node v26.8.1`, `.venv` Python `3.14.7`, `pytest 9.1.0` |
-| Repo markers | `requirements.txt`, `tests/`, `skills/`, `src/`, `docs/`, `guidance/`, `scripts/`, `openspec/`, `papersmith.yaml`, `tsconfig.json` |
+| Repo markers | `requirements.txt`, `tests/`, `.opencode/`, `src/`, `docs/`, `guidance/`, `scripts/`, `openspec/`, `papersmith.yaml`, `tsconfig.json` |
 
 ## Architecture
 - `src/papersmith/core/` — init, status, ingest, upgrade, executor, ledger
 - `src/papersmith/bridges/` — Node, Python, deliberation, remote-execution bridges
 - `src/papersmith/mcp/` — stdio Model Context Protocol server exposing workspace and paper-writing verbs
-- `skills/` — canonical skill tree (`experimental-deliberation`, `experimental-implementation`, `figure-review`, `kaggle-accounts`, `paper-ingestion`, `paper-writing`, `proposal-deliberation`, `proposal-implementation`, `remote-execution`, `skill-audit`), projected into `.claude/skills`, `.opencode/skills`, `.pi/skills`, `.antigravity/skills` by `npm run setup:harnesses`
+- `.opencode/skills/` — native skill tree (`experimental-deliberation`, `experimental-implementation`, `figure-review`, `kaggle-accounts`, `paper-ingestion`, `paper-writing`, `proposal-deliberation`, `proposal-implementation`, `remote-execution`, `skill-audit`); `.opencode/agents/` holds the 17 subagents
 - `guidance/paper-guide/` — domain guidelines; `scripts/setup_env.py` — isolated runtime provisioning
-- CI (`.github/workflows/test.yml`): Node suite (`npm ci` + `npm test`) and Python suite (`pip install -r requirements.txt`, `pytest` on 3.11/3.12)
+- CI (`.github/workflows/test.yml`): Node suite (`pnpm install --frozen-lockfile` + `pnpm test`) and Python suite (`pip install -r requirements.txt`, `pytest` on 3.11/3.12)
 
 ## SDD config summary
 - `openspec/config.yaml` exists with `strict_tdd: true`
-- `apply.test_command` and `verify.test_command` both point to `npm run test:all`
+- `apply.test_command` and `verify.test_command` both point to `pnpm test:all`
 - `openspec/changes/` holds active changes; `openspec/changes/archive/` holds completed changes
 - `openspec/specs/` is the (currently empty) source-of-truth directory
 - `.atl/skill-registry.md` indexes project/user skills (refreshed 2026-09-09)

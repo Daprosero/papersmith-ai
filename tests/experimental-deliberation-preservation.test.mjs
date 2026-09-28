@@ -23,7 +23,7 @@ const jiti = createJiti(import.meta.url, { alias: {
     typebox: path.join(piRoot, 'node_modules/typebox/build/index.mjs'),
 } });
 const { extractAtoms, violations } = await jiti.import(
-    path.join(repoRoot, 'skills/experimental-deliberation/preservation-experimental.ts'));
+    path.join(repoRoot, '.opencode/skills/experimental-deliberation/preservation-experimental.ts'));
 
 const kinds = (source) => [...extractAtoms(source).values()].map((atom) => atom.kind).sort();
 const rules = (source) => violations(source).map((entry) => entry.rule).sort();

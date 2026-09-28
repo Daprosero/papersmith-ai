@@ -11,7 +11,7 @@ const repositoryRoot=path.resolve('.');
 const typeboxEntry=createRequire(import.meta.url).resolve('typebox');
 const {createJiti}=await import('jiti');
 const jiti=createJiti(import.meta.url,{alias:{typebox:typeboxEntry}});
-const v2=await jiti.import(path.resolve('skills/_core/deliberation/engine/exports.ts'));
+const v2=await jiti.import(path.resolve('.opencode/skills/_core/deliberation/engine/exports.ts'));
 const marker='<!-- proposal-workspace:artifact:v1 -->\n';
 const r01='research-concept-r01.md';
 const r02='research-concept-r02.md';
@@ -46,8 +46,8 @@ async function fixture(options={}) {
 }
 async function productiveTool(root) {
  await mkdir(path.join(root,'.pi'),{recursive:true});
- await cp(path.join(repositoryRoot,'skills/_core/deliberation/engine'),path.join(root,'skills/_core/deliberation/engine'),{recursive:true});
- const workspace=await jiti.import(path.join(root,'skills/_core/deliberation/engine/proposal-workspace.ts'));
+ await cp(path.join(repositoryRoot,'.opencode/skills/_core/deliberation/engine'),path.join(root,'.opencode/skills/_core/deliberation/engine'),{recursive:true});
+ const workspace=await jiti.import(path.join(root,'.opencode/skills/_core/deliberation/engine/proposal-workspace.ts'));
  const tools=[];
  workspace.default({registerTool:tool=>tools.push(tool),on:()=>{}});
  const tool=tools.find(candidate=>candidate.name==='proposal_deliberation_execute');

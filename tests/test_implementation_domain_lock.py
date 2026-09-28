@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 FORGE = Path(__file__).resolve().parents[1]
-SKILLS_DIR = FORGE / "skills"
+SKILLS_DIR = FORGE / ".opencode" / "skills"
 ENGINE_DIR = SKILLS_DIR / "_core" / "implementation" / "engine"
 ENGINE_FILE = ENGINE_DIR / "implementation_engine.py"
 

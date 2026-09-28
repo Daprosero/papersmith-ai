@@ -12,7 +12,7 @@ const piRoot = path.resolve('.');
 const { createJiti } = await import(pathToFileURL(path.join(piRoot, 'node_modules/jiti/lib/jiti.mjs')).href);
 const jiti = createJiti(import.meta.url, { alias: { '@earendil-works/pi-coding-agent': path.join(piRoot, 'dist/index.js'), '@earendil-works/pi-ai/compat': path.join(piRoot, 'node_modules/@earendil-works/pi-ai/dist/compat.js'), '@earendil-works/pi-ai': path.join(piRoot, 'node_modules/@earendil-works/pi-ai/dist/index.js'), typebox: path.join(piRoot, 'node_modules/typebox/build/index.mjs') } });
 
-const engineDir = 'skills/_core/deliberation/engine';
+const engineDir = '.opencode/skills/_core/deliberation/engine';
 const { createProposalWorkspaceTool, createDocumentOperationGuard } = await jiti.import(path.resolve(`${engineDir}/proposal-workspace.ts`));
 const { ProposalDeliberationOrchestrator } = await jiti.import(path.resolve(`${engineDir}/orchestrator.ts`));
 const { ProposalWorkspaceAdapter } = await jiti.import(path.resolve(`${engineDir}/proposal-workspace-adapter.ts`));

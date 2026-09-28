@@ -18,7 +18,7 @@ def node_binary() -> str | None:
 
 
 def engine_path(workspace: Path) -> Path:
-    path = workspace / "skills" / "proposal-deliberation" / "cli.mjs"
+    path = workspace / ".opencode" / "skills" / "proposal-deliberation" / "cli.mjs"
     if not fs.is_regular_file(path):
         raise SourceError(f"missing deliberation engine: {path}")
     return path
@@ -42,7 +42,7 @@ def _environment(workspace: Path) -> dict[str, str]:
     env.setdefault("PROPOSAL_DELIBERATION_SESSION_ID", "papersmith-cli-session")
     env.setdefault(
         "DELIBERATION_DOMAIN_PROFILE",
-        str(workspace / "skills" / "proposal-deliberation" / "profile.ts"),
+        str(workspace / ".opencode" / "skills" / "proposal-deliberation" / "profile.ts"),
     )
     return env
 

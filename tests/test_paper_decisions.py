@@ -14,6 +14,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -24,7 +25,7 @@ import uuid
 from pathlib import Path
 
 FORGE_ROOT = Path(__file__).resolve().parent.parent
-SKILL_SCRIPTS = FORGE_ROOT / "skills" / "paper-writing" / "scripts"
+SKILL_SCRIPTS = FORGE_ROOT / ".opencode" / "skills" / "paper-writing" / "scripts"
 CLI = SKILL_SCRIPTS / "paper_cli.py"
 sys.path.insert(0, str(SKILL_SCRIPTS))
 import paper_block  # noqa: E402
@@ -40,13 +41,13 @@ import paper_couplings  # noqa: E402
 import paper_coupling_evidence  # noqa: E402
 import paper_cli  # noqa: E402
 
-sys.path.insert(0, str(FORGE_ROOT / "skills" / "_core" / "implementation"))
+sys.path.insert(0, str(FORGE_ROOT / ".opencode" / "skills" / "_core" / "implementation"))
 from impl_refusals import Refused  # noqa: E402
 
 sys.path.insert(0, str(FORGE_ROOT / "tests"))
 from paper_mutation import _run_against_mutant  # noqa: E402
 
-AGENTS_DIR = FORGE_ROOT / ".claude" / "agents"
+AGENTS_DIR = FORGE_ROOT / ".opencode" / "agents"
 
 
 def _assert_guard_failed_under_mutation(case: unittest.TestCase, proc) -> None:
@@ -3115,7 +3116,7 @@ class PlanTests(unittest.TestCase):
 
 class InsumosObserverThreatMatrixTests(unittest.TestCase):
     """Threat matrix (design.md): process integration. `insumos-observer`'s
-    frontmatter `tools` contains none of Write, Edit, Bash — the capability
+    frontmatter `permissions` denies edit and shell — the capability
     layer that survives non-compliance even if its own body were ever
     edited to suggest otherwise."""
 
@@ -3123,13 +3124,20 @@ class InsumosObserverThreatMatrixTests(unittest.TestCase):
         path = AGENTS_DIR / "insumos-observer.md"
         text = path.read_text(encoding="utf-8")
         header = text.split("---\n", 2)[1]
-        tools_line = next(line for line in header.splitlines() if line.startswith("tools:"))
-        tools = {tool.strip() for tool in tools_line.split(":", 1)[1].split(",")}
-        self.assertTrue(tools, "insumos-observer.md declares no tools at all")
+        rules = re.findall(
+            r"-\s*action:\s*(\S+)\s*\n\s*resource:.*\n\s*effect:\s*(\S+)",
+            header)
+        self.assertTrue(rules, "insumos-observer.md declares no permissions at all")
+        allowed = {action for action, effect in rules if effect == "allow"}
         self.assertTrue(
-            tools.isdisjoint({"Write", "Edit", "Bash"}),
-            f"insumos-observer.md grants {tools & {'Write', 'Edit', 'Bash'}}, "
+            allowed.isdisjoint({"edit", "shell"}),
+            f"insumos-observer.md allows {allowed & {'edit', 'shell'}}, "
             "which lets it write a record or invoke declare directly",
+        )
+        denied = {action for action, effect in rules if effect == "deny"}
+        self.assertTrue(
+            {"edit", "shell"} <= denied,
+            "insumos-observer.md must explicitly deny edit and shell",
         )
 
 
@@ -4081,7 +4089,7 @@ class ReconcileObservationReportTests(unittest.TestCase):
         self,
     ) -> None:
         """`implementation` AND `results` both map to the `implementation`
-        root (`.claude/agents/insumos-observer.md`); `results` is reported
+        root (`.opencode/agents/insumos-observer.md`); `results` is reported
         satisfied here precisely so only `implementation` disagrees."""
         report = {
             "implementation": {"satisfied": False, "evidence": []},

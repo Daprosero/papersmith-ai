@@ -22,8 +22,8 @@ const jiti = createJiti(import.meta.url, { alias: {
 	'@earendil-works/pi-ai': path.join(piRoot, 'node_modules/@earendil-works/pi-ai/dist/index.js'),
 	typebox: path.join(piRoot, 'node_modules/typebox/build/index.mjs'),
 } });
-const AN = await jiti.import(path.resolve('skills/_core/deliberation/engine/artifact-naming.ts'));
-const { loadDocumentState } = await jiti.import(path.resolve('skills/_core/deliberation/engine/document-state.ts'));
+const AN = await jiti.import(path.resolve('.opencode/skills/_core/deliberation/engine/artifact-naming.ts'));
+const { loadDocumentState } = await jiti.import(path.resolve('.opencode/skills/_core/deliberation/engine/document-state.ts'));
 
 // --- STRICT ---------------------------------------------------------------
 

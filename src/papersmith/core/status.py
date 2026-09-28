@@ -99,7 +99,7 @@ def _implementation_status(root: Path) -> list[dict[str, Any]]:
 
 
 def _account_status(root: Path) -> dict[str, Any]:
-    script = root / "skills" / "kaggle-accounts" / "scripts" / "accounts_cli.py"
+    script = root / ".opencode" / "skills" / "kaggle-accounts" / "scripts" / "accounts_cli.py"
     if not fs.is_regular_file(script):
         return {"available": False, "count": 0, "warning": "accounts skill is missing"}
     try:

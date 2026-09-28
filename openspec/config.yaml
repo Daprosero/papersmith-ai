@@ -4,7 +4,7 @@ context: |
   Python src-layout CLI (`src/papersmith`, `pipx install .`); Node skills via jiti + typebox.
   Canonical skills in `skills/` projected into `.claude/.opencode/.pi/.antigravity/skills`.
   Tests: Node built-in `node:test` (52 .mjs) + pytest (18 test_*.py); CI runs both.
-  Full suite: `npm run test:all`. Lint config: ruff (pyproject.toml); no type checker/formatter configured.
+  Full suite: `pnpm test:all`. Lint config: ruff (pyproject.toml); no type checker/formatter configured.
 rules:
   proposal:
     require_problem_statement: true
@@ -15,27 +15,27 @@ rules:
   tasks:
     protect_review_workload: true
   apply:
-    test_command: "npm run test:all"
+    test_command: "pnpm test:all"
   verify:
-    test_command: "npm run test:all"
+    test_command: "pnpm test:all"
 testing:
   detected: "2026-09-09"
   runner:
-    command: "npm run test:all"
+    command: "pnpm test:all"
     framework: "node:test + pytest"
   layers:
     unit: "node:test suites + pytest suites"
     integration: "pytest bridge/executor/remote-execution + Node lifecycle suites (run inside standard runners)"
-    e2e: "node:test *-e2e.test.mjs (5 files, run inside npm test) + pytest tests/test_cli_paper_e2e.py (hermetic CLI paper journey) + pytest tests/test_workspace_commands_e2e.py + pytest tests/test_workspace_skills_e2e.py + pytest tests/test_workspace_agents_e2e.py (from-scratch workspace series: every command, skill, and subagent; opt-in live smoke in scripts/cli-paper-live-smoke.sh)"
+    e2e: "node:test *-e2e.test.mjs (5 files, run inside pnpm test) + pytest tests/test_cli_paper_e2e.py (hermetic CLI paper journey) + pytest tests/test_workspace_commands_e2e.py + pytest tests/test_workspace_skills_e2e.py + pytest tests/test_workspace_agents_e2e.py (from-scratch workspace series: every command, skill, and subagent; opt-in live smoke in scripts/cli-paper-live-smoke.sh)"
   commands:
     unit:
-      - "npm test"
+      - "pnpm test"
       - "pytest"
     integration:
-      - "npm test"
+      - "pnpm test"
       - "pytest"
     e2e:
-      - "npm test"
+      - "pnpm test"
       - "pytest tests/test_cli_paper_e2e.py"
       - "pytest tests/test_workspace_commands_e2e.py tests/test_workspace_skills_e2e.py tests/test_workspace_agents_e2e.py"
       - "PAPERSMITH_LIVE=1 bash scripts/cli-paper-live-smoke.sh  # opt-in, never CI"

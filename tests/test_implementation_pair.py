@@ -45,7 +45,7 @@ if str(TESTS_DIR) not in sys.path:
 
 from domain_profile import seeded_profile  # noqa: E402  (path set above)
 
-with seeded_profile(FORGE / "skills/proposal-implementation/impl_profile.py"):
+with seeded_profile(FORGE / ".opencode/skills/proposal-implementation/impl_profile.py"):
     from seal import harness as seal_harness  # noqa: E402  (path set above)
     from pair import corpus as pair_corpus  # noqa: E402  (path set above)
     import impl_position  # noqa: E402  (path set by seal_harness's own import)
@@ -58,7 +58,7 @@ with seeded_profile(FORGE / "skills/proposal-implementation/impl_profile.py"):
 #: target, something the single-command golden-digest mechanism cannot
 #: represent (`seal_harness.run_case` gives every case a fresh scratch
 #: target).
-CLI = FORGE / "skills/proposal-implementation/scripts/implementation_cli.py"
+CLI = FORGE / ".opencode/skills/proposal-implementation/scripts/implementation_cli.py"
 
 CASES_PATH = TESTS_DIR / "pair" / "cases.json"
 DIGESTS_PATH = TESTS_DIR / "pair" / "digests.json"
@@ -234,7 +234,7 @@ class SubprocessRefusalNamesIndexedLeafTests(unittest.TestCase):
             roots = pair_corpus.build_broken_second_document(Path(tmp))
             env = dict(os.environ)
             env["IMPLEMENTATION_DOMAIN_PROFILE"] = str(roots.profile_path)
-            cli = (FORGE / "skills/proposal-implementation/scripts"
+            cli = (FORGE / ".opencode/skills/proposal-implementation/scripts"
                   "/implementation_cli.py")
             proc = subprocess.run(
                 [_sys.executable, str(cli), "name", "--name", "Method"],
@@ -751,7 +751,7 @@ class TwoDocumentAmbiguousFamilyRefusesTests(unittest.TestCase):
         self.assertIn("final-#.md", payload["detail"])
 
 
-ENGINE = FORGE / "skills/_core/implementation/engine/implementation_engine.py"
+ENGINE = FORGE / ".opencode/skills/_core/implementation/engine/implementation_engine.py"
 
 #: design.md D5: the mutation a WEAKER lock survives, so it is the one that
 #: proves the refusal is reachable rather than merely present in source.
@@ -982,7 +982,7 @@ class TwoDocumentLifecycleTests(unittest.TestCase):
                               env=self._child_env())
 
     def _register_capacity_adapter(self):
-        adapters_dir = (FORGE / "skills" / "remote-execution"
+        adapters_dir = (FORGE / ".opencode" / "skills" / "remote-execution"
                         / "scripts" / "adapters")
         fixture_path = adapters_dir / f"{self.SERVICE}.py"
         fixture_path.write_text(

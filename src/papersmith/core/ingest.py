@@ -169,7 +169,7 @@ def ingest(source: str, workspace: str | Path = ".", *, ocr: bool = False) -> di
         args.extend(["--mode", "balanced"])
     result = run_script(
         root,
-        "skills/paper-ingestion/scripts/extract_pdf.py",
+        ".opencode/skills/paper-ingestion/scripts/extract_pdf.py",
         args,
         prefer_micromamba=True,
         timeout=3600,

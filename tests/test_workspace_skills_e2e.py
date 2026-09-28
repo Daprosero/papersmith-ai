@@ -69,15 +69,15 @@ class SkillTreeTests(unittest.TestCase):
 
     def test_every_repository_skill_ships_in_the_workspace(self) -> None:
         workspace = make_workspace(new_tmp(self))
-        repo = {path.name for path in (REPO_ROOT / "skills").iterdir() if path.is_dir()}
-        shipped = {path.name for path in (workspace / "skills").iterdir() if path.is_dir()}
+        repo = {path.name for path in (REPO_ROOT / ".opencode/skills").iterdir() if path.is_dir()}
+        shipped = {path.name for path in (workspace / ".opencode/skills").iterdir() if path.is_dir()}
         self.assertEqual(shipped, repo, "the workspace must ship the whole skill tree")
 
     def test_every_skill_declares_itself(self) -> None:
         workspace = make_workspace(new_tmp(self))
         for name in SKILL_NAMES:
             with self.subTest(skill=name):
-                skill_md = workspace / "skills" / name / "SKILL.md"
+                skill_md = workspace / ".opencode" / "skills" / name / "SKILL.md"
                 self.assertTrue(skill_md.is_file(), f"{name} ships no SKILL.md")
                 metadata = frontmatter(skill_md)
                 self.assertEqual(metadata.get("name"), name)
@@ -85,8 +85,8 @@ class SkillTreeTests(unittest.TestCase):
 
     def test_shared_engines_ship_with_the_skills(self) -> None:
         workspace = make_workspace(new_tmp(self))
-        self.assertTrue((workspace / "skills/_core/deliberation/engine/cli.mjs").is_file())
-        self.assertTrue((workspace / "skills/_core/implementation/engine").is_dir())
+        self.assertTrue((workspace / ".opencode/skills/_core/deliberation/engine/cli.mjs").is_file())
+        self.assertTrue((workspace / ".opencode/skills/_core/implementation/engine").is_dir())
 
     def test_every_skill_becomes_exactly_one_slash_command(self) -> None:
         workspace = make_workspace(new_tmp(self))
@@ -102,14 +102,14 @@ class SkillFrontDoorTests(unittest.TestCase):
     def test_figure_review_front_door_lists_its_commands(self) -> None:
         workspace = make_workspace(new_tmp(self))
         proc = run_workspace_script(
-            workspace, "skills/figure-review/scripts/review_cli.py", ["--help"])
+            workspace, ".opencode/skills/figure-review/scripts/review_cli.py", ["--help"])
         self.assertEqual(proc.returncode, 0, proc.stderr)
         for verb in ("probe", "raster"):
             self.assertIn(verb, proc.stdout, f"review_cli must advertise {verb}")
 
     def test_paper_writing_front_door_lists_its_nineteen_verbs(self) -> None:
         workspace = make_workspace(new_tmp(self))
-        proc = run_workspace_script(workspace, "skills/paper-writing/scripts/paper_cli.py", ["--help"])
+        proc = run_workspace_script(workspace, ".opencode/skills/paper-writing/scripts/paper_cli.py", ["--help"])
         self.assertEqual(proc.returncode, 0, proc.stderr)
         for verb in PAPER_WRITING_VERBS:
             self.assertIn(verb, proc.stdout, f"paper_cli must advertise {verb}")
@@ -117,7 +117,7 @@ class SkillFrontDoorTests(unittest.TestCase):
     def test_implementation_front_doors_advertise_their_own_rosters(self) -> None:
         workspace = make_workspace(new_tmp(self))
         proposal = run_workspace_script(
-            workspace, "skills/proposal-implementation/scripts/implementation_cli.py", ["--help"])
+            workspace, ".opencode/skills/proposal-implementation/scripts/implementation_cli.py", ["--help"])
         self.assertEqual(proposal.returncode, 0, proposal.stderr)
         for verb in ("probe", "verify", "materialize", "walk"):
             self.assertIn(verb, proposal.stdout)
@@ -125,14 +125,14 @@ class SkillFrontDoorTests(unittest.TestCase):
                          "agree belongs to the second host only")
 
         experiments = run_workspace_script(
-            workspace, "skills/experimental-implementation/scripts/implementation_cli.py", ["--help"])
+            workspace, ".opencode/skills/experimental-implementation/scripts/implementation_cli.py", ["--help"])
         self.assertEqual(experiments.returncode, 0, experiments.stderr)
         self.assertIn("agree", experiments.stdout)
 
     def test_remote_execution_front_door_lists_its_operations(self) -> None:
         workspace = make_workspace(new_tmp(self))
         proc = run_workspace_script(
-            workspace, "skills/remote-execution/scripts/remote_cli.py", ["--help"])
+            workspace, ".opencode/skills/remote-execution/scripts/remote_cli.py", ["--help"])
         self.assertEqual(proc.returncode, 0, proc.stderr)
         for verb in ("submit", "status", "distribute", "poll", "fetch",
                      "reconcile", "generate-job", "smoke", "readiness"):
@@ -141,7 +141,7 @@ class SkillFrontDoorTests(unittest.TestCase):
     def test_kaggle_accounts_front_door_lists_its_commands(self) -> None:
         workspace = make_workspace(new_tmp(self))
         proc = run_workspace_script(
-            workspace, "skills/kaggle-accounts/scripts/accounts_cli.py", ["--help"])
+            workspace, ".opencode/skills/kaggle-accounts/scripts/accounts_cli.py", ["--help"])
         self.assertEqual(proc.returncode, 0, proc.stderr)
         for verb in ("list", "discover", "validate", "remove", "materialize"):
             self.assertIn(verb, proc.stdout)
@@ -149,7 +149,7 @@ class SkillFrontDoorTests(unittest.TestCase):
     def test_skill_audit_front_door_lists_its_commands(self) -> None:
         workspace = make_workspace(new_tmp(self))
         proc = run_workspace_script(
-            workspace, "skills/skill-audit/scripts/audit_cli.py", ["--help"])
+            workspace, ".opencode/skills/skill-audit/scripts/audit_cli.py", ["--help"])
         self.assertEqual(proc.returncode, 0, proc.stderr)
         for verb in ("roster", "check-report", "structure", "walkthrough"):
             self.assertIn(verb, proc.stdout)
@@ -158,7 +158,7 @@ class SkillFrontDoorTests(unittest.TestCase):
         workspace = make_workspace(new_tmp(self))
         link_node_modules(workspace)
         proposal = run_node(
-            workspace / "skills/proposal-deliberation/cli.mjs",
+            workspace / ".opencode/skills/proposal-deliberation/cli.mjs",
             '{"operation":"STATUS"}', workspace=workspace)
         self.assertEqual(proposal.returncode, 0, proposal.stderr)
         payload = json.loads(proposal.stdout)
@@ -166,7 +166,7 @@ class SkillFrontDoorTests(unittest.TestCase):
         self.assertIn("mathematics", payload["objective"]["purpose"])
 
         experiments = run_node(
-            workspace / "skills/experimental-deliberation/cli.mjs",
+            workspace / ".opencode/skills/experimental-deliberation/cli.mjs",
             '{"operation":"STATUS"}', workspace=workspace)
         self.assertEqual(experiments.returncode, 0, experiments.stderr)
         payload = json.loads(experiments.stdout)
@@ -181,14 +181,14 @@ class SkillWorkspaceVerbTests(unittest.TestCase):
         workspace = make_workspace(new_tmp(self))
         paper = workspace / "paper"
         scaffold = run_workspace_script(
-            workspace, "skills/paper-writing/scripts/paper_cli.py",
+            workspace, ".opencode/skills/paper-writing/scripts/paper_cli.py",
             ["scaffold", "--paper", str(paper)])
         self.assertEqual(scaffold.returncode, 0, scaffold.stderr)
         self.assertEqual(json.loads(scaffold.stdout)["status"], "ok")
         self.assertTrue((paper / "main.tex").is_file())
 
         status = run_workspace_script(
-            workspace, "skills/paper-writing/scripts/paper_cli.py",
+            workspace, ".opencode/skills/paper-writing/scripts/paper_cli.py",
             ["status", "--paper", str(paper)])
         self.assertEqual(status.returncode, 0, status.stderr)
         self.assertEqual(json.loads(status.stdout)["blocks"], [])
@@ -196,16 +196,16 @@ class SkillWorkspaceVerbTests(unittest.TestCase):
     def test_kaggle_accounts_store_ships_empty_and_lists_without_keys(self) -> None:
         workspace = make_workspace(new_tmp(self))
         proc = run_workspace_script(
-            workspace, "skills/kaggle-accounts/scripts/accounts_cli.py", ["list"])
+            workspace, ".opencode/skills/kaggle-accounts/scripts/accounts_cli.py", ["list"])
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("No accounts stored.", proc.stdout)
-        self.assertFalse((workspace / "skills/kaggle-accounts/store/accounts.json").exists(),
+        self.assertFalse((workspace / ".opencode/skills/kaggle-accounts/store/accounts.json").exists(),
                          "a generated workspace must never ship stored credentials")
 
     def test_paper_ingestion_lists_pending_pdfs_without_loading_a_model(self) -> None:
         workspace = make_workspace(new_tmp(self))
         proc = run_workspace_script(
-            workspace, "skills/paper-ingestion/scripts/extract_pdf.py", ["--list"])
+            workspace, ".opencode/skills/paper-ingestion/scripts/extract_pdf.py", ["--list"])
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("no loose PDFs", proc.stdout)
 
@@ -213,7 +213,7 @@ class SkillWorkspaceVerbTests(unittest.TestCase):
         workspace = make_workspace(new_tmp(self))
         missing = workspace / "implementations" / "missing"
         proc = run_workspace_script(
-            workspace, "skills/remote-execution/scripts/remote_cli.py",
+            workspace, ".opencode/skills/remote-execution/scripts/remote_cli.py",
             ["status", "--target", str(missing), "--entrypoint", "Notebooks/a.ipynb"])
         self.assertNotEqual(proc.returncode, 0)
         self.assertIn("does not resolve to an existing directory", proc.stdout + proc.stderr)

@@ -68,7 +68,7 @@ class TrackedPathsAreUnreachableTests(unittest.TestCase):
             subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
             subprocess.run(["git", "config", "user.email", "t@t"], cwd=repo, check=True)
             subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
-            core = repo / "skills" / "_core"
+            core = repo / ".opencode" / "skills" / "_core"
             core.mkdir(parents=True)
             (core / "shared.py").write_text("# tracked\n")
             subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
@@ -102,7 +102,7 @@ class RealRootsAreResolvableTests(unittest.TestCase):
 
     def test_every_skills_scripts_directory_is_covered(self) -> None:
         derived = set(orphan_sweep.SWEEP_ROOTS)
-        on_disk = set((orphan_sweep.FORGE_ROOT / "skills").glob("*/scripts"))
+        on_disk = set((orphan_sweep.FORGE_ROOT / ".opencode" / "skills").glob("*/scripts"))
         self.assertTrue(on_disk, "no skill scripts directories found at all")
         self.assertTrue(on_disk <= derived, f"not covered: {on_disk - derived}")
 

@@ -53,7 +53,7 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 # Doctrine, as a path the suite can read. `PinConditionDoctrineTests`
 # holds `SKILL.md`'s pin-condition table to `jobfolder.PIN_CONDITIONS`;
 # prose cannot be held to code, a table can.
-SKILL_MD = REPOSITORY_ROOT / "skills/remote-execution/SKILL.md"
+SKILL_MD = REPOSITORY_ROOT / ".opencode/skills/remote-execution/SKILL.md"
 
 # The one file outside the skill this change touches. `DoctrinePinTests`
 # parses its `kaggle==` pin and compares it against what is actually
@@ -102,10 +102,10 @@ def _load_or_reuse(module_name: str, script):
     return module
 
 
-SCRIPT = REPOSITORY_ROOT / "skills/remote-execution/scripts/ledger.py"
+SCRIPT = REPOSITORY_ROOT / ".opencode/skills/remote-execution/scripts/ledger.py"
 LEDGER = _load_or_reuse("remote_execution_ledger", SCRIPT)
 
-ADAPTER_SCRIPT = REPOSITORY_ROOT / "skills/remote-execution/scripts/adapter.py"
+ADAPTER_SCRIPT = REPOSITORY_ROOT / ".opencode/skills/remote-execution/scripts/adapter.py"
 ADAPTER = _load_or_reuse("remote_execution_adapter", ADAPTER_SCRIPT)
 
 # Loaded AFTER ledger.py and adapter.py above, and under the exact module
@@ -117,21 +117,21 @@ ADAPTER = _load_or_reuse("remote_execution_adapter", ADAPTER_SCRIPT)
 # `isinstance(fake_adapter, PACKER.ADAPTER.Adapter)` agree below — two
 # separately exec'd copies of adapter.py would otherwise define two distinct
 # `Adapter` classes with the same name.
-PACKER_SCRIPT = REPOSITORY_ROOT / "skills/remote-execution/scripts/packer.py"
+PACKER_SCRIPT = REPOSITORY_ROOT / ".opencode/skills/remote-execution/scripts/packer.py"
 PACKER = _load_or_reuse("remote_execution_packer", PACKER_SCRIPT)
 
 # Loaded AFTER ledger.py, adapter.py and packer.py above, for the same
 # sys.modules-reuse reason documented next to PACKER's own load above:
 # remote_cli.py's `_load_sibling` reuses these exact LEDGER/ADAPTER/PACKER
 # module objects rather than exec'ing any of the three a second time.
-REMOTE_CLI_SCRIPT = REPOSITORY_ROOT / "skills/remote-execution/scripts/remote_cli.py"
+REMOTE_CLI_SCRIPT = REPOSITORY_ROOT / ".opencode/skills/remote-execution/scripts/remote_cli.py"
 REMOTE_CLI = _load_or_reuse("remote_execution_cli", REMOTE_CLI_SCRIPT)
 
 # Loaded AFTER adapter.py above, for the same sys.modules-reuse reason: this
 # module's own `isinstance(kaggle_adapter, ADAPTER.Adapter)` checks below
 # have to agree with the exact `Adapter` class every other module in this
 # chain already loaded.
-KAGGLE_SCRIPT = REPOSITORY_ROOT / "skills/remote-execution/scripts/adapters/kaggle.py"
+KAGGLE_SCRIPT = REPOSITORY_ROOT / ".opencode/skills/remote-execution/scripts/adapters/kaggle.py"
 KAGGLE = _load_or_reuse("remote_execution_kaggle_adapter", KAGGLE_SCRIPT)
 
 # Loaded the same path-import way as `kaggle.py` above, and for the same
@@ -139,7 +139,7 @@ KAGGLE = _load_or_reuse("remote_execution_kaggle_adapter", KAGGLE_SCRIPT)
 # finds the already-loaded `remote_execution_adapter` module, so the
 # `ADAPTER.register("colab", ...)` its exec performs lands in the exact
 # registry every `ADAPTER.resolve("colab")` assertion below reads.
-COLAB_SCRIPT = REPOSITORY_ROOT / "skills/remote-execution/scripts/adapters/colab.py"
+COLAB_SCRIPT = REPOSITORY_ROOT / ".opencode/skills/remote-execution/scripts/adapters/colab.py"
 COLAB = _load_or_reuse("remote_execution_colab_adapter", COLAB_SCRIPT)
 
 # Slice S2's three session assets. `launch.py` and `read_state.py` are
@@ -151,7 +151,7 @@ COLAB = _load_or_reuse("remote_execution_colab_adapter", COLAB_SCRIPT)
 # (`nbformat`/`nbclient` are imported inside its execution function) and
 # `ColabExecutorAssetTests` drives its `run()` in-process with the
 # execute step replaced.
-COLAB_ASSETS_DIR = REPOSITORY_ROOT / "skills/remote-execution/assets/colab"
+COLAB_ASSETS_DIR = REPOSITORY_ROOT / ".opencode/skills/remote-execution/assets/colab"
 COLAB_LAUNCH_SCRIPT = COLAB_ASSETS_DIR / "launch.py"
 COLAB_EXECUTOR_SCRIPT = COLAB_ASSETS_DIR / "executor.py"
 COLAB_READ_STATE_SCRIPT = COLAB_ASSETS_DIR / "read_state.py"
@@ -165,14 +165,14 @@ COLAB_EXECUTOR = _load_or_reuse("remote_execution_colab_executor", COLAB_EXECUTO
 # loads the module itself, lazily, only from the tests that need to call
 # into it.
 KAGGLE_DRIVER_SCRIPT = (
-    REPOSITORY_ROOT / "skills/remote-execution/scripts/adapters/kaggle_driver.py"
+    REPOSITORY_ROOT / ".opencode/skills/remote-execution/scripts/adapters/kaggle_driver.py"
 )
 
 # Loaded AFTER remote_cli.py above, which already path-imports this exact
 # module under this exact name via its own `_load_sibling` — reused here
 # rather than exec'd a second time, the same idiom every other module in
 # this chain follows.
-JOBFOLDER_SCRIPT = REPOSITORY_ROOT / "skills/remote-execution/scripts/jobfolder.py"
+JOBFOLDER_SCRIPT = REPOSITORY_ROOT / ".opencode/skills/remote-execution/scripts/jobfolder.py"
 JOBFOLDER = sys.modules["remote_execution_jobfolder"]
 
 # The two runner assets — loaded fresh (nothing above the seam execs
@@ -181,10 +181,10 @@ JOBFOLDER = sys.modules["remote_execution_jobfolder"]
 # `__name__` here is the module name below, never `"__main__"`, so this
 # import fires nothing and lets the suite drive `RUNNER_BOOTSTRAP.bootstrap()`
 # / `RUNNER_INVOKE.invoke()` directly against fake configs.
-RUNNER_BOOTSTRAP_SCRIPT = REPOSITORY_ROOT / "skills/remote-execution/assets/runner_bootstrap.py"
+RUNNER_BOOTSTRAP_SCRIPT = REPOSITORY_ROOT / ".opencode/skills/remote-execution/assets/runner_bootstrap.py"
 RUNNER_BOOTSTRAP = _load_or_reuse("remote_execution_runner_bootstrap", RUNNER_BOOTSTRAP_SCRIPT)
 
-RUNNER_INVOKE_SCRIPT = REPOSITORY_ROOT / "skills/remote-execution/assets/runner_invoke.py"
+RUNNER_INVOKE_SCRIPT = REPOSITORY_ROOT / ".opencode/skills/remote-execution/assets/runner_invoke.py"
 RUNNER_INVOKE = _load_or_reuse("remote_execution_runner_invoke", RUNNER_INVOKE_SCRIPT)
 
 # The third asset: the cell on the READING side of the handoff cell 1
@@ -196,10 +196,10 @@ RUNNER_INVOKE = _load_or_reuse("remote_execution_runner_invoke", RUNNER_INVOKE_S
 # an environment it chose, which is also the only way to drive the binding
 # itself rather than only the functions beneath it.
 NOTEBOOK_REPO_ROOT_SCRIPT = (
-    REPOSITORY_ROOT / "skills/remote-execution/assets/notebook_repo_root.py"
+    REPOSITORY_ROOT / ".opencode/skills/remote-execution/assets/notebook_repo_root.py"
 )
 
-SHARD_IO_SCRIPT = REPOSITORY_ROOT / "skills/remote-execution/scripts/shard_io.py"
+SHARD_IO_SCRIPT = REPOSITORY_ROOT / ".opencode/skills/remote-execution/scripts/shard_io.py"
 SHARD_IO = _load_or_reuse("remote_execution_shard_io", SHARD_IO_SCRIPT)
 
 # The tripwire hook (design §5, `the-position-nobody-holds`) -- an inert,
@@ -207,7 +207,7 @@ SHARD_IO = _load_or_reuse("remote_execution_shard_io", SHARD_IO_SCRIPT)
 # `.claude/settings.json` by this change (that switch is the user's own to
 # throw).
 PUSH_SURFACE_HOOK_SCRIPT = (
-    REPOSITORY_ROOT / "skills/remote-execution/scripts/hooks/refuse_offpath_push.py"
+    REPOSITORY_ROOT / ".opencode/skills/remote-execution/scripts/hooks/refuse_offpath_push.py"
 )
 PUSH_SURFACE_HOOK = _load_or_reuse("remote_execution_refuse_offpath_push", PUSH_SURFACE_HOOK_SCRIPT)
 
@@ -2050,7 +2050,7 @@ class RealDigestLoaderTests(unittest.TestCase):
         where the loader expects it, so the failure has to be reachable by
         moving it. A loader that quietly returned something on a missing file
         would make the parity it depends on unverifiable."""
-        kit = (REPOSITORY_ROOT / "skills/proposal-implementation"
+        kit = (REPOSITORY_ROOT / ".opencode/skills/proposal-implementation"
                / "assets/kit/nb/report_digest.py")
         self.assertTrue(kit.exists(), "the loader's target moved; update the loader")
         hidden = kit.with_suffix(".py.hidden")
@@ -5706,7 +5706,7 @@ class CredentialSecurityTests(unittest.TestCase):
     ) -> None:
         """C4."""
         scanned = (
-            REPOSITORY_ROOT / "skills/remote-execution/scripts/credentials.py",
+            REPOSITORY_ROOT / ".opencode/skills/remote-execution/scripts/credentials.py",
             REMOTE_CLI_SCRIPT,
             PACKER_SCRIPT,
             SCRIPT,
@@ -5733,7 +5733,7 @@ class CredentialSecurityTests(unittest.TestCase):
         anywhere above the adapter.
         """
         source = (
-            REPOSITORY_ROOT / "skills/remote-execution/scripts/credentials.py"
+            REPOSITORY_ROOT / ".opencode/skills/remote-execution/scripts/credentials.py"
         ).read_text(encoding="utf-8").lower()
         for leaked in ("kaggle", "t4"):
             self.assertNotIn(leaked, source, leaked)
@@ -5871,7 +5871,7 @@ class CredentialValueDeliveryTests(unittest.TestCase):
         access on a handle.
         """
         scripts = (
-            REPOSITORY_ROOT / "skills/remote-execution/scripts/credentials.py",
+            REPOSITORY_ROOT / ".opencode/skills/remote-execution/scripts/credentials.py",
             REMOTE_CLI_SCRIPT,
             PACKER_SCRIPT,
             SCRIPT,
@@ -6097,7 +6097,7 @@ class CredentialTransportDoctrineTests(unittest.TestCase):
             SKILL_MD,
             KAGGLE_SCRIPT,
             ADAPTER_SCRIPT,
-            REPOSITORY_ROOT / "skills/remote-execution/scripts/credentials.py",
+            REPOSITORY_ROOT / ".opencode/skills/remote-execution/scripts/credentials.py",
         ):
             text = path.read_text(encoding="utf-8")
             for claim in retracted:
@@ -19199,7 +19199,7 @@ class FrontDoorRosterTests(unittest.TestCase):
             declared, "no subcommand was recovered from the parser at all; "
             "this test would pass on an empty roster by accident")
         text = (REPOSITORY_ROOT
-                / "skills/remote-execution/SKILL.md").read_text(
+                / ".opencode/skills/remote-execution/SKILL.md").read_text(
                     encoding="utf-8")
         description = text.split("---", 2)[1]
         # Every accepted name -- at any nesting depth -- must be named at its
@@ -19239,7 +19239,7 @@ class FrontDoorRosterTests(unittest.TestCase):
             f"among the parser's nested names ({sorted(nested_names)}); it "
             "may have moved or been renamed")
         text = (REPOSITORY_ROOT
-                / "skills/remote-execution/SKILL.md").read_text(
+                / ".opencode/skills/remote-execution/SKILL.md").read_text(
                     encoding="utf-8")
         description = text.split("---", 2)[1]
         self.assertIn(
@@ -19312,7 +19312,7 @@ class TargetVocabularyLeakTests(unittest.TestCase):
         ADAPTER_SCRIPT,
         PACKER_SCRIPT,
         REMOTE_CLI_SCRIPT,
-        REPOSITORY_ROOT / "skills/remote-execution/scripts/credentials.py",
+        REPOSITORY_ROOT / ".opencode/skills/remote-execution/scripts/credentials.py",
         JOBFOLDER_SCRIPT,
         KAGGLE_SCRIPT,
         KAGGLE_DRIVER_SCRIPT,
@@ -19536,7 +19536,7 @@ class DoctrinePinTests(unittest.TestCase):
             SKILL_MD,
             KAGGLE_SCRIPT,
             ADAPTER_SCRIPT,
-            REPOSITORY_ROOT / "skills/remote-execution/scripts/credentials.py",
+            REPOSITORY_ROOT / ".opencode/skills/remote-execution/scripts/credentials.py",
             KAGGLE_DRIVER_SCRIPT,
         ):
             text = " ".join(path.read_text(encoding="utf-8").lower().split())

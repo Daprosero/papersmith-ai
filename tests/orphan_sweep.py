@@ -35,7 +35,7 @@ FORGE_ROOT = Path(__file__).resolve().parents[1]
 #: Directories only -- a root absent from disk is skipped, not an error.
 SWEEP_ROOTS: tuple[Path, ...] = (
     FORGE_ROOT / "implementations",
-    *(FORGE_ROOT / "skills").glob("*/scripts"),
+    *(FORGE_ROOT / ".opencode" / "skills").glob("*/scripts"),
 )
 
 #: An orphan's owner is dead; a sibling's fixture is live. One hour is far

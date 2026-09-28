@@ -26,7 +26,7 @@ import { pathToFileURL } from 'node:url';
 const execFileAsync = promisify(execFile);
 
 const repoRoot = process.cwd();
-const engineDir = path.join(repoRoot, 'skills/_core/deliberation/engine');
+const engineDir = path.join(repoRoot, '.opencode/skills/_core/deliberation/engine');
 const cliPath = path.join(engineDir, 'cli.mjs');
 
 const { createJiti } = await import('jiti');

@@ -5,12 +5,12 @@ paper-guide, provisioning scripts). Resolution order:
 
 1. ``PAPERSMITH_KIT_ROOT`` environment variable — the explicit override.
 2. A papersmith-ai development checkout on disk (a directory holding
-   ``skills/``, ``scripts/setup_env.py``, and ``CLAUDE.md``) found above the
+   ``.opencode/skills``, ``scripts/setup_env.py``, and ``AGENTS.md``) found above the
    installed package — this is how ``papersmith`` run from a checkout tracks
    live edits without reinstalling.
 3. The ``_kit/`` snapshot bundled inside the installed package.
 
-A resolved root must contain ``skills/``; otherwise the caller gets
+A resolved root must contain ``.opencode/skills``; otherwise the caller gets
 SOURCE_ERROR (exit 2), because a kitless install cannot initialize or upgrade
 a workspace.
 """
@@ -53,16 +53,16 @@ def _dev_checkout(start_file: Path) -> Path | None:
 
 def _looks_like_checkout(root: Path) -> bool:
     return (
-        fs.is_dir(root / "skills")
+        fs.is_dir(root / ".opencode" / "skills")
         and fs.is_regular_file(root / "scripts" / "setup_env.py")
-        and fs.is_regular_file(root / "CLAUDE.md")
+        and fs.is_regular_file(root / "AGENTS.md")
     )
 
 
 def validate_kit_root(root: Path) -> Path:
-    if not fs.is_dir(root / "skills"):
+    if not fs.is_dir(root / ".opencode" / "skills"):
         raise SourceError(
-            f"kit root {root} has no skills/ directory — point PAPERSMITH_KIT_ROOT "
+            f"kit root {root} has no .opencode/skills/ directory — point PAPERSMITH_KIT_ROOT "
             "at a papersmith-ai checkout or reinstall the package"
         )
     return root

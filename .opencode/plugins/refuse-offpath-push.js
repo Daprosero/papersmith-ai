@@ -14,8 +14,8 @@ import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import path from "node:path";
 
-const HOOK_RELATIVE = "skills/remote-execution/scripts/hooks/refuse_offpath_push.py";
-const ADAPTERS_RELATIVE = "skills/remote-execution/scripts/adapters";
+const HOOK_RELATIVE = ".opencode/skills/remote-execution/scripts/hooks/refuse_offpath_push.py";
+const ADAPTERS_RELATIVE = ".opencode/skills/remote-execution/scripts/adapters";
 const TIMEOUT_MS = 5000;
 
 // One-time capability probe. It loads the hook by path and calls the hook's own
@@ -27,8 +27,8 @@ const PROBE_SOURCE = `
 import ast, importlib.util, json, pathlib, sys
 
 root = pathlib.Path(sys.argv[1])
-hook_path = root / "skills/remote-execution/scripts/hooks/refuse_offpath_push.py"
-adapters_dir = root / "skills/remote-execution/scripts/adapters"
+hook_path = root / ".opencode/skills/remote-execution/scripts/hooks/refuse_offpath_push.py"
+adapters_dir = root / ".opencode/skills/remote-execution/scripts/adapters"
 
 state = {"ok": False, "reason": ""}
 

@@ -10,7 +10,7 @@ import { pathToFileURL } from "node:url";
 const typeboxEntry = createRequire(import.meta.url).resolve("typebox");
 const { createJiti } = await import("jiti");
 const jiti = createJiti(import.meta.url, { alias: { typebox: typeboxEntry } });
-const extensionPath = path.resolve("skills/_core/deliberation/engine/proposal-workspace.ts");
+const extensionPath = path.resolve(".opencode/skills/_core/deliberation/engine/proposal-workspace.ts");
 const extension = await jiti.import(extensionPath);
 // The engine accepts exactly one derive base and names it in its own refusals,
 // and both values belong to the host-chosen domain profile rather than to this
@@ -18,7 +18,7 @@ const extension = await jiti.import(extensionPath);
 // project's file name spelled a hundred times in a general forge's test suite,
 // and `tests/proposal-deliberation-domain-profile-lock.test.mjs` now refuses it.
 const { DOMAIN } = await jiti.import(
-	path.resolve("skills/_core/deliberation/engine/domain-profile.ts"),
+	path.resolve(".opencode/skills/_core/deliberation/engine/domain-profile.ts"),
 );
 const deriveBase = DOMAIN.deriveBase;
 //: `DOMAIN.baseLabel` as it appears inside an engine refusal, escaped so the

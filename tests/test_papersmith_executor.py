@@ -254,7 +254,7 @@ class ExecutorTests(unittest.TestCase):
 
     def test_audit_check_drift_returns_exit_three_without_mutation(self) -> None:
         workspace = _workspace(self.new_tmp())
-        (workspace / "skills/skill-audit/references/probes/skill-audit.subcommands.json").write_text("{}")
+        (workspace / ".opencode/skills/skill-audit/references/probes/skill-audit.subcommands.json").write_text("{}")
         self.patch(audit_bridge, "run_script", lambda *args, **kwargs: subprocess.CompletedProcess([], 0, "audit ok\n", ""))
         self.patch(audit_bridge, "check_generated", lambda *args, **kwargs: ["PI.md"])
         result = audit_bridge.execute(workspace, check_drift=True)

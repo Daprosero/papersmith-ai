@@ -36,9 +36,9 @@ from typing import Mapping
 from domain_profile import seeded_profile  # noqa: E402  (tests/ on path)
 
 FORGE = Path(__file__).resolve().parents[1]
-RESOLVER = FORGE / "skills/_core/implementation/impl_domain_profile.py"
-LAUNCHER = FORGE / "skills/proposal-implementation/scripts/implementation_cli.py"
-ENGINE_DIR = FORGE / "skills/_core/implementation/engine"
+RESOLVER = FORGE / ".opencode/skills/_core/implementation/impl_domain_profile.py"
+LAUNCHER = FORGE / ".opencode/skills/proposal-implementation/scripts/implementation_cli.py"
+ENGINE_DIR = FORGE / ".opencode/skills/_core/implementation/engine"
 
 _ENV_VAR = "IMPLEMENTATION_DOMAIN_PROFILE"
 
@@ -1585,8 +1585,8 @@ class DocumentVocabularyZeroDeltaTests(unittest.TestCase):
 
     @staticmethod
     def _engine_module():
-        engine_dir = FORGE / "skills/_core/implementation/engine"
-        real_profile = FORGE / "skills/proposal-implementation/impl_profile.py"
+        engine_dir = FORGE / ".opencode/skills/_core/implementation/engine"
+        real_profile = FORGE / ".opencode/skills/proposal-implementation/impl_profile.py"
         if str(engine_dir) not in sys.path:
             sys.path.insert(0, str(engine_dir))
         spec = importlib.util.spec_from_file_location(
@@ -1619,8 +1619,8 @@ class DocumentVocabularyIndependenceTests(unittest.TestCase):
 
     @staticmethod
     def _engine_module():
-        engine_dir = FORGE / "skills/_core/implementation/engine"
-        real_profile = FORGE / "skills/proposal-implementation/impl_profile.py"
+        engine_dir = FORGE / ".opencode/skills/_core/implementation/engine"
+        real_profile = FORGE / ".opencode/skills/proposal-implementation/impl_profile.py"
         if str(engine_dir) not in sys.path:
             sys.path.insert(0, str(engine_dir))
         spec = importlib.util.spec_from_file_location(

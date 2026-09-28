@@ -30,7 +30,7 @@ import uuid
 from pathlib import Path
 
 FORGE_ROOT = Path(__file__).resolve().parents[1]
-SKILL_SCRIPTS = FORGE_ROOT / "skills" / "paper-writing" / "scripts"
+SKILL_SCRIPTS = FORGE_ROOT / ".opencode" / "skills" / "paper-writing" / "scripts"
 SECTIONS_DIR = FORGE_ROOT / "sections"
 sys.path.insert(0, str(SKILL_SCRIPTS))
 import paper_scaffold  # noqa: E402
@@ -57,7 +57,7 @@ import paper_marker  # noqa: E402
 import paper_grounding  # noqa: E402 -- the-block-asserts-only-what-its-section-carries: per-sentence support reconciliation against the bound section's own bytes
 import paper_figure  # noqa: E402 -- the-figure-nobody-looked-at, Phase 4: the repair-budget ledger `--visual-report`'s join must leave untouched
 
-sys.path.insert(0, str(FORGE_ROOT / "skills" / "_core" / "implementation"))
+sys.path.insert(0, str(FORGE_ROOT / ".opencode" / "skills" / "_core" / "implementation"))
 from impl_refusals import Refused  # noqa: E402
 import impl_layout  # noqa: E402
 
@@ -66,11 +66,11 @@ import impl_layout  # noqa: E402
 # `paper_cli.py` itself never imports `figure-review` (design.md: "Never an
 # edge: paper-writing --X--> figure-review"; the join is `--visual-report
 # <path>`, never an import, in either direction).
-sys.path.insert(0, str(FORGE_ROOT / "skills" / "figure-review" / "scripts"))
+sys.path.insert(0, str(FORGE_ROOT / ".opencode" / "skills" / "figure-review" / "scripts"))
 import raster as figure_review_raster  # noqa: E402
 import findings as figure_review_findings  # noqa: E402
 
-sys.path.insert(0, str(FORGE_ROOT / "skills" / "_core" / "figure"))
+sys.path.insert(0, str(FORGE_ROOT / ".opencode" / "skills" / "_core" / "figure"))
 import figure_dimensions  # noqa: E402
 
 sys.path.insert(0, str(FORGE_ROOT / "tests"))
@@ -83,7 +83,7 @@ from paper_mutation import _run_against_mutant  # noqa: E402
 from test_paper_figure import _install_stub_latexmk  # noqa: E402
 
 CLI = SKILL_SCRIPTS / "paper_cli.py"
-CORE_IMPLEMENTATION = FORGE_ROOT / "skills" / "_core" / "implementation"
+CORE_IMPLEMENTATION = FORGE_ROOT / ".opencode" / "skills" / "_core" / "implementation"
 
 
 #: Guarded, module-scoped `subprocess.Popen` monitor
@@ -5620,7 +5620,7 @@ class SkillMdModeCountAccuracyTests(unittest.TestCase):
     """
 
     SKILL_MD = (
-        FORGE_ROOT / "skills" / "paper-writing" / "SKILL.md"
+        FORGE_ROOT / ".opencode" / "skills" / "paper-writing" / "SKILL.md"
     )
 
     def _real_corpus_count(self) -> tuple[int, int]:

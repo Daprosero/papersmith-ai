@@ -19,8 +19,8 @@ import { pathToFileURL } from 'node:url';
 
 const { createJiti } = await import('jiti');
 const jiti = createJiti(import.meta.url);
-const workspace = await jiti.import(path.resolve('skills/_core/deliberation/engine/proposal-workspace.ts'));
-const v2 = await jiti.import(path.resolve('skills/_core/deliberation/engine/exports.ts'));
+const workspace = await jiti.import(path.resolve('.opencode/skills/_core/deliberation/engine/proposal-workspace.ts'));
+const v2 = await jiti.import(path.resolve('.opencode/skills/_core/deliberation/engine/exports.ts'));
 
 const sha = (buffer) => createHash('sha256').update(buffer).digest('hex');
 

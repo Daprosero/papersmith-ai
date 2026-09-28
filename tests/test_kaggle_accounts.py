@@ -28,12 +28,12 @@ from pathlib import Path
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
-SCRIPT = REPOSITORY_ROOT / "skills/kaggle-accounts/scripts/accounts_cli.py"
+SCRIPT = REPOSITORY_ROOT / ".opencode/skills/kaggle-accounts/scripts/accounts_cli.py"
 
 # Doctrine, as a path the suite can read: `MaterializedTokenDoctrineTests`
 # holds this document's materialized-token table to what `materialize`
 # actually writes. Prose cannot be held to code; a table can.
-SKILL_MD = REPOSITORY_ROOT / "skills/kaggle-accounts/SKILL.md"
+SKILL_MD = REPOSITORY_ROOT / ".opencode/skills/kaggle-accounts/SKILL.md"
 SPEC = importlib.util.spec_from_file_location("accounts_cli", SCRIPT)
 assert SPEC and SPEC.loader
 ACCOUNTS = importlib.util.module_from_spec(SPEC)

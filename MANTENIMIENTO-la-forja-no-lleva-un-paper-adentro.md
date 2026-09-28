@@ -8,7 +8,7 @@ que están más abajo.
 
 ## La regla
 
-`.claude/skills/` es una forja de papers. Sirve para escribir **cualquier**
+`.opencode/skills/` es una forja de papers. Sirve para escribir **cualquier**
 paper. Nada particular del paper que se esté escribiendo hoy puede vivir ahí
 adentro: ni un id de bloque, ni un título de sección, ni el nombre de un
 documento, ni el id de un paper ingerido, ni una palabra del tema, ni el patrón
@@ -177,7 +177,7 @@ Correr **uno por skill**, nunca uno solo para todas: el hallazgo de una skill
 no debe hacer que otra se lea sucia, y el alcance grande invita a "arreglar de
 paso" cosas que nadie revisó.
 
-> Auditá **una sola skill**, `<NOMBRE>`, bajo `.claude/skills/<NOMBRE>/`, más
+> Auditá **una sola skill**, `<NOMBRE>`, bajo `.opencode/skills/<NOMBRE>/`, más
 > las suites que le correspondan bajo `tests/`. Solo esa. Si encontrás algo en
 > otra skill, anotalo y seguí: no lo toques.
 >
@@ -226,7 +226,7 @@ fd -I -H -t d . proposals experiments implementations guidance --max-depth 1
 fd -I -H -t f . proposals --max-depth 1
 
 # fuga por skill
-for d in .claude/skills/*/; do
+for d in .opencode/skills/*/; do
   s=$(basename "$d"); [ "${s:0:1}" = "_" ] && continue
   n=$(rg -c -w '<palabras derivadas arriba>' "$d" 2>/dev/null \
       | awk -F: '{x+=$2} END{print x+0}')

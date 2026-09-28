@@ -25,7 +25,7 @@ import sys
 from pathlib import Path
 
 FORGE_ROOT = Path(__file__).resolve().parent.parent
-SKILL_SCRIPTS = FORGE_ROOT / "skills" / "paper-writing" / "scripts"
+SKILL_SCRIPTS = FORGE_ROOT / ".opencode" / "skills" / "paper-writing" / "scripts"
 sys.path.insert(0, str(SKILL_SCRIPTS))
 import paper_style  # noqa: E402
 import paper_leak  # noqa: E402
@@ -36,7 +36,7 @@ CORPUS_DIR = Path(__file__).resolve().parent / "fixtures" / "math_fence_corpus"
 #: this suite's own fixtures and modules, planning artifacts, and anything
 #: version control or tooling keeps out of a fresh clone's working tree.
 _AMBIENT_EXCLUDED_DIR_NAMES = frozenset({
-    ".git", "node_modules", ".claude", "tests", "openspec", "sections", ".venv",
+    ".git", "node_modules", ".opencode", "tests", "openspec", "sections", ".venv",
 })
 
 

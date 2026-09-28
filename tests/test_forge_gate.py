@@ -46,7 +46,7 @@ GATE_SITES = (("rules", "apply", "test_command"),
 #: import line rather than failing some later assertion. Naming the module
 #: keeps the interpreter lock a measurement instead of a version number
 #: somebody chose.
-DECIDING_SCRIPTS = FORGE / "skills" / "remote-execution" / "scripts"
+DECIDING_SCRIPTS = FORGE / ".opencode" / "skills" / "remote-execution" / "scripts"
 
 #: Every tracked `.py` this guard scans for third-party imports: the
 #: suites, the source distribution, and every skill's own `scripts/` tree
@@ -54,13 +54,13 @@ DECIDING_SCRIPTS = FORGE / "skills" / "remote-execution" / "scripts"
 #: `src/` and `skills/*/assets/` also carry non-Python tracked files
 #: (templates, notebooks), and asking `ast` to parse those would be asking
 #: the wrong question, not a merely slower one.
-IMPORT_SCOPE_PATHSPECS = ("tests/*.py", "src/*.py", "skills/*/scripts/*.py")
+IMPORT_SCOPE_PATHSPECS = ("tests/*.py", "src/*.py", ".opencode/skills/*/scripts/*.py")
 
 #: The tracked asset files a skill's own scripts stage and later execute as
 #: subprocesses -- resolved by basename against the `_ASSET`-suffixed
 #: constants those scripts declare, never hand-listed. See
 #: `resolved_asset_files()`.
-ASSET_PATHSPEC = "skills/*/assets/*"
+ASSET_PATHSPEC = ".opencode/skills/*/assets/*"
 
 #: A module-level assignment whose target name ends this way declares an
 #: asset basename: `adapters/colab.py`'s `LAUNCH_ASSET`, `EXECUTOR_ASSET`,
@@ -326,7 +326,7 @@ def stated_gate():
 
 def gate_scripts(manifest):
     """The Node half no longer names `unittest discover` directly: since
-    commit `5c63644` the gate delegates to `npm run test:all`, whose
+    commit `5c63644` the gate delegates to `pnpm test:all`, whose
     `package.json` scripts split Node (`test:node`) and Python (`test:py`)
     halves that this doctrine now derives instead of the old two-stage
     `&&` spelling."""
@@ -341,7 +341,7 @@ def gate_scripts(manifest):
 
 def gate_command(manifest, config):
     stated = config["rules"]["apply"]["test_command"]
-    matched = re.fullmatch(r"npm run ([\w:]+)", stated.strip())
+    matched = re.fullmatch(r"(?:npm run|pnpm(?: run)?) ([\w:]+)", stated.strip())
     if not matched or matched.group(1) != "test:all":
         raise AssertionError(
             f"the gate's command {stated!r} does not delegate to "
@@ -400,11 +400,13 @@ def pytest_stage(manifest):
 
 def node_stage(manifest):
     """The stage of the `test:all` gate that is not the pytest half: the
-    npm script that packages the Node half (the two sides delegate rather
+    pnpm script that packages the Node half (the two sides delegate rather
     than restate, so the scripts themselves are the roster)."""
     scripts = manifest["scripts"]
     stages = [stage.strip() for stage in scripts["test:all"].split("&&")]
-    node_stages = [stage for stage in stages if stage.startswith("npm run test:node")]
+    node_stages = [stage for stage in stages
+                   if stage.startswith(("pnpm run test:node", "pnpm test:node",
+                                        "npm run test:node"))]
     if len(node_stages) != 1:
         raise AssertionError(
             f"package.json's test:all script delegates {len(node_stages)} "
@@ -519,16 +521,16 @@ class GateNodeHalfTests(unittest.TestCase):
             "package.json's test script sets no environment at all, so this "
             f"rule has nothing to require and proves nothing: {script!r}")
         stage = node_stage(self.manifest)
-        delegated = re.fullmatch(r"npm (?:run )?(\S+)", stage.strip())
+        delegated = re.fullmatch(r"(?:npm|pnpm) (?:run )?(\S+)", stage.strip())
         if delegated:
             target_script = self.manifest.get("scripts", {}).get(delegated.group(1), "")
             stage = target_script if target_script else stage
-        if re.fullmatch(r"npm (?:run )?test", stage.strip()):
+        if re.fullmatch(r"(?:npm|pnpm) (?:run )?test", stage.strip()):
             return
         missing = [name for name in assignments if name not in stage]
         self.assertEqual(
             missing, [],
-            f"the gate's Node stage {stage!r} neither delegates to the npm "
+            f"the gate's Node stage {stage!r} neither delegates to the package "
             f"script nor sets {missing}, which that script sets. Without it "
             "the Node suites raise at import, the stage exits non-zero, and "
             "the Python half behind the `&&` never runs")

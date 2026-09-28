@@ -35,13 +35,13 @@ import zlib
 from pathlib import Path
 
 FORGE_ROOT = Path(__file__).resolve().parents[1]
-REVIEW_SCRIPTS = FORGE_ROOT / "skills" / "figure-review" / "scripts"
-CORE_FIGURE = FORGE_ROOT / "skills" / "_core" / "figure"
+REVIEW_SCRIPTS = FORGE_ROOT / ".opencode" / "skills" / "figure-review" / "scripts"
+CORE_FIGURE = FORGE_ROOT / ".opencode" / "skills" / "_core" / "figure"
 FIXTURES = FORGE_ROOT / "tests" / "fixtures" / "figure-review"
 sys.path.insert(0, str(REVIEW_SCRIPTS))
 import raster  # noqa: E402
 
-sys.path.insert(0, str(FORGE_ROOT / "skills" / "_core" / "implementation"))
+sys.path.insert(0, str(FORGE_ROOT / ".opencode" / "skills" / "_core" / "implementation"))
 from impl_refusals import Refused  # noqa: E402
 
 sys.path.insert(0, str(CORE_FIGURE))
@@ -51,7 +51,7 @@ sys.path.insert(0, str(CORE_FIGURE))
 # or agent invocation would -- never a production import in either
 # direction (`figure-review`'s own scripts still import nothing from
 # `paper-writing`, proven unchanged by `RepairBudgetIsolationTests` above).
-sys.path.insert(0, str(FORGE_ROOT / "skills" / "paper-writing" / "scripts"))
+sys.path.insert(0, str(FORGE_ROOT / ".opencode" / "skills" / "paper-writing" / "scripts"))
 import paper_cli  # noqa: E402
 
 import unittest  # noqa: E402
@@ -1049,7 +1049,7 @@ class RosterDriftLockCrossModuleHalfStaysRedUntilCommit3(unittest.TestCase):
 
     def test_paper_figure_audit_default_visual_keys_will_equal_the_roster(self) -> None:
         figure_dimensions = _import_figure_dimensions()
-        sys.path.insert(0, str(FORGE_ROOT / "skills" / "paper-writing" / "scripts"))
+        sys.path.insert(0, str(FORGE_ROOT / ".opencode" / "skills" / "paper-writing" / "scripts"))
         import paper_figure_audit
 
         report = paper_figure_audit.audit_semantics(
@@ -1261,8 +1261,8 @@ class TheJoinIsAPathNeverAnImportTests(unittest.TestCase):
     #: The consumers. `paper_cli` parses `--visual-report` and `paper_figure_audit`
     #: receives the already-read dict; between them they are the whole join.
     CONSUMERS = (
-        FORGE_ROOT / "skills" / "paper-writing" / "scripts" / "paper_cli.py",
-        FORGE_ROOT / "skills" / "paper-writing" / "scripts" / "paper_figure_audit.py",
+        FORGE_ROOT / ".opencode" / "skills" / "paper-writing" / "scripts" / "paper_cli.py",
+        FORGE_ROOT / ".opencode" / "skills" / "paper-writing" / "scripts" / "paper_figure_audit.py",
     )
 
     #: Every module name this skill ships, derived rather than listed, so a

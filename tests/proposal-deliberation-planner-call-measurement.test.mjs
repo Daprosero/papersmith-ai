@@ -29,8 +29,8 @@ const jiti = createJiti(import.meta.url, { alias: {
 	'@earendil-works/pi-ai': path.join(piRoot, 'node_modules/@earendil-works/pi-ai/dist/index.js'),
 	typebox: path.join(piRoot, 'node_modules/typebox/build/index.mjs'),
 } });
-const workspaceModule = await jiti.import(path.resolve('skills/_core/deliberation/engine/proposal-workspace.ts'));
-const v2 = await jiti.import(path.resolve('skills/_core/deliberation/engine/exports.ts'));
+const workspaceModule = await jiti.import(path.resolve('.opencode/skills/_core/deliberation/engine/proposal-workspace.ts'));
+const v2 = await jiti.import(path.resolve('.opencode/skills/_core/deliberation/engine/exports.ts'));
 
 const SOURCE = '# 1 Intro\n\nKeep prefix exactly.\n\n# 2 Alpha\n\nOld alpha body.\n\n# 3 Middle\n\nKeep middle exactly.\n\n# 4 Beta\n\nOld beta body.\n\n# 5 Tail\n\nKeep suffix exactly.\n';
 

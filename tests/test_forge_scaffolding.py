@@ -38,7 +38,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import forge_vocabulary  # noqa: E402  (path set above)
 
 FORGE_ROOT = Path(__file__).resolve().parent.parent
-SKILLS = FORGE_ROOT / "skills"
+SKILLS = FORGE_ROOT / ".opencode" / "skills"
 
 #: `{ path: "guidance/x", ... }` and `{ path: CONST, ... }` alike; the constant
 #: form is resolved against its own `const NAME = "guidance/x"` declaration so a

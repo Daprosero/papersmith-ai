@@ -20,7 +20,7 @@ const jiti = createJiti(import.meta.url, { alias: {
     '@earendil-works/pi-ai': path.join(piRoot, 'node_modules/@earendil-works/pi-ai/dist/index.js'),
     typebox: path.join(piRoot, 'node_modules/typebox/build/index.mjs'),
 } });
-const v2 = await jiti.import(path.resolve('skills/_core/deliberation/engine/exports.ts'));
+const v2 = await jiti.import(path.resolve('.opencode/skills/_core/deliberation/engine/exports.ts'));
 
 // One section, an intro paragraph, a fully piped table, an outro paragraph.
 // `Modelo`, `Exactitud` and `Cobertura` are the table's column headers and appear

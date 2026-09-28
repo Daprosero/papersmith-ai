@@ -17,8 +17,8 @@ import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
 const repoRoot = process.cwd();
-const engineDir = path.join(repoRoot, 'skills/_core/deliberation/engine');
-const skillDir = path.join(repoRoot, 'skills/experimental-deliberation');
+const engineDir = path.join(repoRoot, '.opencode/skills/_core/deliberation/engine');
+const skillDir = path.join(repoRoot, '.opencode/skills/experimental-deliberation');
 const profilePath = path.join(skillDir, 'profile.ts');
 const piRoot = path.resolve('.');
 

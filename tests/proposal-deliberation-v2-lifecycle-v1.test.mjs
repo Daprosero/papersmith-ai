@@ -7,8 +7,8 @@ import { pathToFileURL } from 'node:url';
 
 const {createJiti}=await import('jiti');
 const jiti=createJiti(import.meta.url);
-const v2=await jiti.import(path.resolve('skills/_core/deliberation/engine/exports.ts'));
-const workspace=await jiti.import(path.resolve('skills/_core/deliberation/engine/proposal-workspace.ts'));
+const v2=await jiti.import(path.resolve('.opencode/skills/_core/deliberation/engine/exports.ts'));
+const workspace=await jiti.import(path.resolve('.opencode/skills/_core/deliberation/engine/proposal-workspace.ts'));
 
 async function fixture(dependencies={}) {
  const root=await mkdtemp(path.join(os.tmpdir(),'proposal-deliberation-lifecycle-v1-'));

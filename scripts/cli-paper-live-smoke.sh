@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 #
-# Live papersmith smoke: a real workspace, a real npm install, the real engines.
+# Live papersmith smoke: a real workspace, a real pnpm install, the real engines.
 #
 # The hermetic counterpart (scripts/cli-paper-smoke.sh) runs offline against a
 # fixture copy and needs no opt-in. This script is the opposite: it writes to a
-# real workspace, runs `npm install`, and may launch one model call. It refuses
+# real workspace, runs `pnpm install`, and may launch one model call. It refuses
 # to run unless PAPERSMITH_LIVE=1 so nobody triggers it by accident.
 #
 # Usage:
@@ -21,7 +21,7 @@
 set -euo pipefail
 
 if [[ "${PAPERSMITH_LIVE:-}" != "1" ]]; then
-  echo "refusing to run: this smoke is live (real npm install, real engines, optional model call)." >&2
+  echo "refusing to run: this smoke is live (real pnpm install, real engines, optional model call)." >&2
   echo "opt in with: PAPERSMITH_LIVE=1 bash scripts/cli-paper-live-smoke.sh" >&2
   exit 2
 fi
@@ -35,11 +35,11 @@ if [[ ! -x "$PY" ]]; then PY="$(command -v python3)"; fi
 export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
 PS=("$PY" -m papersmith.cli)
 
-echo "== live smoke: init (real npm install)"
+echo "== live smoke: init (real pnpm install)"
 "${PS[@]}" init "$WS" --title "Live Smoke" --topic "live smoke" --remote local
 
 if [[ ! -d "$WS/node_modules/jiti" ]]; then
-  echo "live smoke failed: npm install did not complete; deliberate legs cannot run" >&2
+  echo "live smoke failed: pnpm install did not complete; deliberate legs cannot run" >&2
   exit 1
 fi
 

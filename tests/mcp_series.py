@@ -91,7 +91,7 @@ def build_workspace(base: Path, name: str = "mcp-ws") -> Path:
 
 
 def scaffold_paper(workspace: Path) -> None:
-    script = workspace / "skills" / "paper-writing" / "scripts" / "paper_cli.py"
+    script = workspace / ".opencode" / "skills" / "paper-writing" / "scripts" / "paper_cli.py"
     subprocess.run(
         [sys.executable, str(script), "scaffold"],
         cwd=str(workspace),

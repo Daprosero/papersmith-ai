@@ -25,9 +25,9 @@ import uuid
 from pathlib import Path
 
 FORGE_ROOT = Path(__file__).resolve().parent.parent
-SKILL_SCRIPTS = FORGE_ROOT / "skills" / "paper-writing" / "scripts"
-CORE_IMPLEMENTATION = FORGE_ROOT / "skills" / "_core" / "implementation"
-CORE_FIGURE = FORGE_ROOT / "skills" / "_core" / "figure"
+SKILL_SCRIPTS = FORGE_ROOT / ".opencode" / "skills" / "paper-writing" / "scripts"
+CORE_IMPLEMENTATION = FORGE_ROOT / ".opencode" / "skills" / "_core" / "implementation"
+CORE_FIGURE = FORGE_ROOT / ".opencode" / "skills" / "_core" / "figure"
 
 
 def _run_against_mutant(

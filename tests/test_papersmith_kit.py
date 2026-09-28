@@ -27,19 +27,18 @@ def _make_checkout(tmp_path: Path) -> Path:
     return _write_tree(
         tmp_path / "checkout",
         {
-            "skills/paper-ingestion/SKILL.md": "# ingestion\n",
-            "skills/kaggle-accounts/SKILL.md": "# accounts\n",
-            "skills/kaggle-accounts/store/accounts.json": '{"secret": true}\n',
-            "skills/kaggle-accounts/store/.gitignore": "*\n",
-            "skills/paper-ingestion/.venv/pyvenv.cfg": "junk\n",
-            "skills/paper-ingestion/__pycache__/mod.pyc": "junk\n",
-            "skills/paper-ingestion/.hidden.md": "junk\n",
+            ".opencode/skills/paper-ingestion/SKILL.md": "# ingestion\n",
+            ".opencode/skills/kaggle-accounts/SKILL.md": "# accounts\n",
+            ".opencode/skills/kaggle-accounts/store/accounts.json": '{"secret": true}\n',
+            ".opencode/skills/kaggle-accounts/store/.gitignore": "*\n",
+            ".opencode/skills/paper-ingestion/.venv/pyvenv.cfg": "junk\n",
+            ".opencode/skills/paper-ingestion/__pycache__/mod.pyc": "junk\n",
+            ".opencode/skills/paper-ingestion/.hidden.md": "junk\n",
             "scripts/setup_env.py": "# env\n",
-            "scripts/setup-harnesses.sh": "#!/usr/bin/env bash\n",
-            "CLAUDE.md": "# claude\n",
+            "AGENTS.md": "# agents\n",
             "guidance/paper-guide/venue.md": "# venue\n",
             "sections/01-materials-and-methods.md": "# materials and methods\n",
-            ".claude/agents/paper-ingestion.md": "# agent\n",
+            ".opencode/agents/paper-ingestion.md": "# agent\n",
             "package.json": '{"version": "0.1.0"}\n',
             "requirements.txt": "kagglesdk==0.1.37\n",
         },
@@ -103,7 +102,7 @@ class KitTests(unittest.TestCase):
         tmp_path = self.new_tmp()
         empty = tmp_path / "empty"
         empty.mkdir()
-        with self.assertRaisesRegex(SourceError, "no skills/"):
+        with self.assertRaisesRegex(SourceError, r"no \.opencode/skills/"):
             validate_kit_root(empty)
 
     def test_resolve_and_validate_raises_on_bad_env(self) -> None:
@@ -118,18 +117,18 @@ class KitTests(unittest.TestCase):
         tmp_path = self.new_tmp()
         checkout = _make_checkout(tmp_path)
         files = manifest.walk_kit_files(checkout)
-        assert "skills/paper-ingestion/SKILL.md" in files
-        assert "skills/kaggle-accounts/store/.gitignore" in files
-        assert "skills/kaggle-accounts/store/accounts.json" not in files
-        assert "skills/paper-ingestion/.venv/pyvenv.cfg" not in files
-        assert "skills/paper-ingestion/__pycache__/mod.pyc" not in files
-        assert "skills/paper-ingestion/.hidden.md" not in files
+        assert ".opencode/skills/paper-ingestion/SKILL.md" in files
+        assert ".opencode/skills/kaggle-accounts/store/.gitignore" in files
+        assert ".opencode/skills/kaggle-accounts/store/accounts.json" not in files
+        assert ".opencode/skills/paper-ingestion/.venv/pyvenv.cfg" not in files
+        assert ".opencode/skills/paper-ingestion/__pycache__/mod.pyc" not in files
+        assert ".opencode/skills/paper-ingestion/.hidden.md" not in files
         assert "scripts/setup_env.py" in files
-        assert "scripts/setup-harnesses.sh" in files
+        assert "scripts/setup-harnesses.sh" not in files
         assert "requirements.txt" in files
         assert "sections/01-materials-and-methods.md" in files
-        assert ".claude/agents/paper-ingestion.md" in files
-        assert "CLAUDE.md" not in files  # rendered per workspace, not shipped raw
+        assert ".opencode/agents/paper-ingestion.md" in files
+        assert "AGENTS.md" not in files  # rendered per workspace, not shipped raw
         # ``guidance/paper-guide`` travels empty (see manifest.KIT_ENTRIES): its
         # real content is third-party PDFs this repo's own .gitignore keeps out
         # of git, and the kit must not bundle whatever a checkout has on disk.
@@ -152,9 +151,9 @@ class KitTests(unittest.TestCase):
             ("README.md", True),
             (".env", True),
             (".env.local", True),
-            ("skills/paper-ingestion/SKILL.md", False),
+            (".opencode/skills/paper-ingestion/SKILL.md", False),
             ("sections/01-materials-and-methods.md", False),
-            ("CLAUDE.md", False),
+            ("AGENTS.md", False),
             ("scripts/setup_env.py", False),
             ("guidance2/x", False),
         ]:
@@ -175,7 +174,7 @@ class KitTests(unittest.TestCase):
 
     def test_kit_manifest_roundtrip(self) -> None:
         tmp_path = self.new_tmp()
-        files = {"skills/a/SKILL.md": "hash-a", "package.json": "hash-b"}
+        files = {".opencode/skills/a/SKILL.md": "hash-a", "package.json": "hash-b"}
         manifest.write_manifest(tmp_path, "1.2.3", files, kind="kit")
         path = tmp_path / "kit-manifest.json"
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -216,14 +215,14 @@ class KitTests(unittest.TestCase):
         )
         assert result.returncode == 0, result.stderr
         kit_dir = root / "src" / "papersmith" / "_kit"
-        assert (kit_dir / "skills" / "paper-ingestion" / "SKILL.md").is_file()
-        assert not (kit_dir / "skills" / "kaggle-accounts" / "store" / "accounts.json").exists()
+        assert (kit_dir / ".opencode" / "skills" / "paper-ingestion" / "SKILL.md").is_file()
+        assert not (kit_dir / ".opencode" / "skills" / "kaggle-accounts" / "store" / "accounts.json").exists()
         data = json.loads((kit_dir / "kit-manifest.json").read_text(encoding="utf-8"))
         assert data["kind"] == "kit"
         assert data["version"] == __version__
-        assert "skills/skill-audit/scripts/audit_cli.py" in data["files"]
-        assert "scripts/setup-harnesses.sh" in data["files"]
-        assert (kit_dir / "scripts" / "setup-harnesses.sh").is_file()
+        assert ".opencode/skills/skill-audit/scripts/audit_cli.py" in data["files"]
+        assert "scripts/setup-harnesses.sh" not in data["files"]
+        assert not (kit_dir / "scripts" / "setup-harnesses.sh").exists()
         # every hashed file must exist and match its hash
         for relpath, digest in data["files"].items():
             assert (kit_dir / relpath).is_file(), relpath

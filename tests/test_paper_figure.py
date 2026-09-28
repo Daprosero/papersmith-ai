@@ -32,7 +32,7 @@ import uuid
 from pathlib import Path
 
 FORGE_ROOT = Path(__file__).resolve().parents[1]
-SKILL_SCRIPTS = FORGE_ROOT / "skills" / "paper-writing" / "scripts"
+SKILL_SCRIPTS = FORGE_ROOT / ".opencode" / "skills" / "paper-writing" / "scripts"
 SECTIONS_DIR = FORGE_ROOT / "sections"
 sys.path.insert(0, str(SKILL_SCRIPTS))
 import paper_contract  # noqa: E402
@@ -41,7 +41,7 @@ import paper_figure  # noqa: E402
 import paper_obligation  # noqa: E402
 import paper_cli  # noqa: E402
 
-sys.path.insert(0, str(FORGE_ROOT / "skills" / "_core" / "implementation"))
+sys.path.insert(0, str(FORGE_ROOT / ".opencode" / "skills" / "_core" / "implementation"))
 from impl_refusals import Refused  # noqa: E402
 
 sys.path.insert(0, str(FORGE_ROOT / "tests"))
@@ -1034,8 +1034,8 @@ class CLIWiringTests(unittest.TestCase):
         self.assertEqual(payload["code"], "MANDATORY_DIAGRAM_ABSENT")
 
 
-_SKILL_MD = FORGE_ROOT / "skills" / "paper-writing" / "SKILL.md"
-_DIAGRAM_AUTHOR_MD = FORGE_ROOT / ".claude" / "agents" / "diagram-author.md"
+_SKILL_MD = FORGE_ROOT / ".opencode" / "skills" / "paper-writing" / "SKILL.md"
+_DIAGRAM_AUTHOR_MD = FORGE_ROOT / ".opencode" / "agents" / "diagram-author.md"
 
 #: Declared, not discovered -- the ONE render flag this suite itself
 #: injects (`--latexmk-path`, "test-only" in its own `argparse` help text)
@@ -1078,7 +1078,7 @@ def _obligation_gating_flags() -> frozenset:
 class RenderDocSurfaceTests(unittest.TestCase):
     """W4 (`a-diagram-that-compiles-or-says-why`'s corrective re-verify,
     WARNING, carried over from the prior FAIL's own W-prior-2): `SKILL.md`
-    and `.claude/agents/diagram-author.md` document `render`'s flags in
+    and `.opencode/agents/diagram-author.md` document `render`'s flags in
     prose; nothing tied that prose to the real `argparse` surface, so a
     future flag rename or removal (as already happened once to
     `--expected-components`) could leave stale documentation with nothing

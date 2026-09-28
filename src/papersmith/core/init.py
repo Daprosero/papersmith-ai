@@ -46,10 +46,9 @@ def _create_topology(root: Path) -> None:
     # receipts` shape nothing reads.
     directories = (
         ".papersmith",
-        ".claude/agents",
         ".opencode",
-        ".pi/gentle-ai",
-        ".antigravity",
+        ".opencode/agents",
+        ".opencode/skills",
         "guidance/paper-guide",
         "guidance/reference-papers",
         "guidance/data-paper",
@@ -108,7 +107,7 @@ def _default_config(name: str, tools: Sequence[str], target: str, stamp: str) ->
         "execution_engine": {
             "active_compute_target": target,
             "active_profile": "smoke_and_invariants" if target == "local-workstation" else "sweep_training",
-            "accounts_store_path": "skills/kaggle-accounts/store/accounts.json",
+            "accounts_store_path": ".opencode/skills/kaggle-accounts/store/accounts.json",
             "ledger_path": ".papersmith/runs_ledger.jsonl",
             "auto_retry_failed_shards": True,
             "max_retries": 2,
@@ -126,7 +125,7 @@ def _write_workspace_seed(root: Path, *, name: str, title: str, topic: str,
         "topic": topic,
         "version": version,
         "tools": ", ".join(tools),
-        "agents": "- Agent definitions are available under `.claude/agents/`.",
+        "agents": "- Agent definitions are available under `.opencode/agents/`.",
         "name_yaml": json.dumps(name, ensure_ascii=False),
         "title_yaml": json.dumps(title, ensure_ascii=False),
         "topic_yaml": json.dumps(topic, ensure_ascii=False),
@@ -144,22 +143,22 @@ def _write_workspace_seed(root: Path, *, name: str, title: str, topic: str,
 
 
 def _run_npm_install(root: Path) -> str | None:
-    npm = shutil.which("npm")
+    npm = shutil.which("pnpm")
     if npm is None:
-        return "npm was not found; deliberate requires npm install for jiti/typebox"
+        return "pnpm was not found; deliberate requires pnpm install for jiti/typebox"
     try:
         result = subprocess.run(
-            [npm, "install", "--no-audit", "--no-fund", "--prefix", str(root)],
+            [npm, "install", "--prefix", str(root)],
             cwd=root,
             capture_output=True,
             text=True,
             timeout=180,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
-        return f"npm install could not complete: {exc}"
+        return f"pnpm install could not complete: {exc}"
     if result.returncode:
-        detail = (result.stderr or result.stdout or "unknown npm error").strip().splitlines()
-        return f"npm install failed: {detail[-1] if detail else 'unknown error'}"
+        detail = (result.stderr or result.stdout or "unknown pnpm error").strip().splitlines()
+        return f"pnpm install failed: {detail[-1] if detail else 'unknown error'}"
     return None
 
 
@@ -248,7 +247,7 @@ def register(subparsers) -> None:
     parser.add_argument("--tools", default=",".join(ALL_TOOLS), help="comma-separated runtimes")
     parser.add_argument("--topic", default="unspecified")
     parser.add_argument("--remote", choices=REMOTE_CHOICES, default="kaggle")
-    parser.add_argument("--no-npm", action="store_true", help="skip the best-effort npm install")
+    parser.add_argument("--no-npm", action="store_true", help="skip the best-effort pnpm install")
     parser.set_defaults(handler=run_cli)
 
 

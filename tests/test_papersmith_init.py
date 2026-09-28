@@ -30,7 +30,7 @@ class InitTests(unittest.TestCase):
             workspace,
             title="Sparse Autoencoder Audit",
             topic="mechanistic interpretability",
-            tools=("claude", "opencode", "pi", "antigravity"),
+            tools=("opencode",),
             remote="kaggle",
             run_npm=False,
         )
@@ -48,11 +48,10 @@ class InitTests(unittest.TestCase):
             ".papersmith/manifest.json",
             ".papersmith/config.json",
             ".papersmith/runs_ledger.jsonl",
-            ".claude/agents/paper-ingestion.md",
-            "skills/paper-ingestion/SKILL.md",
-            "skills/proposal-deliberation/cli.mjs",
-            "skills/kaggle-accounts/store/.gitignore",
-            "scripts/setup-harnesses.sh",
+            ".opencode/agents/paper-ingestion.md",
+            ".opencode/skills/paper-ingestion/SKILL.md",
+            ".opencode/skills/proposal-deliberation/cli.mjs",
+            ".opencode/skills/kaggle-accounts/store/.gitignore",
             "sections/01-materials-and-methods.md",
             "guidance/paper-guide",
             "guidance/reference-papers",
@@ -65,11 +64,8 @@ class InitTests(unittest.TestCase):
             "papersmith.yaml",
             "package.json",
             "README.md",
-            "CLAUDE.md",
-            "OPENCODE.md",
-            "PI.md",
-            ".pi/gentle-ai/persona.json",
-            ".antigravity/rules.md",
+            "AGENTS.md",
+            "opencode.json",
             ".gitignore",
         ):
             assert (workspace / relpath).exists(), relpath
@@ -84,10 +80,9 @@ class InitTests(unittest.TestCase):
         assert (workspace / "proposals/.gitkeep").exists()
 
         # Credentials are never copied from the kit store.
-        assert not (workspace / "skills/kaggle-accounts/store/accounts.json").exists()
-        assert "paper-ingestion" in (workspace / "CLAUDE.md").read_text(encoding="utf-8")
-        assert "mechanistic interpretability" in (workspace / "OPENCODE.md").read_text(encoding="utf-8")
-        assert json.loads((workspace / ".pi/gentle-ai/persona.json").read_text()) == {"mode": "gentleman"}
+        assert not (workspace / ".opencode/skills/kaggle-accounts/store/accounts.json").exists()
+        assert "paper-ingestion" in (workspace / "AGENTS.md").read_text(encoding="utf-8")
+        assert "mechanistic interpretability" in (workspace / "AGENTS.md").read_text(encoding="utf-8")
 
         yaml = config.load_papersmith_yaml(workspace)
         assert yaml["name"] == "sparse-ae"
@@ -101,7 +96,7 @@ class InitTests(unittest.TestCase):
 
         cfg = config.load_workspace_config(workspace)
         assert cfg["project_name"] == "sparse-ae"
-        assert cfg["active_tools"] == ["claude", "opencode", "pi", "antigravity"]
+        assert cfg["active_tools"] == ["opencode"]
         assert cfg["execution_engine"]["active_compute_target"] == "kaggle-gpu-pool"
 
         stored_manifest = json.loads((workspace / ".papersmith/manifest.json").read_text())
@@ -128,7 +123,7 @@ class InitTests(unittest.TestCase):
     def test_initialize_rejects_unknown_tools(self) -> None:
         tmp_path = self.new_tmp()
         with self.assertRaisesRegex(UserError, "unsupported runtime"):
-            init_module.initialize(tmp_path / "paper", tools=("claude", "wat"), run_npm=False)
+            init_module.initialize(tmp_path / "paper", tools=("opencode", "wat"), run_npm=False)
 
     def test_initialize_rejects_nonempty_destination(self) -> None:
         tmp_path = self.new_tmp()
@@ -145,11 +140,11 @@ class InitTests(unittest.TestCase):
         with contextlib.redirect_stdout(buffer):
             assert main([
                 "init", str(workspace), "--title", "CLI Paper", "--topic", "testing",
-                "--tools", "claude,pi", "--remote", "local", "--no-npm",
+                "--tools", "opencode", "--remote", "local", "--no-npm",
             ]) == 0
         output = buffer.getvalue()
         assert "Initialized papersmith workspace" in output
-        assert config.load_workspace_config(workspace)["active_tools"] == ["claude", "pi"]
+        assert config.load_workspace_config(workspace)["active_tools"] == ["opencode"]
 
     def test_generated_yaml_is_parseable_without_third_party_yaml(self) -> None:
         tmp_path = self.new_tmp()

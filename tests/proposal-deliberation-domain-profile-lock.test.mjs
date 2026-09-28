@@ -3,8 +3,8 @@ import { readFile, readdir } from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
 
-const coreDir = path.resolve('skills/_core/deliberation/engine');
-const skillsDir = path.resolve('skills');
+const coreDir = path.resolve('.opencode/skills/_core/deliberation/engine');
+const skillsDir = path.resolve('.opencode/skills');
 const suiteDir = path.resolve('tests');
 
 // The lock no longer reads one hardcoded profile path (Phase 3, change 11, "a

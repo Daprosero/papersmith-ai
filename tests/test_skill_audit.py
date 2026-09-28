@@ -26,7 +26,7 @@ import unittest
 from pathlib import Path
 
 FORGE = Path(__file__).resolve().parents[1]
-SKILL_ROOT = FORGE / "skills" / "skill-audit"
+SKILL_ROOT = FORGE / ".opencode" / "skills" / "skill-audit"
 SKILL_MD = SKILL_ROOT / "SKILL.md"
 CLI = SKILL_ROOT / "scripts" / "audit_cli.py"
 USAGE_MD = SKILL_ROOT / "references" / "usage.md"
@@ -813,7 +813,7 @@ if __name__ == "__main__":
 # findings.
 # ==========================================================================
 
-PD = FORGE / "skills" / "proposal-deliberation"
+PD = FORGE / ".opencode" / "skills" / "proposal-deliberation"
 PD_SPEC = PROBES / "proposal-deliberation.accepted-operations.json"
 SELF_SPEC = PROBES / "skill-audit.subcommands.json"
 
@@ -1440,7 +1440,7 @@ class RemoteExecutionMinInterpreterTests(unittest.TestCase):
     means this now derives, the way it already does when `PATH` happens to
     put a >=3.10 `python3` first."""
 
-    REMOTE_EXECUTION = FORGE / "skills" / "remote-execution"
+    REMOTE_EXECUTION = FORGE / ".opencode" / "skills" / "remote-execution"
     ACCEPTED_OPS_SPEC = PROBES / "remote-execution.accepted-operations.json"
     SMOKE_SUBS_SPEC = PROBES / "remote-execution.smoke-subcommands.json"
 
@@ -1875,7 +1875,7 @@ class NumeralCheckTests(BoxMixin, unittest.TestCase):
     def test_the_live_target_names_both_halves_at_file_and_line(self):
         """Move 2, on a real document: a skill that says three above a list of
         more than three, in the repository as it stands."""
-        SKILL = FORGE / "skills" / "remote-execution" / "SKILL.md"
+        SKILL = FORGE / ".opencode" / "skills" / "remote-execution" / "SKILL.md"
         found = audit_cli_module().numeral_mismatches(SKILL)
         self.assertEqual(len(found), 1, found)
         finding = found[0]
@@ -8927,9 +8927,9 @@ class RosterProbeEnvironmentTests(unittest.TestCase):
     is worse than a wrong count: it is the wrong subject, silently.
     """
 
-    SUBJECT = FORGE / "skills" / "experimental-implementation"
+    SUBJECT = FORGE / ".opencode" / "skills" / "experimental-implementation"
     SPEC = PROBES / "experimental-implementation.accepted-operations.json"
-    SIBLING_PROFILE = (FORGE / "skills"
+    SIBLING_PROFILE = (FORGE / ".opencode" / "skills"
                        / "proposal-implementation" / "impl_profile.py")
 
     def test_an_ambient_domain_profile_cannot_redirect_the_subject(self):
@@ -8964,7 +8964,7 @@ class NewlyCoveredSubjectRosterTests(unittest.TestCase):
     still the subject's own words, never a second parser of its source.
     """
 
-    SKILLS = FORGE / "skills"
+    SKILLS = FORGE / ".opencode" / "skills"
 
     #: (subject directory name, expected accepted-operations count). The
     #: count is asserted rather than re-derived here, for the same reason

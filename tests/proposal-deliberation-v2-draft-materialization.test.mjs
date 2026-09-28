@@ -8,8 +8,8 @@ import { pathToFileURL } from 'node:url';
 const root = process.cwd();
 const { createJiti } = await import('jiti');
 const jiti = createJiti(import.meta.url);
-const workspace = await jiti.import(path.join(root, 'skills/_core/deliberation/engine/proposal-workspace.ts'));
-const v2 = await jiti.import(path.join(root, 'skills/_core/deliberation/engine/exports.ts'));
+const workspace = await jiti.import(path.join(root, '.opencode/skills/_core/deliberation/engine/proposal-workspace.ts'));
+const v2 = await jiti.import(path.join(root, '.opencode/skills/_core/deliberation/engine/exports.ts'));
 
 async function serviceFixture(overrides = {}) {
 	const projectRoot = await mkdtemp(path.join(tmpdir(), 'proposal-deliberation-draft-'));

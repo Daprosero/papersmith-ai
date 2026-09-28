@@ -13,7 +13,7 @@ import test from 'node:test';
 import { pathToFileURL } from 'node:url';
 
 const repoRoot = process.cwd();
-const engineDir = path.join(repoRoot, 'skills/_core/deliberation/engine');
+const engineDir = path.join(repoRoot, '.opencode/skills/_core/deliberation/engine');
 const piRoot = path.resolve('.');
 
 test('4.3.1 intent-resolver.ts contains neither the sparse nor the dispers string literal as a core-level unconditional term', async () => {

@@ -22,7 +22,7 @@ import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
 const repoRoot = process.cwd();
-const engineDir = path.join(repoRoot, 'skills/_core/deliberation/engine');
+const engineDir = path.join(repoRoot, '.opencode/skills/_core/deliberation/engine');
 const piRoot = path.resolve('.');
 
 function profileSource({ includeProseReferenceText }) {

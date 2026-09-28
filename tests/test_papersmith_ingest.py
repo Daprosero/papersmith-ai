@@ -114,14 +114,14 @@ class IngestTests(unittest.TestCase):
         self.patch(ingest_module, "run_script", fake_run)
         result = ingest_module.ingest(str(source), workspace, ocr=True)
 
-        assert captured["script"] == "skills/paper-ingestion/scripts/extract_pdf.py"
+        assert captured["script"] == ".opencode/skills/paper-ingestion/scripts/extract_pdf.py"
         assert captured["args"] == [
             "guidance/reference-papers/source.pdf", "--mode", "balanced"
         ]
         assert result["index"]["entries"][0]["title"] == "Extracted Source"
 
     def test_extract_pdf_accepts_mode_override_and_rejects_invalid_mode(self) -> None:
-        script = ROOT / "skills/paper-ingestion/scripts/extract_pdf.py"
+        script = ROOT / ".opencode/skills/paper-ingestion/scripts/extract_pdf.py"
         valid = subprocess.run(
             [sys.executable, str(script), "--list", "--mode", "balanced"],
             cwd=ROOT,
