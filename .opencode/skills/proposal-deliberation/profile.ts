@@ -77,6 +77,11 @@ export const profile: DeliberationDomainProfile = {
 		purpose: "carry the mathematics that was discussed as far as a published managed revision -- not a good conversation, a document that exists and is the current one",
 		stages: [
 			{
+				stage: "screened",
+				establishes: "hypothesis contrasted with SOTA folios, novelty and plausibility graded per quoted passage",
+				behindWhen: "a grade owes its quoted passage, else screening stalls",
+			},
+			{
 				stage: "bound",
 				establishes: "which revision is current and which entry of it the change touches",
 				behindWhen: "`STATUS` named the latest and the target resolved to an entry",

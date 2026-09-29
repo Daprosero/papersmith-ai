@@ -42,9 +42,11 @@ AGENT_MODELS = {
     "implementation-build": "opencode-go/deepseek-v4.1-flash",
     "implementation-walk": "opencode-go/mimo-v2.6-flash",
     "insumos-observer": "opencode-go/deepseek-v4.1-flash",
+    "novelty-screener": "opencode-go/deepseek-v4.1-flash",
     "paper-ingestion": "opencode-go/muse-spark-1.3-contributor",
     "redactor": "opencode-go/qwen3.8-flash",
     "section-grounding-auditor": "opencode-go/deepseek-v4.1-flash",
+    "sota-grapher": "opencode-go/deepseek-v4.1-flash",
     "style-sampler": "opencode-go/muse-spark-1.3-contributor",
 }
 

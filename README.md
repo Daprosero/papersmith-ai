@@ -7,7 +7,7 @@
 [![Python](https://img.shields.io/badge/Python-%3E%3D3.11-blue.svg)](https://www.python.org/)
 
 Este README es el **manual completo, en español**: instalación, el workspace por
-dentro, los once comandos del CLI, las diez skills, los quince agentes,
+dentro, los once comandos del CLI, las once skills, los diecinueve agentes,
 cómputo remoto, desarrollo y solución de problemas.
 
 ## Índice
@@ -55,7 +55,7 @@ vas a usar un agente de IA como copiloto, los que ya vienen definidos están en
 
 ## Flujo de uso — el camino corto
 
-Nueve skills. Se invocan por nombre en Claude Code (`/paper-ingestion`) o se piden en
+Once skills. Se invocan por nombre en Claude Code (`/paper-ingestion`) o se piden en
 castellano (*"ingerí los papers"*). **No hace falta usarlas todas ni en este orden**: cada
 una declara qué necesita antes y se niega si falta, así que si arrancás por el medio te
 lo va a decir ella.
@@ -65,18 +65,20 @@ El camino completo, de un PDF a un paper compilado:
 | # | Invocás | Qué hace | Dónde deja el resultado |
 |---|---------|----------|-------------------------|
 | 1 | `/paper-ingestion` | Convierte los PDFs de referencia a Markdown legible (ecuaciones en LaTeX, tablas como tablas, figuras como archivos) | `guidance/<carpeta>/` |
-| 2 | `/proposal-deliberation` | Discute la matemática con vos y publica cada acuerdo como una revisión gestionada | `proposals/` |
-| 3 | `/experimental-deliberation` | Discute el diseño experimental que va a poner a prueba esa matemática | `experiments/` |
-| 4 | `/proposal-implementation` | Convierte la propuesta en Python que se verifica contra el documento | `implementations/<repo>/` |
-| 5 | `/experimental-implementation` | Convierte el protocolo en código y corre sus mediciones | el mismo repo destino |
-| 6 | `/kaggle-accounts` | Prueba que las credenciales de Kaggle autentican de verdad | `store/` (nunca sale del disco) |
-| 7 | `/remote-execution` | Manda trabajo a un worker remoto y lleva el registro de lo que volvió | el ledger del repo destino |
-| 8 | `/paper-writing` | Escribe el paper bloque por bloque, con cada afirmación atada a su evidencia | `paper/` |
-| 9 | `/skill-audit` | Audita cualquiera de las anteriores: qué acepta el código contra qué promete su documentación | un informe, nunca un cambio |
+| 2 | `/sota-graph` | Mapea cada paper ingerido a un grafo sistema-solar (≤20 nodos: temas, problema, 3–5 familias, novedad, resultados, conclusiones), cada nodo con su cita | `guidance/<carpeta>/<stem>.graph.json` |
+| 3 | `/proposal-deliberation` | Discute la matemática con vos y publica cada acuerdo como una revisión gestionada | `proposals/` |
+| 4 | `/experimental-deliberation` | Discute el diseño experimental que va a poner a prueba esa matemática | `experiments/` |
+| 5 | `/proposal-implementation` | Convierte la propuesta en Python que se verifica contra el documento | `implementations/<repo>/` |
+| 6 | `/experimental-implementation` | Convierte el protocolo en código y corre sus mediciones | el mismo repo destino |
+| 7 | `/kaggle-accounts` | Prueba que las credenciales de Kaggle autentican de verdad | `store/` (nunca sale del disco) |
+| 8 | `/remote-execution` | Manda trabajo a un worker remoto y lleva el registro de lo que volvió | el ledger del repo destino |
+| 9 | `/paper-writing` | Escribe el paper bloque por bloque, con cada afirmación atada a su evidencia | `paper/` |
+| 10 | `/figure-review` | Mira el render: rasteriza cada `Figures/<id>.pdf` y falla lo medible (tinta fuera del canvas, colisiones) sin juzgar estilo ni reparar nada | un informe visual, nunca un cambio |
+| 11 | `/skill-audit` | Audita cualquiera de las anteriores: qué acepta el código contra qué promete su documentación | un informe, nunca un cambio |
 
-**Lo mínimo para empezar.** Si sólo querés probar la forja, alcanza con los pasos 1 y 2:
+**Lo mínimo para empezar.** Si sólo querés probar la forja, alcanza con los pasos 1 y 3:
 poné un PDF en `guidance/reference-papers/`, corré `/paper-ingestion`, y después
-`/proposal-deliberation`. Los pasos 4 a 7 sólo tienen sentido cuando ya hay una propuesta
+`/proposal-deliberation`. Los pasos 5 a 8 sólo tienen sentido cuando ya hay una propuesta
 publicada y un repositorio destino donde implementarla.
 
 **Tres cosas que conviene saber antes de la primera corrida.**
@@ -292,8 +294,8 @@ mi-paper/
 │   ├── manifest.json            #   hashes de todo lo que generó el framework
 │   ├── runs_ledger.jsonl        #   cada corrida despachada, en orden
 │   └── version                  #   versión del framework que lo creó
-├── .opencode/agents/              # los diecisiete subagentes (fuente única de verdad)
-├── .opencode/skills/              # la copia del kit: las diez skills + _core
+├── .opencode/agents/              # los diecinueve subagentes (fuente única de verdad)
+├── .opencode/skills/              # la copia del kit: las once skills + _core
 │   └── _core/                   #   los dos motores compartidos (deliberación, implementación)
 ├── sections/                    # los diez contratos de sección (viajan CON contenido, como skills/)
 ├── guidance/
@@ -385,7 +387,7 @@ generado.
 | Qué | Dónde vive |
 |-----|------------|
 | Skills | `.opencode/skills/*/SKILL.md` |
-| Subagentes (17, `mode: subagent`, modelo pineado) | `.opencode/agents/*.md` |
+| Subagentes (19, `mode: subagent`, modelo pineado) | `.opencode/agents/*.md` |
 | Comandos `/` (uno por skill, generado) | `.opencode/commands/*.md` |
 | Routing del proyecto | `AGENTS.md` (generado) |
 | Permisos, modelo, MCP | `opencode.json` |
@@ -405,7 +407,7 @@ repo).
 
 ## Los agentes
 
-Un workspace trae **diecisiete subagentes** en `.opencode/agents/`. No son
+Un workspace trae **diecinueve subagentes** en `.opencode/agents/`. No son
 reemplazos del CLI: son tiradas cortas de trabajo que OpenCode lanza (con la
 herramienta `subagent`) cuando vos se lo pedís. La forma es siempre la
 misma — **una tirada entre dos compuertas del operador**: el agente decide
@@ -419,6 +421,7 @@ establecerlo. Las compuertas las abrís y cerrás vos. Cada uno pinea su modelo
 | `implementation-build` | Del mapa objeto→módulo aprobado al informe de hallazgos: materializa el scaffolding, escribe un módulo por objeto con su procedencia y sus tests de invariantes, y valida los remedios admitidos. | `proposal-implementation` |
 | `implementation-walk` | Camina el flujo declarado acto por acto, en su orden: corre los pasos locales, registra cada producto y se detiene en el ensayo previo al lanzamiento. No tiene camino para enviar una campaña. | `proposal-implementation` |
 | `deliberation-publish` | Desde que aceptás un cambio hasta que la revisión sucesora queda publicada y vigente — la única forma en que la matemática viaja. La deliberación en sí no está acá: sólo vos la cerrás. | `proposal-deliberation` |
+| `novelty-screener` | La etapa `screened`: contrasta la hipótesis contra el SOTA ingerido (`reference-papers` + `paper-guide`), califica novedad y plausibilidad con evidencia citada y reporta lo que falta antes de deliberar. No publica, no escribe, no delibera. | `proposal-deliberation` |
 | `experimental-publish` | Lo mismo que `deliberation-publish`, sobre el documento de experimentos. | `experimental-deliberation` |
 | `experimental-validation` | La etapa `validated`: busca el protocolo de evaluación del área —métricas, baselines, dataset, semillas, test de significancia—, verifica cada baseline contra su repo y su venue, y fecha cada URL que usa. | `experimental-deliberation` |
 | `experiments-build` | Del mapa aprobado de pasos del protocolo a comandos ejecutables: materializa lo que haga falta, cablea cada paso e instrumenta cada medición para que se pueda correr y leer. | `experimental-implementation` |
@@ -432,11 +435,12 @@ establecerlo. Las compuertas las abrís y cerrás vos. Cada uno pinea su modelo
 | `insumos-observer` | Lee las cuatro fuentes de entrada declaradas del paper —`proposals/`, `experiments/`, el código del repo destino y sus propias salidas de corrida— y reporta, por cada hecho observable, si se cumple y con qué evidencia. Nunca decide un valor ni corre `declare`. | `paper-writing` |
 | `audit-report` | Audita un sujeto que enumera un conjunto cerrado —operaciones, subcomandos, códigos, assets— buscando la brecha entre lo que su código acepta y lo que su documentación promete. Reporta; nunca repara. | `skill-audit` |
 | `figure-describer` | Describe cada figura ingerida como comentario HTML invisible junto a su referencia, para que los agentes sin visión entiendan cada imagen. Requiere visión; corre tras la extracción. | `paper-ingestion` |
+| `sota-grapher` | Mapea un paper ingerido a su grafo sistema-solar —temas, problema, 3 a 5 familias SOTA, novedad, resultados y conclusiones, 20 nodos máximo— como JSON viewer-ready junto al paper, cada nodo con su cita, y corre el checker propio hasta el verde. | `sota-graph` |
 
 Tres reglas que ordenan todo lo demás:
 
 - **La fuente de verdad es `.opencode/agents/`.** `AGENTS.md` lista
-  a los diecisiete enteros, y se genera: si querés cambiar un agente, se cambia
+  a los diecinueve enteros, y se genera: si querés cambiar un agente, se cambia
   ahí, no en la proyección.
 - **Cada agente declara la skill que carga** (`.opencode/skills/<nombre>/SKILL.md`), y esa
   atadura se verifica: un agente que apunte a una skill que el workspace no
@@ -470,7 +474,7 @@ verifica**. El agente propone un cambio; el motor comprueba que ese cambio no
 rompió nada y, si lo rompió, se niega. Un agente puede equivocarse. Un motor
 determinista no cambia de opinión.
 
-**Y cómo se encadenan.** Las nueve no son islas: cada una recibe algo concreto de
+**Y cómo se encadenan.** Las once no son islas: cada una recibe algo concreto de
 otra y le entrega algo concreto a la siguiente. Este es el mapa; cada skill explica
 su propia costura en detalle, en su apartado. Las flechas dicen **qué** pasa por la
 costura, no sólo que existe — y cada una de las etiquetas de abajo está leída de la
@@ -480,30 +484,34 @@ declaración de la skill que la recibe, no inferida del nombre de la carpeta.
 flowchart TD
     PDF["PDFs que dejás en guidance/"] --> PI["1. paper-ingestion"]
 
-    PI -- "guidance/paper-guide (opcional)" --> PD["2. proposal-deliberation"]
-    PI -- "guidance/data-paper (obligatoria)" --> ED["6. experimental-deliberation"]
+    PI -- "el .md de cada paper" --> SG["2. sota-graph"]
+    SG -- "el grafo solar de cada paper" --> PD["3. proposal-deliberation"]
+    PI -- "guidance/paper-guide (opcional)" --> PD
+    PI -- "guidance/data-paper (obligatoria)" --> ED["4. experimental-deliberation"]
     PI -- "guidance/paper-guide (opcional)" --> ED
 
     PD -- "proposals/ — la revisión publicada" --> ED
-    PD -- "STATUS + el texto de la revisión" --> IMP["3. proposal-implementation"]
-    ED -- "experiments/ — el protocolo publicado" --> EIM["7. experimental-implementation"]
+    PD -- "STATUS + el texto de la revisión" --> IMP["5. proposal-implementation"]
+    ED -- "experiments/ — el protocolo publicado" --> EIM["8. experimental-implementation"]
     PD -- "proposals/ — el documento 1 del par" --> EIM
 
     IMP -- "correcciones, detrás de compuerta" --> PD
     EIM -- "correcciones, detrás de compuerta" --> ED
 
     IMP -- "el repo destino en implementations/" --> EIM
-    IMP -- "carpeta del trabajo en tools/" --> RE["5. remote-execution"]
+    IMP -- "carpeta del trabajo en tools/" --> RE["7. remote-execution"]
     EIM -- "carpeta del trabajo en tools/" --> RE
-    KA["4. kaggle-accounts"] -- "worker + ruta al token, nunca el valor" --> RE
+    KA["6. kaggle-accounts"] -- "worker + ruta al token, nunca el valor" --> RE
     RE -- "el registro, sólo lectura" --> IMP
 
-    PD -- "proposals/" --> PW["8. paper-writing"]
+    PD -- "proposals/" --> PW["9. paper-writing"]
     ED -- "experiments/" --> PW
     EIM -- "el código del destino y lo que sus corridas devolvieron" --> PW
     PW --> PAPER["paper/main.tex + Figures/"]
+    PAPER -- "Figures/<id>.pdf ya compilado" --> FR["10. figure-review"]
 
-    SA["9. skill-audit"] -. "informa, nunca cambia" .-> PI
+    SA["11. skill-audit"] -. "informa, nunca cambia" .-> PI
+    SA -. " " .-> SG
     SA -. " " .-> PD
     SA -. " " .-> IMP
     SA -. " " .-> KA
@@ -511,6 +519,7 @@ flowchart TD
     SA -. " " .-> ED
     SA -. " " .-> EIM
     SA -. " " .-> PW
+    SA -. " " .-> FR
     SA -. "y a sí misma" .-> SA
 ```
 
@@ -527,7 +536,7 @@ entre los dos huéspedes de cada par es su `profile.ts` o su `impl_profile.py` �
 eso un defecto en un motor aparece en dos skills a la vez, y por eso las
 limitaciones del motor están anotadas en las dos.
 
-*La 8 es la única que lee de todo lo anterior a la vez*, y la 9 no está en la cadena:
+*La 9 es la única que lee de todo lo anterior a la vez*, y la 11 no está en la cadena:
 se para al costado y mira a cualquiera, incluida a sí misma.
 
 ---
@@ -2959,7 +2968,7 @@ papersmith-ai/
 │   ├── core/                   # init, status, ingest, upgrade, executor, ledger
 │   ├── bridges/                # Node, Python, deliberación, ejecución remota
 │   └── mcp/                    # servidor stdio Model Context Protocol
-├── .opencode/skills/            # árbol nativo de skills (diez + _core)
+├── .opencode/skills/            # árbol nativo de skills (once + _core)
 │   ├── _core/                  # motores compartidos de deliberación e implementación
 │   ├── paper-ingestion/        # Marker + Surya OCR + llama-server
 │   ├── proposal-deliberation/  # motor TypeScript: verificación por AST y máquina de estados
@@ -2970,7 +2979,7 @@ papersmith-ai/
 │   ├── remote-execution/       # despacho a cómputo distribuido (Kaggle T4/P100 / local)
 │   ├── kaggle-accounts/        # guardián de credenciales: identidades, nunca valores
 │   └── skill-audit/            # meta-auditor de superficies y promesas
-├── .opencode/agents/            # diecisiete subagentes, modelo pineado por archivo
+├── .opencode/agents/            # diecinueve subagentes, modelo pineado por archivo
 ├── .opencode/commands/          # comandos / generados (uno por skill)
 ├── AGENTS.md                    # routing del proyecto (generado)
 ├── opencode.json                # permisos, modelo, MCP (V2)
@@ -3021,7 +3030,7 @@ eso `tests/domain_profile.py` lo siembra y lo restaura por import.
 importable`. La forma que funciona es la de arriba, sin `-t .`.
 
 **Qué prueba cada cosa.** `tests/` cubre **el tooling de la forja**: los dos
-motores compartidos, los nueve `SKILL.md` y sus scripts, la atadura entre cada
+motores compartidos, los once `SKILL.md` y sus scripts, la atadura entre cada
 skill y sus agentes en las dos direcciones, y una serie *from-scratch* que
 genera un workspace con el CLI y recorre cada comando, cada skill embarcada y
 cada subagente dentro de él (`tests/test_workspace_{commands,skills,agents}_e2e.py`).

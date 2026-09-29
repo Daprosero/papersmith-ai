@@ -29,6 +29,7 @@ current one.
 
 | Stage | Establishes | Behind you when |
 | --- | --- | --- |
+| `screened` | Hypothesis contrasted with SOTA folios, novelty and plausibility graded per quoted passage | A grade owes its quoted passage, else screening stalls |
 | `bound` | Which revision is current and which entry of it the change touches | `STATUS` named the latest and the target resolved to an entry |
 | `deliberated` | The change was argued through rather than typed | **the user said so** — nothing here measures it, and nothing may |
 | `composed` | The replacement exists written AS mathematics — the equation, with its tag — and not as a description of it | a block exists carrying the equation and the tag it lands on |
@@ -55,11 +56,20 @@ and authorizing publication, because it advances the real lineage.
 ## What this skill delegates, and to whom
 
 One stretch of this flow is mechanical from end to end, and it is precisely the
-one that used to get lost.
+one that used to get lost. A second stretch runs before any of that, and it
+never writes at all.
 
 | Stretch | Delegated to | Begins after | Ends at | Measure this before delegating |
 | --- | --- | --- | --- | --- |
+| Screen | this skill delegates to the `novelty-screener` agent | the hypothesis is stated and the SOTA corpus is ingested | the novelty and plausibility report, each claim evidence-quoted, with what remains owed | the stated hypothesis plus at least one ingested paper folder under `guidance/reference-papers` or `guidance/paper-guide` — an empty corpus is the operator's to fill, not this stretch's to invent |
 | Publish | this skill delegates to the `deliberation-publish` agent | the operator accepted the change | the successor published and current | the acceptance itself — the one precondition here that no command reports, because nothing measures `deliberated`. The orchestrator holds it or the stretch does not begin |
+
+**Screening precedes binding and never publishes.** The screener reads only
+the ingested Markdown corpus and the stated hypothesis; it creates no
+revision, resolves no entry, and closes neither `bound` nor `deliberated`.
+Its report is what the operator consumes to decide whether deliberation
+should begin at all — a hypothesis the SOTA already contains, or one the
+SOTA contradicts, is cheaper to meet here than at `composed`.
 
 **The deliberation itself is never delegated**, and the north above says why:
 nothing measures it, so an agent that could close that stage would be approving

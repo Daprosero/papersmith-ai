@@ -39,6 +39,7 @@ SKILL_NAMES = (
     "proposal-implementation",
     "remote-execution",
     "skill-audit",
+    "sota-graph",
 )
 
 PAPER_WRITING_VERBS = (

@@ -167,7 +167,7 @@ class HarnessProjectionTests(unittest.TestCase):
 
 
 class HarnessCommandProjectionTests(unittest.TestCase):
-    """The ten skills arrive as slash commands, plus the OpenCode safety plugin."""
+    """The eleven skills arrive as slash commands, plus the OpenCode safety plugin."""
 
     COMMAND_NAMES = (
         "experimental-deliberation",
@@ -180,9 +180,10 @@ class HarnessCommandProjectionTests(unittest.TestCase):
         "proposal-implementation",
         "remote-execution",
         "skill-audit",
+        "sota-graph",
     )
 
-    def test_init_projects_ten_commands(self) -> None:
+    def test_init_projects_eleven_commands(self) -> None:
         workspace = make_workspace(new_tmp(self))
         names = sorted(path.stem for path in (workspace / ".opencode/commands").glob("*.md"))
         self.assertEqual(names, sorted(self.COMMAND_NAMES))
