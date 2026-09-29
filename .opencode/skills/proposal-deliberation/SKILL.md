@@ -61,7 +61,7 @@ never writes at all.
 
 | Stretch | Delegated to | Begins after | Ends at | Measure this before delegating |
 | --- | --- | --- | --- | --- |
-| Screen | this skill delegates to the `novelty-screener` agent | the hypothesis is stated and the SOTA corpus is ingested | the novelty and plausibility report, each claim evidence-quoted, with what remains owed | the stated hypothesis plus at least one ingested paper folder under `guidance/reference-papers` or `guidance/paper-guide` — an empty corpus is the operator's to fill, not this stretch's to invent |
+| Screen | this skill delegates to the `novelty-screener` agent | the hypothesis is stated and the SOTA corpus is ingested | the novelty and plausibility report, each claim evidence-quoted, with what remains owed | the stated hypothesis plus at least one ingested paper folder under `guidance/reference-papers` or `guidance/paper-guide` — an empty corpus is the operator's to fill, not this stretch's to invent; outside powers run only over orphaned claims (discovery through the agent's own MCP, resolution through `paper_cli.py resolve` under the `resolution` role) and only ever propose ingestion, never grade |
 | Publish | this skill delegates to the `deliberation-publish` agent | the operator accepted the change | the successor published and current | the acceptance itself — the one precondition here that no command reports, because nothing measures `deliberated`. The orchestrator holds it or the stretch does not begin |
 
 **Screening precedes binding and never publishes.** The screener reads only
