@@ -174,8 +174,12 @@ body{{font-family:system-ui,sans-serif;background:#0b1020;color:#e8e8e8;margin:0
 .link.inter{{stroke:#9b7ede;stroke-width:2}}
 .sys-title{{fill:#fff;font-size:30px}}
 #toolbar button{{font-size:15px;margin-right:6px;padding:4px 12px;cursor:pointer}}
-#panel{{background:#141b31;border:1px solid #2a3350;border-radius:8px;padding:10px 16px;margin:0 0 10px;max-width:900px;max-height:30vh;overflow:auto}}
-#panel .quote{{font-style:italic;color:#b9c4de}}
+#panel{{background:#141b31;border:1px solid #2a3350;border-radius:8px;padding:10px 16px;margin:0 0 10px;max-width:900px}}
+#overlay{{position:fixed;inset:0;background:rgba(0,0,0,.6);display:none;align-items:center;justify-content:center;z-index:10}}
+#overlay.open{{display:flex}}
+#modal{{background:#141b31;border:1px solid #9b7ede;border-radius:10px;padding:16px 20px;max-width:580px;max-height:82vh;overflow:auto}}
+#modal .quote{{font-style:italic;color:#b9c4de}}
+#modalclose{{float:right;cursor:pointer;font-size:16px;padding:2px 10px}}
 #famlegend{{margin:0 0 8px}}
 .famchip{{margin:2px;padding:3px 12px;cursor:pointer;border-radius:12px;border:1px solid #9b7ede;background:#1a2140;color:#e8e8e8;font-size:13px}}
 .famchip.on{{background:#9b7ede;color:#0b1020}}
@@ -185,15 +189,17 @@ body{{font-family:system-ui,sans-serif;background:#0b1020;color:#e8e8e8;margin:0
 </head>
 <body>
 <h1>SOTA constellation — one plane</h1>
-<div id="panel"><em>Click a planet to read it. Use the family filter to dim the rest. Hover a planet to highlight its cross-system links.</em></div>
+<div id="panel"><em>Click a planet to read it in a popup. Drag to pan, wheel to zoom.</em></div>
+<div id="overlay"><div id="modal"><button id="modalclose">close</button><div id="modalbody"></div></div></div>
 <div id="famlegend"><em>Families:</em> <span id="famchips"></span></div>
 <div id="toolbar"><button id="zoomin">zoom +</button><button id="zoomout">zoom −</button><button id="zoomreset">reset view</button></div>
 {sky}
 <script>
 const ATLAS = {data};
 const svg = document.getElementById('sky');
-const home = svg.viewBox.baseVal;
-let vb = {{x: home.x, y: home.y, w: home.width, h: home.height}};
+const homeRect = svg.viewBox.baseVal;
+const home = {{x: homeRect.x, y: homeRect.y, w: homeRect.width, h: homeRect.height}};
+let vb = {{x: home.x, y: home.y, w: home.w, h: home.h}};
 function apply() {{
   svg.setAttribute('viewBox', vb.x + ' ' + vb.y + ' ' + vb.w + ' ' + vb.h);
 }}
@@ -247,7 +253,16 @@ svg.addEventListener('pointermove', e => {{
 function endDrag() {{ drag = null; }}
 svg.addEventListener('pointerup', endDrag);
 svg.addEventListener('pointercancel', endDrag);
-const panel = document.getElementById('panel');
+const panel = document.getElementById('modalbody');
+const overlay = document.getElementById('overlay');
+function closeModal() {{ overlay.classList.remove('open'); }}
+document.getElementById('modalclose').addEventListener('click', closeModal);
+overlay.addEventListener('click', e => {{ if (e.target === overlay) closeModal(); }});
+document.addEventListener('keydown', e => {{ if (e.key === 'Escape') closeModal(); }});
+function openModal(titleHtml) {{
+  panel.innerHTML = titleHtml;
+  overlay.classList.add('open');
+}}
 function findPlanet(sys, pid) {{
   const s = ATLAS.systems.find(s => s.id === sys);
   return s ? s.planets.find(p => p.id === pid) : null;
@@ -257,11 +272,11 @@ document.querySelectorAll('.planet').forEach(g => {{
     const p = findPlanet(g.dataset.system, g.dataset.planet);
     if (!p) return;
     const ev = p.evidence || {{}};
-    panel.innerHTML = '<h3>' + p.label + '</h3>'
+    openModal('<h3>' + p.label + '</h3>'
       + '<p><b>' + p.slot + '</b> · orbit ' + p.orbit + ' · ' + (p.provenance || '') + '</p>'
       + '<p>' + (p.detail || '') + '</p>'
       + '<p class="quote">' + (ev.quote || '') + '</p>'
-      + '<p><small>' + (ev.origin || '') + ' · retrieved ' + (ev.retrieved || '') + '</small></p>';
+      + '<p><small>' + (ev.origin || '') + ' · retrieved ' + (ev.retrieved || '') + '</small></p>');
   }});
 }});
 document.querySelectorAll('.planet').forEach(g => {{
