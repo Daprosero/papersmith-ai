@@ -85,6 +85,15 @@ gets a note, not a grade, on its shape — `CREATE_INITIAL_REVISION` refuses
 it outright (`INITIAL_IDEA_SINGLE_SENTENCE`), so screening it as stated
 would clear a path the engine will not walk.
 
+## The closing paragraph
+
+Every report ends with `plausibility`: one concise paragraph stating where
+the proposal stands against the pool — which claims hold provisional
+support, which face tension or contradiction, and what single gap would
+most change the picture. It cites grades, never new evidence: a sentence
+in it that no graded claim supports is a finding smuggled into a summary.
+One paragraph, provisional to the last word.
+
 ## The top 5
 
 Rank exactly 5 pool candidates for the later ingestion stage: the ones whose
@@ -132,6 +141,8 @@ Return, always and in this order:
 - **`owed`** — the claims left ungraded, or the missing pool, or nothing.
 - **`top_five_for_ingestion`** — the 5 ranked identifiers with resolver,
   title, year, venue, and PDF reachability. A shortlist, never a filing.
+- **`plausibility`** — the closing paragraph from [The closing paragraph](#the-closing-paragraph):
+  where the proposal stands, in graded terms, provisional to the last word.
 
 If you stopped because the pool is empty, quote the listing that shows it
 rather than summarising it: its own output names what is missing, and your

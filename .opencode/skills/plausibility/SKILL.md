@@ -18,7 +18,7 @@ doors.
 | --- | --- | --- | --- | --- |
 | Scout | this skill delegates to the `sota-scout` agent | the idea is stated in at least two sentences | the pool: 25 candidates with abstracts, 3 to 5 families, and the provisional plausibility note | the stated idea — scouting an unstated idea invents its own question |
 | Constellation | this skill delegates to the `sota-grapher` agent | the pool holds its 25 candidates | the single `atlas.html` beside `atlas.json`, plus the checker's green run | the pool file exists with 25 resolved candidates — mapping fewer invents coverage |
-| Screen | this skill delegates to the `novelty-screener` agent | the hypothesis is stated and the pool holds its candidates | the plausibility report, each claim evidence-quoted and marked provisional, the top 5 ranked for later ingestion, with what remains owed | the stated hypothesis plus the pool — an empty pool is the scout's to fill, not this stretch's to invent; the borrowed `resolve` runs only to confirm the top 5, and nothing here files into `guidance/` |
+| Screen | this skill delegates to the `novelty-screener` agent | the hypothesis is stated and the pool holds its candidates | the plausibility report — graded claims, ranked top 5, and one closing paragraph on where the proposal stands — with what remains owed | the stated hypothesis plus the pool — an empty pool is the scout's to fill, not this stretch's to invent; the borrowed `resolve` runs only to confirm the top 5, and nothing here files into `guidance/` |
 
 What moves is execution, never doctrine: every rule for scouting and
 mapping lives below, every rule for screening lives in the agent's own
