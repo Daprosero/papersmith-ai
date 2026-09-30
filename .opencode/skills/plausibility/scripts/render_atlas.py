@@ -1,9 +1,13 @@
 """Deterministic renderer: a green atlas to one self-contained HTML file.
 
-Reads ``sota-pool/atlas.json`` and writes a single ``atlas.html`` with
-inline SVG plus vanilla JavaScript — no CDN, no network at view time.
-Clicking a planet shows its detail and abstract quote; a family filter dims
-what does not belong; inter-system links highlight across systems.
+Reads ``sota-pool/atlas.json`` and writes a single ``atlas.html``: every
+system laid out on ONE shared 2D plane (golden-angle spiral, systems sorted
+by id — the same atlas always draws the same sky), intra-system links as
+straight segments, inter-system links as curves running planet to planet
+across systems. Inline SVG plus vanilla JavaScript — no CDN, no network at
+view time. Clicking a planet shows its detail and abstract quote; a family
+filter dims what does not belong; hovering a planet highlights its
+cross-system links.
 
 Exit 0 on a written file, 1 when the atlas fails this module's own shape
 read (run the checker first — it names violations, this one only refuses
@@ -16,6 +20,7 @@ from __future__ import annotations
 
 import html
 import json
+import math
 import sys
 from pathlib import Path
 
@@ -32,55 +37,51 @@ SLOT_COLORS = {
     "conclusion": "#95a5a6",
 }
 
-CX, CY = 400, 300
 ORBIT_RADII = {0: 0, 1: 90, 2: 170, 3: 250}
-SYSTEM_W, SYSTEM_H = 800, 620
+SYSTEM_RADIUS = 280
+SPIRAL_STEP = 640
+GOLDEN_ANGLE = math.pi * (3 - math.sqrt(5))
+MARGIN = 120
 
 
 def _escape(value: object) -> str:
     return html.escape(str(value), quote=True)
 
 
-def _layout(system: dict) -> dict[str, tuple[float, float]]:
-    """Deterministic positions: orbit radius by slot, evenly spaced angles
-    in slot order — the same atlas always draws the same sky."""
+def _system_centers(systems: list[dict]) -> dict[str, tuple[float, float]]:
+    """One shared plane: systems sorted by id along a golden-angle spiral.
+    Pure function of the sorted ids — deterministic by construction."""
+    centers: dict[str, tuple[float, float]] = {}
+    for index, system in enumerate(sorted(systems, key=lambda s: s["id"])):
+        radius = SPIRAL_STEP * math.sqrt(index)
+        angle = index * GOLDEN_ANGLE
+        centers[system["id"]] = (
+            round(radius * math.cos(angle), 1),
+            round(radius * math.sin(angle), 1),
+        )
+    return centers
+
+
+def _local_positions(planets: list[dict]) -> dict[str, tuple[float, float]]:
+    """System-local layout: orbit radius by slot, evenly spaced angles in id
+    order — the same planets always draw the same system."""
     by_orbit: dict[int, list[dict]] = {}
-    for planet in system["planets"]:
+    for planet in planets:
         by_orbit.setdefault(planet["orbit"], []).append(planet)
     positions: dict[str, tuple[float, float]] = {}
-    import math
     for orbit in sorted(by_orbit):
         members = sorted(by_orbit[orbit], key=lambda p: p["id"])
         radius = ORBIT_RADII.get(orbit, 250)
         if radius == 0:
-            positions[members[0]["id"]] = (CX, CY)
+            positions[members[0]["id"]] = (0.0, 0.0)
             continue
         for index, planet in enumerate(members):
             angle = 2 * math.pi * index / len(members) - math.pi / 2
             positions[planet["id"]] = (
-                round(CX + radius * math.cos(angle), 1),
-                round(CY + radius * math.sin(angle), 1),
+                round(radius * math.cos(angle), 1),
+                round(radius * math.sin(angle), 1),
             )
     return positions
-
-
-def _system_svg(index: int, system: dict, positions: dict[str, tuple[float, float]]) -> str:
-    parts = [f'<g class="system" data-system="{_escape(system["id"])}">']
-    for orbit in sorted({p["orbit"] for p in system["planets"] if p["orbit"] > 0}):
-        radius = ORBIT_RADII.get(orbit, 250)
-        parts.append(f'<circle cx="{CX}" cy="{CY}" r="{radius}" class="orbit"/>')
-    for planet in sorted(system["planets"], key=lambda p: p["id"]):
-        x, y = positions[planet["id"]]
-        color = SLOT_COLORS.get(planet["slot"], "#cccccc")
-        size = 16 if planet["slot"] == "sun" else 9
-        parts.append(
-            f'<g class="planet" data-system="{_escape(system["id"])}" '
-            f'data-planet="{_escape(planet["id"])}" data-slot="{_escape(planet["slot"])}">'
-            f'<circle cx="{x}" cy="{y}" r="{size}" fill="{color}"/>'
-            f'<text x="{x}" y="{y - size - 4}">{_escape(planet["label"][:28])}</text></g>'
-        )
-    parts.append("</g>")
-    return "\n".join(parts)
 
 
 def _readable_shape(atlas: object) -> str | None:
@@ -98,25 +99,59 @@ def _readable_shape(atlas: object) -> str | None:
 
 def render(atlas: dict) -> str:
     data = json.dumps(atlas).replace("<", "\\u003c")
-    svgs, offset = [], 0
-    for index, system in enumerate(atlas["systems"]):
-        positions = _layout(system)
-        intra = [l for l in atlas["links"]
-                 if l.get("from_system") == l.get("to_system") == system["id"]]
-        seg = [f'<svg class="sky" viewBox="0 0 {SYSTEM_W} {SYSTEM_H}" '
-               f'data-system="{_escape(system["id"])}">']
-        seg.append(f'<text x="20" y="36" class="sys-title">{_escape(system.get("title", system["id"]))}</text>')
-        seg.append(_system_svg(index, system, positions))
-        for link in sorted(intra, key=lambda l: (str(l.get("from")), str(l.get("to")))):
-            a, b = positions.get(link["from"]), positions.get(link["to"])
-            if a and b:
-                seg.append(
-                    f'<line x1="{a[0]}" y1="{a[1]}" x2="{b[0]}" y2="{b[1]}" '
-                    f'class="link intra" data-rel="{_escape(link.get("rel"))}"/>')
-        seg.append("</svg>")
-        svgs.append("\n".join(seg))
-        offset += 1
-    skies = "\n".join(svgs)
+    centers = _system_centers(atlas["systems"])
+    absolute: dict[tuple[str, str], tuple[float, float]] = {}
+    for system in atlas["systems"]:
+        cx, cy = centers[system["id"]]
+        for pid, (lx, ly) in _local_positions(system["planets"]).items():
+            absolute[(system["id"], pid)] = (cx + lx, cy + ly)
+
+    xs = [x for x, _ in absolute.values()]
+    ys = [y for _, y in absolute.values()]
+    min_x, max_x = min(xs) - SYSTEM_RADIUS - MARGIN, max(xs) + SYSTEM_RADIUS + MARGIN
+    min_y, max_y = min(ys) - SYSTEM_RADIUS - MARGIN, max(ys) + SYSTEM_RADIUS + MARGIN
+    width, height = round(max_x - min_x), round(max_y - min_y)
+
+    parts = [f'<svg class="sky" viewBox="{min_x} {min_y} {width} {height}">']
+    for system in sorted(atlas["systems"], key=lambda s: s["id"]):
+        cx, cy = centers[system["id"]]
+        parts.append(f'<g class="system" data-system="{_escape(system["id"])}">')
+        parts.append(f'<text x="{cx}" y="{cy - SYSTEM_RADIUS - 12}" class="sys-title">'
+                     f'{_escape(system.get("title", system["id"]))}</text>')
+        for orbit in sorted({p["orbit"] for p in system["planets"] if p["orbit"] > 0}):
+            radius = ORBIT_RADII.get(orbit, 250)
+            parts.append(f'<circle cx="{cx}" cy="{cy}" r="{radius}" class="orbit"/>')
+        for planet in sorted(system["planets"], key=lambda p: p["id"]):
+            x, y = absolute[(system["id"], planet["id"])]
+            color = SLOT_COLORS.get(planet["slot"], "#cccccc")
+            size = 16 if planet["slot"] == "sun" else 9
+            parts.append(
+                f'<g class="planet" data-system="{_escape(system["id"])}" '
+                f'data-planet="{_escape(planet["id"])}" data-slot="{_escape(planet["slot"])}">'
+                f'<circle cx="{x}" cy="{y}" r="{size}" fill="{color}"/>'
+                f'<text x="{x}" y="{y - size - 4}">{_escape(planet["label"][:28])}</text></g>')
+        parts.append("</g>")
+    for link in sorted(atlas["links"],
+                       key=lambda l: (str(l.get("from_system")), str(l.get("from")),
+                                      str(l.get("to_system")), str(l.get("to")))):
+        a = absolute.get((link.get("from_system"), link.get("from")))
+        b = absolute.get((link.get("to_system"), link.get("to")))
+        if not a or not b:
+            continue
+        intra = link.get("from_system") == link.get("to_system")
+        if intra:
+            parts.append(
+                f'<line x1="{a[0]}" y1="{a[1]}" x2="{b[0]}" y2="{b[1]}" '
+                f'class="link intra" data-rel="{_escape(link.get("rel"))}"/>')
+        else:
+            mx, my = round((a[0] + b[0]) / 2), round((a[1] + b[1]) / 2 - 120, 1)
+            parts.append(
+                f'<path d="M {a[0]} {a[1]} Q {mx} {my} {b[0]} {b[1]}" '
+                f'class="link inter" data-rel="{_escape(link.get("rel"))}" '
+                f'data-from="{_escape(link.get("from_system"))}.{_escape(link.get("from"))}" '
+                f'data-to="{_escape(link.get("to_system"))}.{_escape(link.get("to"))}"/>')
+    parts.append("</svg>")
+    sky = "\n".join(parts)
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -125,23 +160,24 @@ def render(atlas: dict) -> str:
 <title>SOTA constellation</title>
 <style>
 body{{font-family:system-ui,sans-serif;background:#0b1020;color:#e8e8e8;margin:0;padding:16px}}
-.sky{{background:#111830;border:1px solid #2a3350;border-radius:8px;margin:0 0 24px;width:100%;max-width:840px}}
+.sky{{background:#111830;border:1px solid #2a3350;border-radius:8px;width:100%}}
 .orbit{{fill:none;stroke:#2a3350;stroke-width:1}}
 .planet text{{fill:#cfd6ea;font-size:11px;text-anchor:middle}}
 .planet{{cursor:pointer}}
-.link{{stroke:#4a5a80;stroke-width:1.2}}
-.sys-title{{fill:#fff;font-size:18px}}
-#panel{{position:sticky;top:8px;background:#141b31;border:1px solid #2a3350;border-radius:8px;padding:12px 16px;margin-bottom:16px;max-width:840px}}
+.link{{stroke:#4a5a80;stroke-width:1.2;fill:none}}
+.link.inter{{stroke:#9b7ede;stroke-width:1.6}}
+.sys-title{{fill:#fff;font-size:22px}}
+#panel{{position:sticky;top:8px;background:#141b31;border:1px solid #2a3350;border-radius:8px;padding:12px 16px;margin-bottom:16px;max-width:900px}}
 #panel .quote{{font-style:italic;color:#b9c4de}}
 .dim{{opacity:.15}}
 </style>
 </head>
 <body>
-<h1>SOTA constellation</h1>
-<div id="panel"><em>Click a planet to read it. Use the family filter to dim the rest.</em></div>
+<h1>SOTA constellation — one plane</h1>
+<div id="panel"><em>Click a planet to read it. Use the family filter to dim the rest. Hover a planet to highlight its cross-system links.</em></div>
 <div><label>Family filter: <input id="famfilter" placeholder="family planet id"></label>
 <button id="clear">clear</button></div>
-{skies}
+{sky}
 <script>
 const ATLAS = {data};
 const panel = document.getElementById('panel');
@@ -161,18 +197,16 @@ document.querySelectorAll('.planet').forEach(g => {{
       + '<p><small>' + (ev.origin || '') + ' · retrieved ' + (ev.retrieved || '') + '</small></p>';
   }});
 }});
-function crossLinks(pid) {{
-  return ATLAS.links.filter(l =>
-    (l.from_system !== l.to_system) &&
-    ((l.from_system + '.' + l.from === pid) || (l.to_system + '.' + l.to === pid)));
-}}
 document.querySelectorAll('.planet').forEach(g => {{
   g.addEventListener('mouseenter', () => {{
     const pid = g.dataset.system + '.' + g.dataset.planet;
     const keep = new Set([pid]);
-    crossLinks(pid).forEach(l => {{
-      keep.add(l.from_system + '.' + l.from);
-      keep.add(l.to_system + '.' + l.to);
+    ATLAS.links.forEach(l => {{
+      if (l.from_system !== l.to_system &&
+          ((l.from_system + '.' + l.from === pid) || (l.to_system + '.' + l.to === pid))) {{
+        keep.add(l.from_system + '.' + l.from);
+        keep.add(l.to_system + '.' + l.to);
+      }}
     }});
     document.querySelectorAll('.planet').forEach(h => {{
       h.classList.toggle('dim', !keep.has(h.dataset.system + '.' + h.dataset.planet));
@@ -230,7 +264,7 @@ def main(argv: list[str]) -> int:
         return 1
     out_path.write_text(render(atlas), encoding="utf-8")
     systems = len(atlas["systems"])
-    print(f"ATLAS_RENDERED: {systems} systems -> {out_path}")
+    print(f"ATLAS_RENDERED: {systems} systems on one plane -> {out_path}")
     return 0
 
 

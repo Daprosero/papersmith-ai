@@ -139,16 +139,28 @@ class RenderAtlasTests(unittest.TestCase):
                               capture_output=True, text=True, cwd=self.tmp)
         return proc.returncode, proc.stdout + proc.stderr
 
-    def test_green_atlas_renders_one_self_contained_file(self):
+    def test_green_atlas_renders_one_self_contained_plane(self):
+        links = [{"from_system": "a", "from": "a-5", "to_system": "b", "to": "b-5",
+                  "rel": "shares-family-with"}]
+        self.atlas_path.write_text(json.dumps(atlas(links=links)), encoding="utf-8")
         code, out = self.run_renderer(str(self.atlas_path), "--out", str(self.out_path))
         self.assertEqual(code, 0, out)
         self.assertIn("ATLAS_RENDERED", out)
         page = self.out_path.read_text(encoding="utf-8")
+        self.assertEqual(page.count("<svg"), 1)
         self.assertIn("Ta</text>", page)
         self.assertIn("Tb</text>", page)
+        self.assertIn('class="link inter"', page)
         self.assertNotIn("<script src", page)
         self.assertNotIn("<link ", page)
         self.assertNotIn("@import", page)
+
+    def test_same_atlas_draws_the_same_sky(self):
+        first = self.tmp / "first.html"
+        second = self.tmp / "second.html"
+        self.run_renderer(str(self.atlas_path), "--out", str(first))
+        self.run_renderer(str(self.atlas_path), "--out", str(second))
+        self.assertEqual(first.read_bytes(), second.read_bytes())
 
     def test_red_shape_is_not_drawn(self):
         self.atlas_path.write_text(json.dumps({"systems": []}), encoding="utf-8")
@@ -159,6 +171,17 @@ class RenderAtlasTests(unittest.TestCase):
     def test_missing_operand_is_usage(self):
         code, _ = self.run_renderer()
         self.assertEqual(code, 2)
+
+    def test_systems_keep_clear_of_each_other_on_one_plane(self):
+        import importlib.util
+        import math
+        spec = importlib.util.spec_from_file_location("render_atlas", str(RENDERER))
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        systems = [{"id": f"s{i:02d}", "planets": []} for i in range(25)]
+        pts = list(module._system_centers(systems).values())
+        nearest = min(math.dist(a, b) for i, a in enumerate(pts) for b in pts[i + 1:])
+        self.assertGreaterEqual(nearest, 600)
 
 
 if __name__ == "__main__":

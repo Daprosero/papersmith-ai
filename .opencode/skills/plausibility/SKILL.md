@@ -78,8 +78,9 @@ yet — nothing is ingested):
   `evidence: {origin, quote, retrieved}` — origin names the abstract's
   source URL or identifier, quote is copied verbatim, retrieved is the
   date. A paraphrase is not a quote and fails the check.
-- `sota-pool/atlas.html`: the single navigable file, rendered
-  deterministically from `atlas.json` by `scripts/render_atlas.py`. Never
+- `sota-pool/atlas.html`: the single navigable file, all systems on one
+  shared 2D plane, rendered deterministically from `atlas.json` by
+  `scripts/render_atlas.py` — same atlas, same sky, every run. Never
   hand-edited — a hand touch is regenerated away on the next run.
 
 ## The checker and the renderer
@@ -94,7 +95,9 @@ nothing was judged. The checker reads the atlas; it never reads the web,
 so a green run certifies shape, not truth.
 
 `scripts/render_atlas.py` (stdlib-only) turns a green atlas into the HTML:
-inline SVG plus vanilla JavaScript, no CDN, no network at view time.
+every system on one shared plane, intra-system links as segments,
+inter-system links as curves running planet to planet, all inline SVG plus
+vanilla JavaScript, no CDN, no network at view time.
 Clicking a planet shows its detail and abstract quote; a family filter dims
 what does not belong; inter-system links highlight across systems. Exit 2 on a
 red atlas — the renderer never draws what the checker refused.
