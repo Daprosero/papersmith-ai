@@ -1214,6 +1214,93 @@ class ResolvedAuthorsMutationProofTests(unittest.TestCase):
         self.assertNotEqual(proc.returncode, 0, output)
 
 
+class ResolvedMetadataCarriesAbstractTests(unittest.TestCase):
+    """A scout that grades against abstracts needs them captured, not
+    referenced: OpenAlex ships its abstract position-indexed and arXiv its
+    summary multi-line, and neither survives a parser that ignores it.
+
+    RED-first: the scout contract demands verbatim abstract quotes while the
+    three parsers discarded them — the same class of defect the authorship
+    capture above closed. The fix is in the PARSERS, not in the scout: an
+    agent cannot quote what was never captured.
+    """
+
+    def test_openalex_deinverts_the_position_index_into_reading_order(self) -> None:
+        raw = json.dumps({
+            "title": "A Paper", "doi": "10.0/x", "publication_year": 2021,
+            "abstract_inverted_index": {
+                "We": [0], "study": [1], "things": [2], "deeply": [4],
+                "very": [3],
+            },
+        }).encode("utf-8")
+
+        parsed = paper_resolve._parse_openalex(raw)
+
+        self.assertEqual(parsed["abstract"], "We study things very deeply")
+
+    def test_openalex_without_an_index_reports_none_never_a_guess(self) -> None:
+        """Absent or malformed is absent: a record without an index parses to
+        `None`, and one with non-integer positions does too — joining either
+        would mint word salad the scout would then cite as evidence."""
+        bare = json.dumps({"title": "A Paper"}).encode("utf-8")
+        self.assertIsNone(paper_resolve._parse_openalex(bare)["abstract"])
+
+        broken = json.dumps({
+            "title": "A Paper",
+            "abstract_inverted_index": {"We": ["zero"]},
+        }).encode("utf-8")
+        self.assertIsNone(paper_resolve._parse_openalex(broken)["abstract"])
+
+    def test_arxiv_collapses_its_multiline_summary_to_one_line(self) -> None:
+        raw = (
+            '<feed xmlns="http://www.w3.org/2005/Atom"><entry>'
+            "<title>A Paper</title>"
+            "<summary>We study things.\n  Very deeply.</summary>"
+            "</entry></feed>"
+        ).encode("utf-8")
+
+        parsed = paper_resolve._parse_arxiv(raw)
+
+        self.assertEqual(parsed["abstract"], "We study things. Very deeply.")
+
+    def test_arxiv_without_a_summary_reports_none(self) -> None:
+        raw = (
+            '<feed xmlns="http://www.w3.org/2005/Atom"><entry>'
+            "<title>A Paper</title>"
+            "</entry></feed>"
+        ).encode("utf-8")
+
+        self.assertIsNone(paper_resolve._parse_arxiv(raw)["abstract"])
+
+    def test_crossref_reports_none_rather_than_jats(self) -> None:
+        """Crossref abstracts arrive as publisher JATS, not plain text.
+        Capturing them raw would hand the scout tags to quote; `None` names
+        the limit instead."""
+        raw = json.dumps({"message": {
+            "title": ["A Paper"], "DOI": "10.0/x",
+            "abstract": "<jats:p>We study things.</jats:p>",
+        }}).encode("utf-8")
+
+        self.assertIsNone(paper_resolve._parse_crossref(raw)["abstract"])
+
+
+class ResolvedAbstractMutationProofTests(unittest.TestCase):
+    """The de-inversion must be load-bearing, not merely present: dropping
+    the positional sort must scramble the sentence and turn the capture red."""
+
+    def test_mutation_dropping_the_sort_fails_the_capture(self) -> None:
+        proc = _run_against_mutant(
+            "    ordered.sort()\n",
+            "    pass  # MUTANT: wire order kept\n",
+            "tests.test_paper_evidence.ResolvedMetadataCarriesAbstractTests"
+            ".test_openalex_deinverts_the_position_index_into_reading_order",
+            source_path=SKILL_SCRIPTS / "paper_resolve.py",
+        )
+        output = proc.stdout + proc.stderr
+        self.assertIn("MUTANT_IMPORTED_OK", output, output)
+        self.assertNotEqual(proc.returncode, 0, output)
+
+
 
 if __name__ == "__main__":
     unittest.main()

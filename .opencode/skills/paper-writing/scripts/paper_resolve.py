@@ -272,7 +272,33 @@ def _parse_openalex(raw: bytes) -> dict:
     return {
         "title": obj.get("title"), "doi": obj.get("doi"), "year": obj.get("publication_year"),
         "full_text_url": full_text_url, "authors": authors, "venue": venue,
+        "abstract": _deinvert_abstract(obj.get("abstract_inverted_index")),
     }
+
+
+def _deinvert_abstract(index) -> str | None:
+    """Rebuild OpenAlex's position-indexed abstract into reading order.
+
+    The connector returns `{word: [positions]}`, not text. Sorting by
+    position is the only faithful reconstruction; joining the dict in wire
+    order would scramble the sentence. An absent, empty, or malformed index
+    parses to `None`, never to a joined guess — a scout that grades against
+    a scrambled abstract would cite word salad as evidence.
+    """
+    if not isinstance(index, dict) or not index:
+        return None
+    ordered = []
+    for word, positions in index.items():
+        if not isinstance(word, str) or not isinstance(positions, list):
+            return None
+        for position in positions:
+            if not isinstance(position, int) or position < 0:
+                return None
+            ordered.append((position, word))
+    if not ordered:
+        return None
+    ordered.sort()
+    return " ".join(word for _, word in ordered)
 
 
 def _parse_crossref(raw: bytes) -> dict:
@@ -293,10 +319,15 @@ def _parse_crossref(raw: bytes) -> dict:
         if name:
             authors.append(name)
     containers = message.get("container-title") or []
+    # `abstract`: deliberately always `None`. Crossref abstracts arrive as
+    # publisher-supplied JATS (`<jats:p>` and friends), not plain text, and
+    # stripping tags here would mint a "quote" no source ever printed — the
+    # same fabrication this module refuses for reachability above. A scout
+    # that needs citable prose resolves through OpenAlex or arXiv instead.
     return {
         "title": titles[0] if titles else None, "doi": message.get("DOI"), "year": None,
         "full_text_url": None, "authors": authors,
-        "venue": containers[0] if containers else None,
+        "venue": containers[0] if containers else None, "abstract": None,
     }
 
 
@@ -308,6 +339,14 @@ def _parse_arxiv(raw: bytes) -> dict:
         raise _NoSuchWork("arXiv feed carried no <entry>")
     title_el = entry.find("atom:title", namespace)
     title = title_el.text.strip() if title_el is not None and title_el.text else None
+    # `abstract`: the entry's own `<summary>`, whitespace-collapsed to one
+    # line (arXiv ships it multi-line). Collapsing blank runs is layout, not
+    # authorship — the words stay the feed's own, in the feed's own order.
+    # Absent summary parses to `None`, never to a title restated as prose.
+    summary_el = entry.find("atom:summary", namespace)
+    abstract = None
+    if summary_el is not None and summary_el.text:
+        abstract = " ".join(summary_el.text.split()) or None
     # `full_text_url`: read directly off the entry's own `<link type=
     # "application/pdf">` -- arXiv's Atom feed reports this for every real
     # entry, so this is measured from the response actually received, never
@@ -324,7 +363,7 @@ def _parse_arxiv(raw: bytes) -> dict:
         if name_el is not None and name_el.text:
             authors.append(name_el.text.strip())
     return {"title": title, "doi": None, "year": None, "full_text_url": full_text_url,
-            "authors": authors, "venue": "arXiv"}
+            "authors": authors, "venue": "arXiv", "abstract": abstract}
 
 
 _ENDPOINT_BUILDERS = {
