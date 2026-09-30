@@ -37,6 +37,16 @@ SLOT_COLORS = {
     "conclusion": "#95a5a6",
 }
 
+REL_COLORS = {
+    "about": "#4a5a80",
+    "addresses": "#8a93ad",
+    "extends": "#2ecc71",
+    "contradicts": "#e65a5a",
+    "supports": "#5aa9e6",
+    "yields": "#e8b339",
+    "shares-family-with": "#9b7ede",
+}
+
 ORBIT_RADII = {0: 0, 1: 90, 2: 170, 3: 250}
 SYSTEM_RADIUS = 280
 SPIRAL_STEP = 640
@@ -82,6 +92,33 @@ def _local_positions(planets: list[dict]) -> dict[str, tuple[float, float]]:
                 round(radius * math.sin(angle), 1),
             )
     return positions
+
+
+def _family_ties(atlas: dict,
+                 absolute: dict[tuple[str, str], tuple[float, float]]) -> str:
+    """One dashed curve per shared family name, chaining its planets across
+    systems in system-id order. This draws identity, not findings: families
+    are the only planets two systems may share by name, so equal labels ARE
+    the same family and the curve only makes that visible. Deterministic —
+    same atlas, same ties."""
+    by_label: dict[str, list[tuple[str, str]]] = {}
+    for system in atlas["systems"]:
+        for planet in system["planets"]:
+            if planet.get("slot") == "family":
+                by_label.setdefault(str(planet.get("label")), []).append(
+                    (system["id"], planet["id"]))
+    parts = []
+    for label in sorted(by_label):
+        members = sorted(by_label[label])
+        for first, second in zip(members, members[1:]):
+            a, b = absolute.get(first), absolute.get(second)
+            if not a or not b:
+                continue
+            mx, my = round((a[0] + b[0]) / 2), round((a[1] + b[1]) / 2 - 160, 1)
+            parts.append(
+                f'<path d="M {a[0]} {a[1]} Q {mx} {my} {b[0]} {b[1]}" '
+                f'class="link familytie" data-family="{_escape(label)}"/>')
+    return "\n".join(parts)
 
 
 def _readable_shape(atlas: object) -> str | None:
@@ -142,18 +179,20 @@ def render(atlas: dict) -> str:
         b = absolute.get((link.get("to_system"), link.get("to")))
         if not a or not b:
             continue
+        color = REL_COLORS.get(link.get("rel"), "#4a5a80")
         intra = link.get("from_system") == link.get("to_system")
         if intra:
             parts.append(
                 f'<line x1="{a[0]}" y1="{a[1]}" x2="{b[0]}" y2="{b[1]}" '
-                f'class="link intra" data-rel="{_escape(link.get("rel"))}"/>')
+                f'class="link intra" stroke="{color}" data-rel="{_escape(link.get("rel"))}"/>')
         else:
             mx, my = round((a[0] + b[0]) / 2), round((a[1] + b[1]) / 2 - 120, 1)
             parts.append(
                 f'<path d="M {a[0]} {a[1]} Q {mx} {my} {b[0]} {b[1]}" '
-                f'class="link inter" data-rel="{_escape(link.get("rel"))}" '
+                f'class="link inter" stroke="{color}" data-rel="{_escape(link.get("rel"))}" '
                 f'data-from="{_escape(link.get("from_system"))}.{_escape(link.get("from"))}" '
                 f'data-to="{_escape(link.get("to_system"))}.{_escape(link.get("to"))}"/>')
+    parts.append(_family_ties(atlas, absolute))
     parts.append("</svg>")
     sky = "\n".join(parts)
     return f"""<!DOCTYPE html>
@@ -192,6 +231,7 @@ body{{font-family:system-ui,sans-serif;background:#0b1020;color:#e8e8e8;margin:0
 <div id="panel"><em>Click a planet to read it in a popup. Drag to pan, wheel to zoom.</em></div>
 <div id="overlay"><div id="modal"><button id="modalclose">close</button><div id="modalbody"></div></div></div>
 <div id="famlegend"><em>Families:</em> <span id="famchips"></span></div>
+<div id="rellegend"><em>Links:</em> <span class="dot" style="border-color:#2ecc71"></span>extends <span class="dot" style="border-color:#5aa9e6"></span>supports <span class="dot" style="border-color:#e65a5a"></span>contradicts <span class="dot" style="border-color:#8a93ad"></span>addresses <span class="dot" style="border-color:#9b7ede;border-top-style:dashed"></span>shared family <span class="dot" style="border-color:#e8b339"></span>yields <span class="dot" style="border-color:#4a5a80"></span>about</div>
 <div id="toolbar"><button id="zoomin">zoom +</button><button id="zoomout">zoom −</button><button id="zoomreset">reset view</button></div>
 {sky}
 <script>
@@ -290,6 +330,13 @@ document.querySelectorAll('.planet').forEach(g => {{
         keep.add(l.to_system + '.' + l.to);
       }}
     }});
+    if (g.dataset.slot === 'family') {{
+      const mine = planetLabel(g);
+      document.querySelectorAll('.planet').forEach(h => {{
+        if (h.dataset.slot === 'family' && planetLabel(h) === mine)
+          keep.add(h.dataset.system + '.' + h.dataset.planet);
+      }});
+    }}
     document.querySelectorAll('.planet').forEach(h => {{
       h.classList.toggle('dim', !keep.has(h.dataset.system + '.' + h.dataset.planet));
     }});

@@ -99,7 +99,11 @@ every system on one shared plane, intra-system links as segments,
 inter-system links as curves running planet to planet, all inline SVG plus
 vanilla JavaScript, no CDN, no network at view time.
 Clicking a planet shows its detail and abstract quote; a family filter dims
-what does not belong; inter-system links highlight across systems. Exit 2 on a
+what does not belong; inter-system links highlight across systems. Family
+ties — the dashed curves joining same-named family planets — are
+presentation computed from shared identity, never findings: families are
+the only planets two systems may share by name, so the curve draws what
+the data already says. Exit 2 on a
 red atlas — the renderer never draws what the checker refused.
 
 ## Screening: the dialogue

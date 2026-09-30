@@ -151,6 +151,8 @@ class RenderAtlasTests(unittest.TestCase):
         self.assertIn("Ta</text>", page)
         self.assertIn("Tb</text>", page)
         self.assertIn('class="link inter"', page)
+        self.assertIn('rellegend', page)
+        self.assertIn('zoomin', page)
         self.assertIn('id="zoomin"', page)
         self.assertIn('id="zoomout"', page)
         self.assertIn('id="zoomreset"', page)
@@ -177,6 +179,25 @@ class RenderAtlasTests(unittest.TestCase):
         code, out = self.run_renderer(str(self.atlas_path), "--out", str(self.out_path))
         self.assertEqual(code, 1, out)
         self.assertFalse(self.out_path.exists())
+
+    def test_shared_family_name_draws_its_tie(self):
+        def mini(sid):
+            return {"id": sid, "title": sid, "planets": [
+                {"id": "sun", "slot": "sun", "orbit": 0, "label": sid,
+                 "detail": "", "provenance": "stated",
+                 "evidence": {"origin": "o", "quote": "q", "retrieved": "2026-09-30"}},
+                {"id": "fam", "slot": "family", "orbit": 2, "label": "F",
+                 "detail": "", "provenance": "stated",
+                 "evidence": {"origin": "o", "quote": "q", "retrieved": "2026-09-30"}}]}
+        payload = {"systems": [mini("a"), mini("b")], "links": []}
+        target = self.tmp / "ties.json"
+        target.write_text(json.dumps(payload), encoding="utf-8")
+        out_path = self.tmp / "ties.html"
+        code, out = self.run_renderer(str(target), "--out", str(out_path))
+        self.assertEqual(code, 0, out)
+        page = out_path.read_text(encoding="utf-8")
+        self.assertIn('class="link familytie"', page)
+        self.assertIn('data-family="F"', page)
 
     def test_missing_operand_is_usage(self):
         code, _ = self.run_renderer()
