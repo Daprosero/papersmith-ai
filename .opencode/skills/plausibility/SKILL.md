@@ -1,28 +1,31 @@
 ---
-name: sota-graph
-description: "Trigger: explore a research idea before any ingestion — scout ~25 SOTA references from their abstracts, distill 3 to 5 families, and map the pool to one solar-system constellation HTML: one system per paper, at most 20 planets each, with links running between planets of different systems. Stdlib checker and renderer, no venv, no ingestion."
+name: plausibility
+description: "Trigger: explore a research idea before any ingestion — scout ~25 SOTA references from their abstracts, map the pool to one solar-system constellation HTML, then discuss the hypothesis' plausibility against that SOTA with quoted evidence. Three stretches, one command, no ingestion."
 ---
 
-# SOTA Graph
+# Plausibility
 
-Before a single PDF is ingested, an idea needs a map of the territory: who
-works on what, which schools exist, and how they touch each other. This
-skill builds that map out of abstracts alone — a constellation of small
-solar systems, one per reference paper, in a single HTML file a person can
-navigate. Nothing here ingests, grades against ingested Markdown, or files
-anything into `guidance/`: those are later stages with their own doors.
+Before a single PDF is ingested, an idea needs two things: a map of the
+territory, and an honest reading of where the idea stands on it. This skill
+does both in three stretches — scout the literature, draw the
+constellation, then deliberate the plausibility — and nothing here ingests,
+files into `guidance/`, or publishes. Those are later stages with their own
+doors.
 
-## The two stretches
+## The three stretches
 
 | Stretch | Delegated to | Begins after | Ends at | Measure this before delegating |
 | --- | --- | --- | --- | --- |
 | Scout | this skill delegates to the `sota-scout` agent | the idea is stated in at least two sentences | the pool: 25 candidates with abstracts, 3 to 5 families, and the provisional plausibility note | the stated idea — scouting an unstated idea invents its own question |
 | Constellation | this skill delegates to the `sota-grapher` agent | the pool holds its 25 candidates | the single `atlas.html` beside `atlas.json`, plus the checker's green run | the pool file exists with 25 resolved candidates — mapping fewer invents coverage |
+| Screen | this skill delegates to the `novelty-screener` agent | the hypothesis is stated and the pool holds its candidates | the plausibility report, each claim evidence-quoted and marked provisional, the top 5 ranked for later ingestion, with what remains owed | the stated hypothesis plus the pool — an empty pool is the scout's to fill, not this stretch's to invent; the borrowed `resolve` runs only to confirm the top 5, and nothing here files into `guidance/` |
 
-What moves is execution, never doctrine: every rule stays here, and each
-agent's first instruction is to load this file. The grapher writes the
-atlas and drives the checker and the renderer in its own loop; those two
-scripts are the only shell commands that loop may invoke.
+What moves is execution, never doctrine: every rule for scouting and
+mapping lives below, every rule for screening lives in the agent's own
+section, and each agent's first instruction is to load this file. The
+grapher drives the checker and the renderer in its own loop; those two
+scripts are the only shell commands that loop may invoke, and the
+screener's one shell command is the borrowed `resolve` invocation.
 
 ## The pool
 
@@ -49,12 +52,12 @@ and the 20-planet ceiling per system is absolute.
 | `family` | 3 to 5 | 2 | One SOTA family each, shared across systems |
 | `novelty` | exactly 1 | 1 | What the paper adds over those families |
 | `result` | 1 to 3 | 3 | Punctual results, one claim per planet |
-| `conclusion` | 1 to 2 | 3 | Conclusions, one claim per planet |
+| `conclusion` | 1 to 2 | 3 | Conclusions, one claim per node |
 
 A family the abstracts themselves name carries `provenance: stated`. A
-family the scout grouped carries `provenance: grouped`. Families are the
-only planets two systems may share by name — that sharing is what the
-inter-system links are drawn from.
+family grouped out of scattered methods carries `provenance: grouped`.
+Families are the only planets two systems may share by name — that sharing
+is what the inter-system links are drawn from.
 
 ## Edges
 
@@ -92,9 +95,20 @@ so a green run certifies shape, not truth.
 
 `scripts/render_atlas.py` (stdlib-only) turns a green atlas into the HTML:
 inline SVG plus vanilla JavaScript, no CDN, no network at view time.
-Clicking a planet shows its detail and abstract; a family filter dims what
-does not belong; inter-system links highlight across systems. Exit 2 on a
+Clicking a planet shows its detail and abstract quote; a family filter dims
+what does not belong; inter-system links highlight across systems. Exit 2 on a
 red atlas — the renderer never draws what the checker refused.
+
+## Screening: the dialogue
+
+The third stretch is a conversation, not a batch job. The screener splits
+the hypothesis into claims and grades each one — `provisional-novel`,
+`provisional-known`, `provisional-tension`, `provisional-contradicted` —
+always quoted, always marked provisional until ingestion. The operator
+adjusts the idea mid-dialogue and asks for re-screening; every pass is a
+fresh report, because the agent keeps no state between passes beyond the
+conversation itself. The stretch ends at the report plus the ranked top 5
+for the later ingestion stage — never at a publication, never at a filing.
 
 ## Decision gates
 
@@ -109,5 +123,6 @@ red atlas — the renderer never draws what the checker refused.
 ## Measure before you assert
 
 Never write a planet whose quote was not read in the same pass from the
-abstract its evidence names. An invented quote sounds like a finding and
-gets acted on like one.
+abstract its evidence names, and never grade a claim whose abstract was not
+read in the same reply. An invented quote sounds like a finding and gets
+acted on like one.

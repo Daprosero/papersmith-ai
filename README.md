@@ -65,7 +65,7 @@ El camino completo, de un PDF a un paper compilado:
 | # | Invocás | Qué hace | Dónde deja el resultado |
 |---|---------|----------|-------------------------|
 | 1 | `/paper-ingestion` | Convierte los PDFs de referencia a Markdown legible (ecuaciones en LaTeX, tablas como tablas, figuras como archivos) | `guidance/<carpeta>/` |
-| 2 | `/sota-graph` | Explora la idea pre-ingesta: rastrea ~25 referencias por sus abstracts, destila 3–5 familias y mapea la constelación en un HTML único (un sistema solar por paper, aristas entre sistemas) | `sota-pool/` (ignorado, como `guidance/`) |
+| 2 | `/plausibility` | Explora la idea pre-ingesta en tres tramos: rastrea ~25 referencias por sus abstracts, mapea la constelación en un HTML único y discute la plausibilidad de la hipótesis contra ese SOTA | `sota-pool/` (ignorado, como `guidance/`) |
 | 3 | `/proposal-deliberation` | Discute la matemática con vos y publica cada acuerdo como una revisión gestionada | `proposals/` |
 | 4 | `/experimental-deliberation` | Discute el diseño experimental que va a poner a prueba esa matemática | `experiments/` |
 | 5 | `/proposal-implementation` | Convierte la propuesta en Python que se verifica contra el documento | `implementations/<repo>/` |
@@ -77,7 +77,7 @@ El camino completo, de un PDF a un paper compilado:
 | 11 | `/skill-audit` | Audita cualquiera de las anteriores: qué acepta el código contra qué promete su documentación | un informe, nunca un cambio |
 
 **Lo mínimo para empezar.** Si sólo querés probar la forja, arrancá por el paso 2
-con tu idea en dos oraciones: `/sota-graph` rastrea el SOTA y te devuelve la
+con tu idea en dos oraciones: `/plausibility` rastrea el SOTA y te devuelve la
 constelación más el top-5. Recién después, si quieres, poné un PDF en
 `guidance/reference-papers/`, corré `/paper-ingestion`, y deliberá con
 `/proposal-deliberation`. Los pasos 5 a 8 sólo tienen sentido cuando ya hay una propuesta
@@ -423,9 +423,9 @@ establecerlo. Las compuertas las abrís y cerrás vos. Cada uno pinea su modelo
 | `implementation-build` | Del mapa objeto→módulo aprobado al informe de hallazgos: materializa el scaffolding, escribe un módulo por objeto con su procedencia y sus tests de invariantes, y valida los remedios admitidos. | `proposal-implementation` |
 | `implementation-walk` | Camina el flujo declarado acto por acto, en su orden: corre los pasos locales, registra cada producto y se detiene en el ensayo previo al lanzamiento. No tiene camino para enviar una campaña. | `proposal-implementation` |
 | `deliberation-publish` | Desde que aceptás un cambio hasta que la revisión sucesora queda publicada y vigente — la única forma en que la matemática viaja. La deliberación en sí no está acá: sólo vos la cerrás. | `proposal-deliberation` |
-| `novelty-screener` | La etapa `screened`: contrasta la hipótesis contra los abstracts del pool, califica novedad y plausibilidad con cita exacta —todo provisional— y rankea el top-5 para la ingesta posterior. No publica, no escribe, no ingiere, no delibera. | `proposal-deliberation` |
-| `sota-scout` | Rastrea la idea en la literatura abierta —25 referencias con abstracts, 3 a 5 familias provisionales— como `sota-pool/candidates.json`. Termina en el pool; no ingiere ni califica nada final. | `sota-graph` |
-| `sota-grapher` | Mapea el pool a su constelación —un sistema solar por paper, 20 planetas máximo, aristas entre sistemas— como `atlas.json` más el `atlas.html` único, corriendo checker y renderer hasta el verde. | `sota-graph` |
+| `novelty-screener` | Discute la hipótesis contra los abstracts del pool, califica novedad y plausibilidad con cita exacta —todo provisional— y rankea el top-5 para la ingesta posterior. Diálogo con reporte al final; no publica, no escribe, no ingiere, no delibera. | `plausibility` |
+| `sota-scout` | Rastrea la idea en la literatura abierta —25 referencias con abstracts, 3 a 5 familias provisionales— como `sota-pool/candidates.json`. Termina en el pool; no ingiere ni califica nada final. | `plausibility` |
+| `sota-grapher` | Mapea el pool a su constelación —un sistema solar por paper, 20 planetas máximo, aristas entre sistemas— como `atlas.json` más el `atlas.html` único, corriendo checker y renderer hasta el verde. | `plausibility` |
 | `experimental-publish` | Lo mismo que `deliberation-publish`, sobre el documento de experimentos. | `experimental-deliberation` |
 | `experimental-validation` | La etapa `validated`: busca el protocolo de evaluación del área —métricas, baselines, dataset, semillas, test de significancia—, verifica cada baseline contra su repo y su venue, y fecha cada URL que usa. | `experimental-deliberation` |
 | `experiments-build` | Del mapa aprobado de pasos del protocolo a comandos ejecutables: materializa lo que haga falta, cablea cada paso e instrumenta cada medición para que se pueda correr y leer. | `experimental-implementation` |
@@ -439,7 +439,6 @@ establecerlo. Las compuertas las abrís y cerrás vos. Cada uno pinea su modelo
 | `insumos-observer` | Lee las cuatro fuentes de entrada declaradas del paper —`proposals/`, `experiments/`, el código del repo destino y sus propias salidas de corrida— y reporta, por cada hecho observable, si se cumple y con qué evidencia. Nunca decide un valor ni corre `declare`. | `paper-writing` |
 | `audit-report` | Audita un sujeto que enumera un conjunto cerrado —operaciones, subcomandos, códigos, assets— buscando la brecha entre lo que su código acepta y lo que su documentación promete. Reporta; nunca repara. | `skill-audit` |
 | `figure-describer` | Describe cada figura ingerida como comentario HTML invisible junto a su referencia, para que los agentes sin visión entiendan cada imagen. Requiere visión; corre tras la extracción. | `paper-ingestion` |
-| `sota-grapher` | Mapea un paper ingerido a su grafo sistema-solar —temas, problema, 3 a 5 familias SOTA, novedad, resultados y conclusiones, 20 nodos máximo— como JSON viewer-ready junto al paper, cada nodo con su cita, y corre el checker propio hasta el verde. | `sota-graph` |
 
 Tres reglas que ordenan todo lo demás:
 
@@ -487,10 +486,10 @@ declaración de la skill que la recibe, no inferida del nombre de la carpeta.
 ```mermaid
 flowchart TD
     PDF["PDFs que dejás en guidance/"] --> PI["1. paper-ingestion"]
-    IDEA["tu idea, en dos oraciones"] --> SG["2. sota-graph"]
+    IDEA["tu idea, en dos oraciones"] --> PL["2. plausibility"]
 
     PI -- "guidance/paper-guide (opcional)" --> PD["3. proposal-deliberation"]
-    SG -- "top-5 + reporte provisional" --> PD
+    PL -- "top-5 + reporte provisional" --> PD
     PI -- "guidance/data-paper (obligatoria)" --> ED["4. experimental-deliberation"]
     PI -- "guidance/paper-guide (opcional)" --> ED
 
@@ -515,7 +514,7 @@ flowchart TD
     PAPER -- "Figures/<id>.pdf ya compilado" --> FR["10. figure-review"]
 
     SA["11. skill-audit"] -. "informa, nunca cambia" .-> PI
-    SA -. " " .-> SG
+    SA -. " " .-> PL
     SA -. " " .-> PD
     SA -. " " .-> IMP
     SA -. " " .-> KA

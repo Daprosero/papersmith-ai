@@ -28,7 +28,7 @@ permissions:
 
 # SOTA Scout — the scouting stretch
 
-Skill: `.opencode/skills/sota-graph/SKILL.md`. Load it and follow it. Every
+Skill: `.opencode/skills/plausibility/SKILL.md`. Load it and follow it. Every
 rule is there and none is repeated here.
 
 ## Your stretch, and its two ends
@@ -43,7 +43,7 @@ provisional plausibility note. You do not ingest, you do not file into
 **Not every agent's description carries its bound skill's arrival, verbatim.**
 Only a `stretch: terminal` agent does; any other stretch ends at a named,
 earlier stage instead, and a skill that declares no north at all binds an
-agent with nothing to carry. `sota-graph` declares no north, so this agent
+agent with nothing to carry. `plausibility` declares no north, so this agent
 carries neither a `stretch:` nor an arrival — the description above is this
 stretch's own end and nothing more.
 

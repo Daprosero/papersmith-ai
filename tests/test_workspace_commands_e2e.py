@@ -176,11 +176,11 @@ class HarnessCommandProjectionTests(unittest.TestCase):
         "kaggle-accounts",
         "paper-ingestion",
         "paper-writing",
+        "plausibility",
         "proposal-deliberation",
         "proposal-implementation",
         "remote-execution",
         "skill-audit",
-        "sota-graph",
     )
 
     def test_init_projects_eleven_commands(self) -> None:

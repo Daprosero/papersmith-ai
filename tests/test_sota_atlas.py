@@ -16,7 +16,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-SKILL = Path(__file__).resolve().parent.parent / ".opencode" / "skills" / "sota-graph" / "scripts"
+SKILL = Path(__file__).resolve().parent.parent / ".opencode" / "skills" / "plausibility" / "scripts"
 CHECKER = SKILL / "check_atlas.py"
 RENDERER = SKILL / "render_atlas.py"
 

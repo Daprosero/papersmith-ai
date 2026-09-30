@@ -22,7 +22,7 @@ permissions:
 
 # SOTA Grapher — the constellation stretch
 
-Skill: `.opencode/skills/sota-graph/SKILL.md`. Load it and follow it. Every
+Skill: `.opencode/skills/plausibility/SKILL.md`. Load it and follow it. Every
 rule is there and none is repeated here.
 
 ## Your stretch, and its two ends
@@ -37,7 +37,7 @@ renderer's green run naming its output.
 **Not every agent's description carries its bound skill's arrival, verbatim.**
 Only a `stretch: terminal` agent does; any other stretch ends at a named,
 earlier stage instead, and a skill that declares no north at all binds an
-agent with nothing to carry. `sota-graph` declares no north, so this agent
+agent with nothing to carry. `plausibility` declares no north, so this agent
 carries neither a `stretch:` nor an arrival — the description above is this
 stretch's own end and nothing more.
 
@@ -54,8 +54,8 @@ Write the atlas, then run the two scripts — the only shell commands this
 stretch may run, in this order:
 
 ```
-python3 .opencode/skills/sota-graph/scripts/check_atlas.py sota-pool/atlas.json
-python3 .opencode/skills/sota-graph/scripts/render_atlas.py sota-pool/atlas.json --out sota-pool/atlas.html
+python3 .opencode/skills/plausibility/scripts/check_atlas.py sota-pool/atlas.json
+python3 .opencode/skills/plausibility/scripts/render_atlas.py sota-pool/atlas.json --out sota-pool/atlas.html
 ```
 
 No installers, no network, no runners. A refusal names every violation at

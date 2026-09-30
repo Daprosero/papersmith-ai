@@ -29,7 +29,6 @@ current one.
 
 | Stage | Establishes | Behind you when |
 | --- | --- | --- |
-| `screened` | Hypothesis contrasted with SOTA folios, novelty and plausibility graded per quoted passage | A grade owes its quoted passage, else screening stalls |
 | `bound` | Which revision is current and which entry of it the change touches | `STATUS` named the latest and the target resolved to an entry |
 | `deliberated` | The change was argued through rather than typed | **the user said so** — nothing here measures it, and nothing may |
 | `composed` | The replacement exists written AS mathematics — the equation, with its tag — and not as a description of it | a block exists carrying the equation and the tag it lands on |
@@ -56,20 +55,11 @@ and authorizing publication, because it advances the real lineage.
 ## What this skill delegates, and to whom
 
 One stretch of this flow is mechanical from end to end, and it is precisely the
-one that used to get lost. A second stretch runs before any of that, and it
-never writes at all.
+one that used to get lost.
 
 | Stretch | Delegated to | Begins after | Ends at | Measure this before delegating |
 | --- | --- | --- | --- | --- |
-| Screen | this skill delegates to the `novelty-screener` agent | the hypothesis is stated and the scout pool holds its candidates | the novelty and plausibility report, each claim evidence-quoted and marked provisional, the top 5 ranked for later ingestion, with what remains owed | the stated hypothesis plus `sota-pool/candidates.json` with resolved abstracts — an empty pool is the scout's to fill, not this stretch's to invent; the borrowed `resolve` runs only to confirm the top 5, and nothing here files into `guidance/` |
 | Publish | this skill delegates to the `deliberation-publish` agent | the operator accepted the change | the successor published and current | the acceptance itself — the one precondition here that no command reports, because nothing measures `deliberated`. The orchestrator holds it or the stretch does not begin |
-
-**Screening precedes binding and never publishes.** The screener reads only
-the scout pool's abstracts and the stated hypothesis; it creates no
-revision, resolves no entry, files nothing, and closes neither `bound` nor
-`deliberated`. Every grade is provisional until ingestion, and its report —
-grades plus the ranked top 5 — is what the operator consumes to decide
-whether deliberation should begin at all.
 
 **The deliberation itself is never delegated**, and the north above says why:
 nothing measures it, so an agent that could close that stage would be approving
