@@ -49,25 +49,29 @@ and the 20-planet ceiling per system is absolute.
 | `topic_ai` | exactly 1 | 1 | The same topic framed as an AI problem |
 | `problem` | exactly 1 | 1 | The problem the paper faces, in one claim |
 | `application` | exactly 1 | 1 | Where it lands in the world |
-| `family` | 3 to 5 | 2 | One SOTA family each, shared across systems |
+| `family` | exactly 1 | 2 | The group this system belongs to: one family per paper, 3 to 5 families per pool |
 | `novelty` | exactly 1 | 1 | What the paper adds over those families |
 | `result` | 1 to 3 | 3 | Punctual results, one claim per planet |
 | `conclusion` | 1 to 2 | 3 | Conclusions, one claim per node |
 
 A family the abstracts themselves name carries `provenance: stated`. A
 family grouped out of scattered methods carries `provenance: grouped`.
-Families are the only planets two systems may share by name — that sharing
-is what the inter-system links are drawn from.
+A paper belongs to exactly one family; the pool holds 3 to 5 families
+total. Families are groups of systems, not labels sprayed over every
+paper — a family name appearing on every system is a family that
+distinguishes nothing.
 
 ## Edges
 
 Two scopes, one closed set of relations (`about`, `addresses`, `extends`,
 `contradicts`, `supports`, `yields`, `shares-family-with`): edges inside
 one system name how that paper connects its own claims; edges between
-systems name how planets of different systems touch — same family, a
-citation, a contradiction, an extension. No self-loops; every endpoint
-names a planet id that exists in the named system. An edge no abstract
-supports is a drawing, not a finding.
+systems of the same family name how siblings touch — a citation, an
+extension, a shared method; edges across families name the rare bridges —
+a contradiction, an import. No self-loops; every endpoint names a planet
+id that exists in the named system. An edge no abstract supports is a
+drawing, not a finding. Systems draw grouped by family on the plane, so a
+family reads as a neighborhood, not a legend entry.
 
 ## Output contract
 

@@ -3,8 +3,8 @@ render_atlas.py's single-file HTML.
 
 Every refusal the checker can name is produced here from an atlas built
 for it, never read out of the script's prose. The renderer is held to
-three properties: it refuses a red atlas, it embeds every system, and its
-output opens with no network (no http references at all).
+one plane, deterministic bytes, drawn cross-links, and output that opens
+with no network.
 
 Stdlib only.
 """
@@ -20,12 +20,15 @@ SKILL = Path(__file__).resolve().parent.parent / ".opencode" / "skills" / "plaus
 CHECKER = SKILL / "check_atlas.py"
 RENDERER = SKILL / "render_atlas.py"
 
-SLOTS = ["sun", "topic_app", "topic_ai", "problem", "application",
-         "family", "family", "family", "novelty", "result", "conclusion"]
+ORBITS = {"sun": 0, "branch": 1, "topic_app": 1, "topic_ai": 1,
+          "problem": 1, "application": 1, "family": 2, "novelty": 1,
+          "result": 3, "conclusion": 3}
+BASE_SLOTS = ["sun", "topic_app", "topic_ai", "problem", "application",
+              "novelty", "result", "conclusion"]
 
 
 def planet(pid, slot="result", **over):
-    doc = {"id": pid, "slot": slot, "orbit": 3, "label": f"L{pid}",
+    doc = {"id": pid, "slot": slot, "orbit": ORBITS[slot], "label": f"L{pid}",
            "detail": f"D{pid}", "provenance": "stated",
            "evidence": {"origin": "https://example.test/p", "quote": "q",
                         "retrieved": "2026-09-30"}}
@@ -33,19 +36,17 @@ def planet(pid, slot="result", **over):
     return doc
 
 
-def system(sid, extra=()):
-    orbits = {"sun": 0, "branch": 1, "topic_app": 1, "topic_ai": 1,
-              "problem": 1, "application": 1, "family": 2, "novelty": 1,
-              "result": 3, "conclusion": 3}
-    nodes = [planet(f"{sid}-{i}", slot, orbit=orbits[slot])
-             for i, slot in enumerate(SLOTS)]
-    nodes.extend(extra)
+def system(sid, fam):
+    """One system with exactly one family planet: the group it belongs to."""
+    nodes = [planet(f"{sid}-{slot}", slot) for slot in BASE_SLOTS]
+    nodes.append(planet(f"{sid}-family", "family", label=fam))
     return {"id": sid, "title": f"T{sid}", "planets": nodes}
 
 
 def atlas(systems=None, links=None):
-    return {"systems": systems if systems is not None else [system("a"), system("b")],
-            "links": links if links is not None else []}
+    if systems is None:
+        systems = [system("a", "F1"), system("b", "F2"), system("c", "F3")]
+    return {"systems": systems, "links": links if links is not None else []}
 
 
 class CheckAtlasTests(unittest.TestCase):
@@ -62,63 +63,75 @@ class CheckAtlasTests(unittest.TestCase):
         return proc.returncode, proc.stdout + proc.stderr
 
     def test_green_constellation_with_intra_and_family_links_passes(self):
-        links = [{"from_system": "a", "from": "a-5", "to_system": "b",
-                  "to": "b-5", "rel": "shares-family-with"},
-                 {"from_system": "a", "from": "a-0", "to_system": "a",
-                  "to": "a-3", "rel": "about"}]
+        links = [{"from_system": "a", "from": "a-family", "to_system": "b",
+                  "to": "b-family", "rel": "shares-family-with"},
+                 {"from_system": "a", "from": "a-sun", "to_system": "a",
+                  "to": "a-problem", "rel": "about"}]
         code, out = self.run_checker(atlas(links=links))
         self.assertEqual(code, 0, out)
         self.assertIn("ATLAS_WELL_FORMED", out)
 
     def test_family_link_on_non_family_is_named(self):
-        links = [{"from_system": "a", "from": "a-1", "to_system": "b",
-                  "to": "b-5", "rel": "shares-family-with"}]
+        links = [{"from_system": "a", "from": "a-topic_app", "to_system": "b",
+                  "to": "b-family", "rel": "shares-family-with"}]
         code, out = self.run_checker(atlas(links=links))
         self.assertEqual(code, 1, out)
         self.assertIn("SHARED_FAMILY_LINK_ON_NON_FAMILY", out)
 
-    def test_family_link_between_families_passes(self):
-        links = [{"from_system": "a", "from": "a-5", "to_system": "b", "to": "b-6",
-                  "rel": "shares-family-with"}]
+    def test_cross_family_bridge_passes(self):
+        links = [{"from_system": "a", "from": "a-family", "to_system": "b",
+                  "to": "b-family", "rel": "contradicts"}]
         code, out = self.run_checker(atlas(links=links))
         self.assertEqual(code, 0, out)
         self.assertIn("ATLAS_WELL_FORMED", out)
 
     def test_twenty_first_planet_exceeds_the_ceiling(self):
-        systems = [system("a")]
-        systems[0]["planets"].extend(planet(f"x{i}") for i in range(10))
+        systems = [system("a", "F1"), system("b", "F2"), system("c", "F3")]
+        systems[0]["planets"].extend(planet(f"x{i}") for i in range(12))
         code, out = self.run_checker(atlas(systems=systems))
         self.assertEqual(code, 1, out)
         self.assertIn("PLANET_BUDGET_EXCEEDED", out)
 
+    def test_second_family_planet_breaks_membership(self):
+        systems = [system("a", "F1"), system("b", "F2"), system("c", "F3")]
+        systems[0]["planets"].append(
+            planet("a-family-2", "family", orbit=2, label="F2"))
+        code, out = self.run_checker(atlas(systems=systems))
+        self.assertEqual(code, 1, out)
+        self.assertIn("SLOT_COUNT_OUTSIDE_ROW", out)
+
+    def test_pool_with_one_family_is_no_constellation(self):
+        systems = [system("a", "F1"), system("b", "F1")]
+        code, out = self.run_checker(atlas(systems=systems))
+        self.assertEqual(code, 1, out)
+        self.assertIn("POOL_FAMILIES_OUTSIDE_3_5", out)
+
+    def test_pool_with_six_families_is_no_constellation(self):
+        systems = [system(f"s{i}", f"F{i}") for i in range(6)]
+        code, out = self.run_checker(atlas(systems=systems))
+        self.assertEqual(code, 1, out)
+        self.assertIn("POOL_FAMILIES_OUTSIDE_3_5", out)
+
     def test_link_to_no_planet_is_named(self):
-        links = [{"from_system": "a", "from": "a-0", "to_system": "b",
+        links = [{"from_system": "a", "from": "a-sun", "to_system": "b",
                   "to": "ghost", "rel": "contradicts"}]
         code, out = self.run_checker(atlas(links=links))
         self.assertEqual(code, 1, out)
         self.assertIn("LINK_ENDPOINT_WITHOUT_PLANET", out)
 
     def test_link_to_no_system_is_named(self):
-        links = [{"from_system": "a", "from": "a-0", "to_system": "ghost",
-                  "to": "a-1", "rel": "about"}]
+        links = [{"from_system": "a", "from": "a-sun", "to_system": "ghost",
+                  "to": "a-topic_app", "rel": "about"}]
         code, out = self.run_checker(atlas(links=links))
         self.assertEqual(code, 1, out)
         self.assertIn("LINK_SYSTEM_WITHOUT_SYSTEM", out)
 
     def test_undated_evidence_is_named(self):
-        systems = [system("a"), system("b")]
+        systems = [system("a", "F1"), system("b", "F2"), system("c", "F3")]
         systems[0]["planets"][0]["evidence"]["retrieved"] = "someday"
         code, out = self.run_checker(atlas(systems=systems))
         self.assertEqual(code, 1, out)
         self.assertIn("EVIDENCE_RETRIEVED_UNDATED", out)
-
-    def test_two_families_starve_and_six_overflow(self):
-        systems = [system("a"), system("b")]
-        fams = [p for p in systems[0]["planets"] if p["slot"] == "family"]
-        systems[0]["planets"] = [p for p in systems[0]["planets"] if p["slot"] != "family"] + fams[:2]
-        code, out = self.run_checker(atlas(systems=systems))
-        self.assertEqual(code, 1, out)
-        self.assertIn("SLOT_COUNT_OUTSIDE_ROW", out)
 
     def test_non_json_is_unjudged_not_refused(self):
         code, out = self.run_checker("{not json")
@@ -140,8 +153,8 @@ class RenderAtlasTests(unittest.TestCase):
         return proc.returncode, proc.stdout + proc.stderr
 
     def test_green_atlas_renders_one_self_contained_plane(self):
-        links = [{"from_system": "a", "from": "a-5", "to_system": "b", "to": "b-5",
-                  "rel": "shares-family-with"}]
+        links = [{"from_system": "a", "from": "a-family", "to_system": "b",
+                  "to": "b-family", "rel": "shares-family-with"}]
         self.atlas_path.write_text(json.dumps(atlas(links=links)), encoding="utf-8")
         code, out = self.run_renderer(str(self.atlas_path), "--out", str(self.out_path))
         self.assertEqual(code, 0, out)
@@ -150,6 +163,7 @@ class RenderAtlasTests(unittest.TestCase):
         self.assertEqual(page.count("<svg"), 1)
         self.assertIn("Ta</text>", page)
         self.assertIn("Tb</text>", page)
+        self.assertIn("Tc</text>", page)
         self.assertIn('class="link inter"', page)
         self.assertIn('rellegend', page)
         self.assertIn('zoomin', page)
@@ -181,15 +195,7 @@ class RenderAtlasTests(unittest.TestCase):
         self.assertFalse(self.out_path.exists())
 
     def test_shared_family_name_draws_its_tie(self):
-        def mini(sid):
-            return {"id": sid, "title": sid, "planets": [
-                {"id": "sun", "slot": "sun", "orbit": 0, "label": sid,
-                 "detail": "", "provenance": "stated",
-                 "evidence": {"origin": "o", "quote": "q", "retrieved": "2026-09-30"}},
-                {"id": "fam", "slot": "family", "orbit": 2, "label": "F",
-                 "detail": "", "provenance": "stated",
-                 "evidence": {"origin": "o", "quote": "q", "retrieved": "2026-09-30"}}]}
-        payload = {"systems": [mini("a"), mini("b")], "links": []}
+        payload = {"systems": [system("a", "F"), system("b", "F")], "links": []}
         target = self.tmp / "ties.json"
         target.write_text(json.dumps(payload), encoding="utf-8")
         out_path = self.tmp / "ties.html"
@@ -213,6 +219,24 @@ class RenderAtlasTests(unittest.TestCase):
         pts = list(module._system_centers(systems).values())
         nearest = min(math.dist(a, b) for i, a in enumerate(pts) for b in pts[i + 1:])
         self.assertGreaterEqual(nearest, 600)
+
+    def test_families_land_in_distinct_neighborhoods(self):
+        import importlib.util
+        import math
+        spec = importlib.util.spec_from_file_location("render_atlas", str(RENDERER))
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        owned = ([system(f"a{i}", "F1") for i in range(3)]
+                 + [system(f"b{i}", "F2") for i in range(3)])
+        centers = module._system_centers(owned)
+        groups: dict[str, list[tuple[float, float]]] = {}
+        for sid, point in centers.items():
+            fam = "F1" if sid.startswith("a") else "F2"
+            groups.setdefault(fam, []).append(point)
+        centroids = {fam: (sum(p[0] for p in pts) / len(pts),
+                           sum(p[1] for p in pts) / len(pts))
+                     for fam, pts in groups.items()}
+        self.assertGreater(math.dist(centroids["F1"], centroids["F2"]), 3000)
 
 
 if __name__ == "__main__":

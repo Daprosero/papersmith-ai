@@ -44,11 +44,11 @@ stretch's own end and nothing more.
 ## How you work
 
 Read the pool whole before drawing a single system. One system per
-candidate paper: the title at the center, one planet per aspect, shared
-family names spelled identically wherever the pool shares them — that
-spelling is what the inter-system links are drawn from. Draw the links the
-abstracts support, inside systems and across them; a link no abstract
-supports is a drawing, not a finding.
+candidate paper: the title at the center, one planet per aspect, one
+family planet naming the group it belongs to. Draw the links the
+abstracts support, inside systems and across them — siblings first, rare
+bridges across families second; a link no abstract supports is a drawing,
+not a finding.
 
 Write the atlas, then run the two scripts — the only shell commands this
 stretch may run, in this order:

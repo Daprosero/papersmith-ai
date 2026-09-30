@@ -49,7 +49,8 @@ REL_COLORS = {
 
 ORBIT_RADII = {0: 0, 1: 90, 2: 170, 3: 250}
 SYSTEM_RADIUS = 280
-SPIRAL_STEP = 640
+CLUSTER_STEP = 3400
+MEMBER_STEP = 660
 GOLDEN_ANGLE = math.pi * (3 - math.sqrt(5))
 MARGIN = 120
 
@@ -58,17 +59,38 @@ def _escape(value: object) -> str:
     return html.escape(str(value), quote=True)
 
 
+def _family_of(system: dict) -> str:
+    """The group this system belongs to: its one family planet's label.
+    Systems with none gather under the empty name — the checker refuses
+    them, but the renderer still draws something rather than crashing."""
+    for planet in system.get("planets") or []:
+        if isinstance(planet, dict) and planet.get("slot") == "family":
+            label = planet.get("label")
+            if isinstance(label, str) and label.strip():
+                return label.strip()
+    return ""
+
+
 def _system_centers(systems: list[dict]) -> dict[str, tuple[float, float]]:
-    """One shared plane: systems sorted by id along a golden-angle spiral.
-    Pure function of the sorted ids — deterministic by construction."""
+    """One shared plane, grouped by family: each family owns a cluster
+    center on the outer spiral, and its member systems spiral locally
+    around it. A family reads as a neighborhood. Pure function of sorted
+    ids and labels — deterministic by construction."""
+    by_family: dict[str, list[str]] = {}
+    for system in sorted(systems, key=lambda s: s["id"]):
+        by_family.setdefault(_family_of(system), []).append(system["id"])
     centers: dict[str, tuple[float, float]] = {}
-    for index, system in enumerate(sorted(systems, key=lambda s: s["id"])):
-        radius = SPIRAL_STEP * math.sqrt(index)
-        angle = index * GOLDEN_ANGLE
-        centers[system["id"]] = (
-            round(radius * math.cos(angle), 1),
-            round(radius * math.sin(angle), 1),
-        )
+    for findex, fam in enumerate(sorted(by_family)):
+        radius = CLUSTER_STEP * math.sqrt(findex)
+        angle = findex * GOLDEN_ANGLE
+        ccx, ccy = radius * math.cos(angle), radius * math.sin(angle)
+        for mindex, sid in enumerate(by_family[fam]):
+            mradius = MEMBER_STEP * math.sqrt(mindex)
+            mangle = mindex * GOLDEN_ANGLE
+            centers[sid] = (
+                round(ccx + mradius * math.cos(mangle), 1),
+                round(ccy + mradius * math.sin(mangle), 1),
+            )
     return centers
 
 

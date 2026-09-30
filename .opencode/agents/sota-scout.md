@@ -69,9 +69,11 @@ In this order, and inside these budgets:
    emptied the role in `papersmith.yaml` — the power is off by config, not
    broken; `RESOLVER_UNREACHABLE`, `IDENTIFIER_UNRESOLVED`) rather than
    working around them.
-3. **Families.** Group the resolved candidates into 3 to 5 families from
-   what their abstracts state. A family the abstracts name carries
-   `provenance: stated`; one you grouped carries `provenance: grouped`.
+3. **Families.** Assign each resolved candidate exactly one primary family,
+   from what the abstracts state — 3 to 5 families for the whole pool. A
+   family the abstracts name carries `provenance: stated`; one you grouped
+   carries `provenance: grouped`. A paper belongs to one group; families
+   are neighborhoods of systems, not labels sprayed over every paper.
    Fewer than 3 nameable families means the pool is thin — say so in `owed`
    rather than padding it.
 4. **Plausibility note (provisional, always).** One paragraph: which of the

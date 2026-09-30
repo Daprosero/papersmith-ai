@@ -28,7 +28,7 @@ SLOTS = {
     "topic_ai": (1, 1, 1),
     "problem": (1, 1, 1),
     "application": (1, 1, 1),
-    "family": (2, 3, 5),
+    "family": (2, 1, 1),
     "novelty": (1, 1, 1),
     "result": (3, 1, 3),
     "conclusion": (3, 1, 2),
@@ -123,6 +123,18 @@ def _failures(atlas: object) -> list[str]:
             if not minimum <= have <= maximum:
                 found.append(f"{sid}: SLOT_COUNT_OUTSIDE_ROW: {slot!r} has {have}, row allows {minimum}..{maximum}")
         known[sid] = seen
+
+    pool_families = set()
+    for system in systems:
+        if not isinstance(system, dict):
+            continue
+        for planet in system.get("planets") or []:
+            if isinstance(planet, dict) and planet.get("slot") == "family":
+                label = planet.get("label")
+                if isinstance(label, str) and label.strip():
+                    pool_families.add(label.strip())
+    if not 3 <= len(pool_families) <= 5:
+        found.append(f"POOL_FAMILIES_OUTSIDE_3_5: {len(pool_families)} distinct families")
 
     for position, link in enumerate(links):
         where = f"links[{position}]"
