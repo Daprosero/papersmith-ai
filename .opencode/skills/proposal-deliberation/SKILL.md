@@ -61,15 +61,15 @@ never writes at all.
 
 | Stretch | Delegated to | Begins after | Ends at | Measure this before delegating |
 | --- | --- | --- | --- | --- |
-| Screen | this skill delegates to the `novelty-screener` agent | the hypothesis is stated and the SOTA corpus is ingested | the novelty and plausibility report, each claim evidence-quoted, with what remains owed | the stated hypothesis plus at least one ingested paper folder under `guidance/reference-papers` or `guidance/paper-guide` — an empty corpus is the operator's to fill, not this stretch's to invent; outside powers run only over orphaned claims (discovery through the agent's own MCP, resolution through `paper_cli.py resolve` under the `resolution` role) and only ever propose ingestion, never grade |
+| Screen | this skill delegates to the `novelty-screener` agent | the hypothesis is stated and the scout pool holds its candidates | the novelty and plausibility report, each claim evidence-quoted and marked provisional, the top 5 ranked for later ingestion, with what remains owed | the stated hypothesis plus `sota-pool/candidates.json` with resolved abstracts — an empty pool is the scout's to fill, not this stretch's to invent; the borrowed `resolve` runs only to confirm the top 5, and nothing here files into `guidance/` |
 | Publish | this skill delegates to the `deliberation-publish` agent | the operator accepted the change | the successor published and current | the acceptance itself — the one precondition here that no command reports, because nothing measures `deliberated`. The orchestrator holds it or the stretch does not begin |
 
 **Screening precedes binding and never publishes.** The screener reads only
-the ingested Markdown corpus and the stated hypothesis; it creates no
-revision, resolves no entry, and closes neither `bound` nor `deliberated`.
-Its report is what the operator consumes to decide whether deliberation
-should begin at all — a hypothesis the SOTA already contains, or one the
-SOTA contradicts, is cheaper to meet here than at `composed`.
+the scout pool's abstracts and the stated hypothesis; it creates no
+revision, resolves no entry, files nothing, and closes neither `bound` nor
+`deliberated`. Every grade is provisional until ingestion, and its report —
+grades plus the ranked top 5 — is what the operator consumes to decide
+whether deliberation should begin at all.
 
 **The deliberation itself is never delegated**, and the north above says why:
 nothing measures it, so an agent that could close that stage would be approving

@@ -7,7 +7,7 @@
 [![Python](https://img.shields.io/badge/Python-%3E%3D3.11-blue.svg)](https://www.python.org/)
 
 Este README es el **manual completo, en español**: instalación, el workspace por
-dentro, los once comandos del CLI, las once skills, los diecinueve agentes,
+dentro, los once comandos del CLI, las once skills, los veinte agentes,
 cómputo remoto, desarrollo y solución de problemas.
 
 ## Índice
@@ -65,7 +65,7 @@ El camino completo, de un PDF a un paper compilado:
 | # | Invocás | Qué hace | Dónde deja el resultado |
 |---|---------|----------|-------------------------|
 | 1 | `/paper-ingestion` | Convierte los PDFs de referencia a Markdown legible (ecuaciones en LaTeX, tablas como tablas, figuras como archivos) | `guidance/<carpeta>/` |
-| 2 | `/sota-graph` | Mapea cada paper ingerido a un grafo sistema-solar (≤20 nodos: temas, problema, 3–5 familias, novedad, resultados, conclusiones), cada nodo con su cita | `guidance/<carpeta>/<stem>.graph.json` |
+| 2 | `/sota-graph` | Explora la idea pre-ingesta: rastrea ~25 referencias por sus abstracts, destila 3–5 familias y mapea la constelación en un HTML único (un sistema solar por paper, aristas entre sistemas) | `sota-pool/` (ignorado, como `guidance/`) |
 | 3 | `/proposal-deliberation` | Discute la matemática con vos y publica cada acuerdo como una revisión gestionada | `proposals/` |
 | 4 | `/experimental-deliberation` | Discute el diseño experimental que va a poner a prueba esa matemática | `experiments/` |
 | 5 | `/proposal-implementation` | Convierte la propuesta en Python que se verifica contra el documento | `implementations/<repo>/` |
@@ -76,15 +76,17 @@ El camino completo, de un PDF a un paper compilado:
 | 10 | `/figure-review` | Mira el render: rasteriza cada `Figures/<id>.pdf` y falla lo medible (tinta fuera del canvas, colisiones) sin juzgar estilo ni reparar nada | un informe visual, nunca un cambio |
 | 11 | `/skill-audit` | Audita cualquiera de las anteriores: qué acepta el código contra qué promete su documentación | un informe, nunca un cambio |
 
-**Lo mínimo para empezar.** Si sólo querés probar la forja, alcanza con los pasos 1 y 3:
-poné un PDF en `guidance/reference-papers/`, corré `/paper-ingestion`, y después
+**Lo mínimo para empezar.** Si sólo querés probar la forja, arrancá por el paso 2
+con tu idea en dos oraciones: `/sota-graph` rastrea el SOTA y te devuelve la
+constelación más el top-5. Recién después, si quieres, poné un PDF en
+`guidance/reference-papers/`, corré `/paper-ingestion`, y deliberá con
 `/proposal-deliberation`. Los pasos 5 a 8 sólo tienen sentido cuando ya hay una propuesta
 publicada y un repositorio destino donde implementarla.
 
 **Tres cosas que conviene saber antes de la primera corrida.**
 
-1. **Nada de lo que produzcas se sube.** `proposals/`, `experiments/`, `paper/` e
-   `implementations/` viajan a GitHub **como carpetas vacías** y nada más; `guidance/`
+1. **Nada de lo que produzcas se sube.** `proposals/`, `experiments/`, `paper/`,
+   `implementations/` y `sota-pool/` viajan a GitHub **como carpetas vacías** y nada más; `guidance/`
    versiona sus carpetas y nunca los PDFs ni el Markdown de adentro. El andamiaje se
    versiona, el contenido no. Un paper a medio escribir es material de investigación, y
    publicarlo por accidente es una fuga.
@@ -294,7 +296,7 @@ mi-paper/
 │   ├── manifest.json            #   hashes de todo lo que generó el framework
 │   ├── runs_ledger.jsonl        #   cada corrida despachada, en orden
 │   └── version                  #   versión del framework que lo creó
-├── .opencode/agents/              # los diecinueve subagentes (fuente única de verdad)
+├── .opencode/agents/              # los veinte subagentes (fuente única de verdad)
 ├── .opencode/skills/              # la copia del kit: las once skills + _core
 │   └── _core/                   #   los dos motores compartidos (deliberación, implementación)
 ├── sections/                    # los diez contratos de sección (viajan CON contenido, como skills/)
@@ -387,7 +389,7 @@ generado.
 | Qué | Dónde vive |
 |-----|------------|
 | Skills | `.opencode/skills/*/SKILL.md` |
-| Subagentes (19, `mode: subagent`, modelo pineado) | `.opencode/agents/*.md` |
+| Subagentes (20, `mode: subagent`, modelo pineado) | `.opencode/agents/*.md` |
 | Comandos `/` (uno por skill, generado) | `.opencode/commands/*.md` |
 | Routing del proyecto | `AGENTS.md` (generado) |
 | Permisos, modelo, MCP | `opencode.json` |
@@ -407,7 +409,7 @@ repo).
 
 ## Los agentes
 
-Un workspace trae **diecinueve subagentes** en `.opencode/agents/`. No son
+Un workspace trae **veinte subagentes** en `.opencode/agents/`. No son
 reemplazos del CLI: son tiradas cortas de trabajo que OpenCode lanza (con la
 herramienta `subagent`) cuando vos se lo pedís. La forma es siempre la
 misma — **una tirada entre dos compuertas del operador**: el agente decide
@@ -421,7 +423,9 @@ establecerlo. Las compuertas las abrís y cerrás vos. Cada uno pinea su modelo
 | `implementation-build` | Del mapa objeto→módulo aprobado al informe de hallazgos: materializa el scaffolding, escribe un módulo por objeto con su procedencia y sus tests de invariantes, y valida los remedios admitidos. | `proposal-implementation` |
 | `implementation-walk` | Camina el flujo declarado acto por acto, en su orden: corre los pasos locales, registra cada producto y se detiene en el ensayo previo al lanzamiento. No tiene camino para enviar una campaña. | `proposal-implementation` |
 | `deliberation-publish` | Desde que aceptás un cambio hasta que la revisión sucesora queda publicada y vigente — la única forma en que la matemática viaja. La deliberación en sí no está acá: sólo vos la cerrás. | `proposal-deliberation` |
-| `novelty-screener` | La etapa `screened`: contrasta la hipótesis contra el SOTA ingerido (`reference-papers` + `paper-guide`), califica novedad y plausibilidad con evidencia citada y reporta lo que falta antes de deliberar. No publica, no escribe, no delibera. | `proposal-deliberation` |
+| `novelty-screener` | La etapa `screened`: contrasta la hipótesis contra los abstracts del pool, califica novedad y plausibilidad con cita exacta —todo provisional— y rankea el top-5 para la ingesta posterior. No publica, no escribe, no ingiere, no delibera. | `proposal-deliberation` |
+| `sota-scout` | Rastrea la idea en la literatura abierta —25 referencias con abstracts, 3 a 5 familias provisionales— como `sota-pool/candidates.json`. Termina en el pool; no ingiere ni califica nada final. | `sota-graph` |
+| `sota-grapher` | Mapea el pool a su constelación —un sistema solar por paper, 20 planetas máximo, aristas entre sistemas— como `atlas.json` más el `atlas.html` único, corriendo checker y renderer hasta el verde. | `sota-graph` |
 | `experimental-publish` | Lo mismo que `deliberation-publish`, sobre el documento de experimentos. | `experimental-deliberation` |
 | `experimental-validation` | La etapa `validated`: busca el protocolo de evaluación del área —métricas, baselines, dataset, semillas, test de significancia—, verifica cada baseline contra su repo y su venue, y fecha cada URL que usa. | `experimental-deliberation` |
 | `experiments-build` | Del mapa aprobado de pasos del protocolo a comandos ejecutables: materializa lo que haga falta, cablea cada paso e instrumenta cada medición para que se pueda correr y leer. | `experimental-implementation` |
@@ -440,7 +444,7 @@ establecerlo. Las compuertas las abrís y cerrás vos. Cada uno pinea su modelo
 Tres reglas que ordenan todo lo demás:
 
 - **La fuente de verdad es `.opencode/agents/`.** `AGENTS.md` lista
-  a los diecinueve enteros, y se genera: si querés cambiar un agente, se cambia
+  a los veinte enteros, y se genera: si querés cambiar un agente, se cambia
   ahí, no en la proyección.
 - **Cada agente declara la skill que carga** (`.opencode/skills/<nombre>/SKILL.md`), y esa
   atadura se verifica: un agente que apunte a una skill que el workspace no
@@ -483,10 +487,10 @@ declaración de la skill que la recibe, no inferida del nombre de la carpeta.
 ```mermaid
 flowchart TD
     PDF["PDFs que dejás en guidance/"] --> PI["1. paper-ingestion"]
+    IDEA["tu idea, en dos oraciones"] --> SG["2. sota-graph"]
 
-    PI -- "el .md de cada paper" --> SG["2. sota-graph"]
-    SG -- "el grafo solar de cada paper" --> PD["3. proposal-deliberation"]
-    PI -- "guidance/paper-guide (opcional)" --> PD
+    PI -- "guidance/paper-guide (opcional)" --> PD["3. proposal-deliberation"]
+    SG -- "top-5 + reporte provisional" --> PD
     PI -- "guidance/data-paper (obligatoria)" --> ED["4. experimental-deliberation"]
     PI -- "guidance/paper-guide (opcional)" --> ED
 
@@ -2979,7 +2983,7 @@ papersmith-ai/
 │   ├── remote-execution/       # despacho a cómputo distribuido (Kaggle T4/P100 / local)
 │   ├── kaggle-accounts/        # guardián de credenciales: identidades, nunca valores
 │   └── skill-audit/            # meta-auditor de superficies y promesas
-├── .opencode/agents/            # diecinueve subagentes, modelo pineado por archivo
+├── .opencode/agents/            # veinte subagentes, modelo pineado por archivo
 ├── .opencode/commands/          # comandos / generados (uno por skill)
 ├── AGENTS.md                    # routing del proyecto (generado)
 ├── opencode.json                # permisos, modelo, MCP (V2)

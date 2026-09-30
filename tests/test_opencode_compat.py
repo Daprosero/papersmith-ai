@@ -47,6 +47,7 @@ AGENT_MODELS = {
     "redactor": "opencode-go/qwen3.8-flash",
     "section-grounding-auditor": "opencode-go/deepseek-v4.1-flash",
     "sota-grapher": "opencode-go/deepseek-v4.1-flash",
+    "sota-scout": "opencode-go/deepseek-v4.1-flash",
     "style-sampler": "opencode-go/muse-spark-1.3-contributor",
 }
 
