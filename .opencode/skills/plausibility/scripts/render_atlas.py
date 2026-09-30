@@ -112,11 +112,11 @@ def render(atlas: dict) -> str:
     min_y, max_y = min(ys) - SYSTEM_RADIUS - MARGIN, max(ys) + SYSTEM_RADIUS + MARGIN
     width, height = round(max_x - min_x), round(max_y - min_y)
 
-    parts = [f'<svg class="sky" viewBox="{min_x} {min_y} {width} {height}">']
+    parts = [f'<svg id="sky" class="sky" viewBox="{min_x} {min_y} {width} {height}">']
     for system in sorted(atlas["systems"], key=lambda s: s["id"]):
         cx, cy = centers[system["id"]]
         parts.append(f'<g class="system" data-system="{_escape(system["id"])}">')
-        parts.append(f'<text x="{cx}" y="{cy - SYSTEM_RADIUS - 12}" class="sys-title">'
+        parts.append(f'<text x="{cx}" y="{cy - SYSTEM_RADIUS - 16}" class="sys-title">'
                      f'{_escape(system.get("title", system["id"]))}</text>')
         for orbit in sorted({p["orbit"] for p in system["planets"] if p["orbit"] > 0}):
             radius = ORBIT_RADII.get(orbit, 250)
@@ -124,12 +124,12 @@ def render(atlas: dict) -> str:
         for planet in sorted(system["planets"], key=lambda p: p["id"]):
             x, y = absolute[(system["id"], planet["id"])]
             color = SLOT_COLORS.get(planet["slot"], "#cccccc")
-            size = 16 if planet["slot"] == "sun" else 9
+            size = 20 if planet["slot"] == "sun" else 11
             parts.append(
                 f'<g class="planet" data-system="{_escape(system["id"])}" '
                 f'data-planet="{_escape(planet["id"])}" data-slot="{_escape(planet["slot"])}">'
                 f'<circle cx="{x}" cy="{y}" r="{size}" fill="{color}"/>'
-                f'<text x="{x}" y="{y - size - 4}">{_escape(planet["label"][:28])}</text></g>')
+                f'<text x="{x}" y="{y - size - 5}">{_escape(planet["label"][:28])}</text></g>')
         parts.append("</g>")
     for link in sorted(atlas["links"],
                        key=lambda l: (str(l.get("from_system")), str(l.get("from")),
@@ -162,11 +162,12 @@ def render(atlas: dict) -> str:
 body{{font-family:system-ui,sans-serif;background:#0b1020;color:#e8e8e8;margin:0;padding:16px}}
 .sky{{background:#111830;border:1px solid #2a3350;border-radius:8px;width:100%}}
 .orbit{{fill:none;stroke:#2a3350;stroke-width:1}}
-.planet text{{fill:#cfd6ea;font-size:11px;text-anchor:middle}}
+.planet text{{fill:#cfd6ea;font-size:15px;text-anchor:middle}}
 .planet{{cursor:pointer}}
-.link{{stroke:#4a5a80;stroke-width:1.2;fill:none}}
-.link.inter{{stroke:#9b7ede;stroke-width:1.6}}
-.sys-title{{fill:#fff;font-size:22px}}
+.link{{stroke:#4a5a80;stroke-width:1.4;fill:none}}
+.link.inter{{stroke:#9b7ede;stroke-width:2}}
+.sys-title{{fill:#fff;font-size:30px}}
+#toolbar button{{font-size:15px;margin-right:6px;padding:4px 12px;cursor:pointer}}
 #panel{{position:sticky;top:8px;background:#141b31;border:1px solid #2a3350;border-radius:8px;padding:12px 16px;margin-bottom:16px;max-width:900px}}
 #panel .quote{{font-style:italic;color:#b9c4de}}
 .dim{{opacity:.15}}
@@ -177,9 +178,60 @@ body{{font-family:system-ui,sans-serif;background:#0b1020;color:#e8e8e8;margin:0
 <div id="panel"><em>Click a planet to read it. Use the family filter to dim the rest. Hover a planet to highlight its cross-system links.</em></div>
 <div><label>Family filter: <input id="famfilter" placeholder="family planet id"></label>
 <button id="clear">clear</button></div>
+<div id="toolbar"><button id="zoomin">zoom +</button><button id="zoomout">zoom −</button><button id="zoomreset">reset view</button></div>
 {sky}
 <script>
 const ATLAS = {data};
+const svg = document.getElementById('sky');
+const home = svg.viewBox.baseVal;
+let vb = {{x: home.x, y: home.y, w: home.width, h: home.height}};
+function apply() {{
+  svg.setAttribute('viewBox', vb.x + ' ' + vb.y + ' ' + vb.w + ' ' + vb.h);
+}}
+function toSvg(clientX, clientY) {{
+  const rect = svg.getBoundingClientRect();
+  return {{
+    x: vb.x + (clientX - rect.left) / rect.width * vb.w,
+    y: vb.y + (clientY - rect.top) / rect.height * vb.h
+  }};
+}}
+function zoomAt(clientX, clientY, factor) {{
+  const m = toSvg(clientX, clientY);
+  vb.x = m.x - (m.x - vb.x) / factor;
+  vb.y = m.y - (m.y - vb.y) / factor;
+  vb.w /= factor;
+  vb.h /= factor;
+  apply();
+}}
+function zoomCenter(factor) {{
+  const rect = svg.getBoundingClientRect();
+  zoomAt(rect.left + rect.width / 2, rect.top + rect.height / 2, factor);
+}}
+svg.addEventListener('wheel', e => {{
+  e.preventDefault();
+  zoomAt(e.clientX, e.clientY, e.deltaY > 0 ? 1 / 1.2 : 1.2);
+}}, {{passive: false}});
+document.getElementById('zoomin').addEventListener('click', () => zoomCenter(1.5));
+document.getElementById('zoomout').addEventListener('click', () => zoomCenter(1 / 1.5));
+document.getElementById('zoomreset').addEventListener('click', () => {{
+  vb = {{x: home.x, y: home.y, w: home.width, h: home.height}};
+  apply();
+}});
+let drag = null;
+svg.addEventListener('pointerdown', e => {{
+  drag = {{x: e.clientX, y: e.clientY}};
+  svg.setPointerCapture(e.pointerId);
+}});
+svg.addEventListener('pointermove', e => {{
+  if (!drag) return;
+  const rect = svg.getBoundingClientRect();
+  vb.x -= (e.clientX - drag.x) / rect.width * vb.w;
+  vb.y -= (e.clientY - drag.y) / rect.height * vb.h;
+  drag = {{x: e.clientX, y: e.clientY}};
+  apply();
+}});
+svg.addEventListener('pointerup', () => {{ drag = null; }});
+svg.addEventListener('pointercancel', () => {{ drag = null; }});
 const panel = document.getElementById('panel');
 function findPlanet(sys, pid) {{
   const s = ATLAS.systems.find(s => s.id === sys);
