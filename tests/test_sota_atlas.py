@@ -156,6 +156,8 @@ class RenderAtlasTests(unittest.TestCase):
         self.assertIn('id="zoomreset"', page)
         self.assertIn('pointerdown', page)
         self.assertIn('wheel', page)
+        self.assertIn('famchips', page)
+        self.assertNotIn('famfilter', page)
         self.assertNotIn("<script src", page)
         self.assertNotIn("<link ", page)
         self.assertNotIn("@import", page)

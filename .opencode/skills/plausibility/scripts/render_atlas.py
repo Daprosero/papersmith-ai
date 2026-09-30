@@ -117,7 +117,8 @@ def render(atlas: dict) -> str:
         cx, cy = centers[system["id"]]
         parts.append(f'<g class="system" data-system="{_escape(system["id"])}">')
         parts.append(f'<text x="{cx}" y="{cy - SYSTEM_RADIUS - 16}" class="sys-title">'
-                     f'{_escape(system.get("title", system["id"]))}</text>')
+                     f'{_escape(str(system.get("title", system["id"]))[:64])}</text>')
+        parts.append(f'<title>{_escape(system.get("title", system["id"]))}</title>')
         for orbit in sorted({p["orbit"] for p in system["planets"] if p["orbit"] > 0}):
             radius = ORBIT_RADII.get(orbit, 250)
             parts.append(f'<circle cx="{cx}" cy="{cy}" r="{radius}" class="orbit"/>')
@@ -125,11 +126,14 @@ def render(atlas: dict) -> str:
             x, y = absolute[(system["id"], planet["id"])]
             color = SLOT_COLORS.get(planet["slot"], "#cccccc")
             size = 20 if planet["slot"] == "sun" else 11
+            full_label = _escape(planet["label"])
+            short_label = _escape(planet["label"][:28])
             parts.append(
                 f'<g class="planet" data-system="{_escape(system["id"])}" '
                 f'data-planet="{_escape(planet["id"])}" data-slot="{_escape(planet["slot"])}">'
+                f'<title>{full_label} [{_escape(planet["slot"])}]</title>'
                 f'<circle cx="{x}" cy="{y}" r="{size}" fill="{color}"/>'
-                f'<text x="{x}" y="{y - size - 5}">{_escape(planet["label"][:28])}</text></g>')
+                f'<text x="{x}" y="{y - size - 5}">{short_label}</text></g>')
         parts.append("</g>")
     for link in sorted(atlas["links"],
                        key=lambda l: (str(l.get("from_system")), str(l.get("from")),
@@ -159,8 +163,10 @@ def render(atlas: dict) -> str:
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>SOTA constellation</title>
 <style>
-body{{font-family:system-ui,sans-serif;background:#0b1020;color:#e8e8e8;margin:0;padding:16px}}
-.sky{{background:#111830;border:1px solid #2a3350;border-radius:8px;width:100%}}
+html,body{{height:100%}}
+body{{font-family:system-ui,sans-serif;background:#0b1020;color:#e8e8e8;margin:0;padding:12px 16px;box-sizing:border-box;display:flex;flex-direction:column}}
+.sky{{flex:1 1 auto;min-height:0;width:100%;background:#111830;border:1px solid #2a3350;border-radius:8px;cursor:grab}}
+.sky:active{{cursor:grabbing}}
 .orbit{{fill:none;stroke:#2a3350;stroke-width:1}}
 .planet text{{fill:#cfd6ea;font-size:15px;text-anchor:middle}}
 .planet{{cursor:pointer}}
@@ -168,16 +174,19 @@ body{{font-family:system-ui,sans-serif;background:#0b1020;color:#e8e8e8;margin:0
 .link.inter{{stroke:#9b7ede;stroke-width:2}}
 .sys-title{{fill:#fff;font-size:30px}}
 #toolbar button{{font-size:15px;margin-right:6px;padding:4px 12px;cursor:pointer}}
-#panel{{position:sticky;top:8px;background:#141b31;border:1px solid #2a3350;border-radius:8px;padding:12px 16px;margin-bottom:16px;max-width:900px}}
+#panel{{background:#141b31;border:1px solid #2a3350;border-radius:8px;padding:10px 16px;margin:0 0 10px;max-width:900px;max-height:30vh;overflow:auto}}
 #panel .quote{{font-style:italic;color:#b9c4de}}
+#famlegend{{margin:0 0 8px}}
+.famchip{{margin:2px;padding:3px 12px;cursor:pointer;border-radius:12px;border:1px solid #9b7ede;background:#1a2140;color:#e8e8e8;font-size:13px}}
+.famchip.on{{background:#9b7ede;color:#0b1020}}
+#toolbar{{margin:0 0 8px}}
 .dim{{opacity:.15}}
 </style>
 </head>
 <body>
 <h1>SOTA constellation — one plane</h1>
 <div id="panel"><em>Click a planet to read it. Use the family filter to dim the rest. Hover a planet to highlight its cross-system links.</em></div>
-<div><label>Family filter: <input id="famfilter" placeholder="family planet id"></label>
-<button id="clear">clear</button></div>
+<div id="famlegend"><em>Families:</em> <span id="famchips"></span></div>
 <div id="toolbar"><button id="zoomin">zoom +</button><button id="zoomout">zoom −</button><button id="zoomreset">reset view</button></div>
 {sky}
 <script>
@@ -219,19 +228,25 @@ document.getElementById('zoomreset').addEventListener('click', () => {{
 }});
 let drag = null;
 svg.addEventListener('pointerdown', e => {{
-  drag = {{x: e.clientX, y: e.clientY}};
-  svg.setPointerCapture(e.pointerId);
+  drag = {{x: e.clientX, y: e.clientY, moved: false}};
 }});
 svg.addEventListener('pointermove', e => {{
   if (!drag) return;
+  const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+  if (!drag.moved) {{
+    if (Math.hypot(dx, dy) < 5) return;
+    drag.moved = true;
+    try {{ svg.setPointerCapture(e.pointerId); }} catch (_) {{}}
+  }}
   const rect = svg.getBoundingClientRect();
-  vb.x -= (e.clientX - drag.x) / rect.width * vb.w;
-  vb.y -= (e.clientY - drag.y) / rect.height * vb.h;
-  drag = {{x: e.clientX, y: e.clientY}};
+  vb.x -= dx / rect.width * vb.w;
+  vb.y -= dy / rect.height * vb.h;
+  drag = {{x: e.clientX, y: e.clientY, moved: true}};
   apply();
 }});
-svg.addEventListener('pointerup', () => {{ drag = null; }});
-svg.addEventListener('pointercancel', () => {{ drag = null; }});
+function endDrag() {{ drag = null; }}
+svg.addEventListener('pointerup', endDrag);
+svg.addEventListener('pointercancel', endDrag);
 const panel = document.getElementById('panel');
 function findPlanet(sys, pid) {{
   const s = ATLAS.systems.find(s => s.id === sys);
@@ -268,15 +283,31 @@ document.querySelectorAll('.planet').forEach(g => {{
     document.querySelectorAll('.planet').forEach(h => h.classList.remove('dim'));
   }});
 }});
-document.getElementById('clear').addEventListener('click', () => {{
-  document.getElementById('famfilter').value = '';
-  document.querySelectorAll('.planet').forEach(h => h.classList.remove('dim'));
-}});
-document.getElementById('famfilter').addEventListener('input', e => {{
-  const q = e.target.value.trim();
-  document.querySelectorAll('.planet').forEach(h => {{
-    h.classList.toggle('dim', q !== '' && h.dataset.planet !== q && h.dataset.slot !== 'sun');
+function planetLabel(h) {{
+  const p = findPlanet(h.dataset.system, h.dataset.planet);
+  return p ? p.label : '';
+}}
+const chips = document.getElementById('famchips');
+const fams = {{}};
+ATLAS.systems.forEach(s => s.planets.forEach(p => {{
+  if (p.slot === 'family') fams[p.label] = (fams[p.label] || 0) + 1;
+}}));
+let activeFam = null;
+Object.keys(fams).sort().forEach(label => {{
+  const b = document.createElement('button');
+  b.textContent = label + ' (' + fams[label] + ')';
+  b.className = 'famchip';
+  b.addEventListener('click', () => {{
+    activeFam = (activeFam === label) ? null : label;
+    document.querySelectorAll('.famchip').forEach(c => {{
+      c.classList.toggle('on', c.textContent.startsWith(label + ' (') && activeFam === label);
+    }});
+    document.querySelectorAll('.planet').forEach(h => {{
+      const hit = h.dataset.slot === 'family' && planetLabel(h) === activeFam;
+      h.classList.toggle('dim', activeFam !== null && !hit);
+    }});
   }});
+  chips.appendChild(b);
 }});
 </script>
 </body>
