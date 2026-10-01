@@ -58,7 +58,10 @@ jobs:
       - name: Install node dependencies
         run: npm ci
       - name: Run pytest
-        run: .micromamba/envs/papersmith/bin/python -m pytest
+        # `test:py:par` is the serial command plus `-n 8 --dist loadfile`: same
+        # tests, spread by file across workers. Only `loadfile` is safe -- the
+        # other modes race on the shared `implementations/` directory.
+        run: npm run test:py:par
       - name: Verify the gate does not read the operator's personal context
         # The declared gate runs twice: once under an empty HOME and once under
         # one carrying the shapes a developer's machine has (.pi/agent/mcp.json,
