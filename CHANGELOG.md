@@ -15,6 +15,13 @@ number is `0`, breaking changes can still arrive without a major bump.
 
 ### Added
 
+- **Pi off-path push guard.** `init` and `upgrade` now generate
+  `.pi/extensions/refuse-offpath-push.js` for workspaces that declare `pi`: a
+  `tool_call` extension that shells out to the same Python guard as the OpenCode
+  plugin (a tripwire, not a gate) and fails open when the guard, python, or the
+  event is unusable. `docs/guard-hooks.md` documents an opt-in Claude Code hook
+  snippet (never written to `.claude/settings.json`) and records that an
+  Antigravity guard is unsupported until its hook input schema is verified.
 - **Antigravity agents.** `init` and `upgrade` now generate `.agents/agents/<name>.md`
   from the `.claude/agents/` sources (explicit `tools` allow-list mapped to
   Antigravity tool names, `commandExecutionPolicy` `off` unless the agent has a

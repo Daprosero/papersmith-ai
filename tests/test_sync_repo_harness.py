@@ -53,6 +53,7 @@ class SyncRepoHarnessTests(unittest.TestCase):
 
     def test_projection_includes_the_pi_agents_directory(self) -> None:
         assert (".pi/agents", ".pi/agents") in self.module.PROJECTION
+        assert (".pi/extensions", ".pi/extensions") in self.module.PROJECTION
 
     def test_expected_maps_every_projected_directory_to_checkout_paths(self) -> None:
         _write(self.workspace / ".pi/agents/a.md", "agent")

@@ -22,6 +22,7 @@ from .python import emit_result, run_script
 #: the surplus scan covers a runtime's whole static surface.
 _EXTRA_STATIC = {
     "opencode": ("opencode.json", ".opencode/plugins/refuse-offpath-push.js"),
+    "pi": (".pi/extensions/refuse-offpath-push.js",),
 }
 
 

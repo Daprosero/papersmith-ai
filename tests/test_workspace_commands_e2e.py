@@ -244,6 +244,24 @@ class HarnessCommandProjectionTests(unittest.TestCase):
         self.assertIn("tool.execute.before", text)
         self.assertIn("_load_push_surfaces", text)
 
+    def test_pi_extension_is_the_generated_relay(self) -> None:
+        workspace = make_workspace(new_tmp(self))
+        text = (workspace / ".pi/extensions/refuse-offpath-push.js").read_text(encoding="utf-8")
+        self.assertIn('pi.on("tool_call"', text)
+        self.assertIn("refuse_offpath_push.py", text)
+        self.assertIn("tripwire, not a gate", text)
+
+    def test_claude_only_init_emits_no_pi_extension_and_surplus_is_named(self) -> None:
+        workspace = RenderedSetLifecycleTests._init_subset(new_tmp(self), "claude")
+        self.assertFalse((workspace / ".pi/extensions").exists())
+        self.assertFalse((workspace / ".claude/settings.json").exists())
+        relpath = ".pi/extensions/refuse-offpath-push.js"
+        (workspace / relpath).parent.mkdir(parents=True)
+        (workspace / relpath).write_text("older\n", encoding="utf-8")
+        rc, out, _ = capture(["audit", str(workspace), "--check-drift"])
+        self.assertEqual(rc, DRIFT_ERROR)
+        self.assertIn(relpath, out)
+
     def test_audit_is_clean_and_upgrade_restores_a_tampered_command(self) -> None:
         workspace = make_workspace(new_tmp(self))
         rc, out, _ = capture(["audit", str(workspace), "--check-drift"])

@@ -126,3 +126,21 @@ used for agents without `run_command` as the most restrictive reading of
 an unquoted `off` is a YAML 1.1 boolean. Decision for the user: `.antigravity/rules.md`
 has no documented support; `AGENTS.md`/`GEMINI.md`/`.agents/rules/` are the
 documented entrypoints and were deliberately not created.
+
+## T5 outcome (guards, 2026-10-02)
+
+- Pi: generated. `.pi/extensions/refuse-offpath-push.js` registers a `tool_call`
+  handler. Sources: the raw extensions doc
+  (https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/extensions.md:
+  project extensions load from `.pi/extensions/` per configuration.md, JS files
+  and a default factory taking `ExtensionAPI` are supported, a handler returns
+  `{ block: true, reason }`, and "a `tool_call` handler failure blocks the tool
+  as a fail-safe") and the upstream `permission-gate.ts` example for
+  `event.toolName === "bash"` and `event.input.command`. Because a throwing
+  handler blocks, the relay wraps everything and fails open. Unverified: a
+  `ctx.cwd` field (the relay anchors on its own file path instead) and whether
+  Pi runs the file as ESM or CommonJS (it loads through `jiti`).
+- Claude Code: documented opt-in snippet only, in `docs/guard-hooks.md`.
+- Antigravity: unsupported until the hook input and output protocol is read raw;
+  see `docs/guard-hooks.md`.
+- OpenCode: unchanged.

@@ -125,6 +125,7 @@ class GeneratorsTests(unittest.TestCase):
             ".antigravity/rules.md",
             "opencode.json",
             ".opencode/plugins/refuse-offpath-push.js",
+            ".pi/extensions/refuse-offpath-push.js",
         }
         expected |= {f".opencode/commands/{name}.md" for name in COMMAND_NAMES}
         expected |= {f".claude/commands/{name}.md" for name in COMMAND_NAMES}
@@ -285,6 +286,25 @@ class GeneratorsTests(unittest.TestCase):
         target.write_text("drift\n", encoding="utf-8")
         assert ".opencode/agents/redactor.md" in check_generated(workspace, tools=ALL_TOOLS)
         assert ".opencode/agents/redactor.md" in apply_generated(workspace, tools=ALL_TOOLS)
+        assert check_generated(workspace, tools=ALL_TOOLS) == []
+
+    def test_pi_extension_relay_is_scoped_to_pi_and_drift_checked(self) -> None:
+        workspace = _workspace(self.new_tmp())
+        relpath = ".pi/extensions/refuse-offpath-push.js"
+        assert relpath in render_files(workspace, tools=("pi",))
+        for tool in ("claude", "opencode", "antigravity"):
+            assert relpath not in render_files(workspace, tools=(tool,)), tool
+        text = render_files(workspace, tools=("pi",))[relpath]
+        assert 'pi.on("tool_call"' in text
+        assert "block: true" in text
+        assert "refuse_offpath_push.py" in text
+        assert "_load_push_surfaces" in text
+        from papersmith.generators import apply_generated
+        target = workspace / relpath
+        assert target.is_file()
+        target.write_text("drift\n", encoding="utf-8")
+        assert relpath in check_generated(workspace, tools=ALL_TOOLS)
+        assert relpath in apply_generated(workspace, tools=ALL_TOOLS)
         assert check_generated(workspace, tools=ALL_TOOLS) == []
 
     def test_antigravity_agent_projection_is_scoped_to_antigravity(self) -> None:

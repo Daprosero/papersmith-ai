@@ -605,6 +605,8 @@ def render_files(workspace: Path, context: dict[str, Any] | None = None,
         rendered[output] = render_package_template(template, ctx)
         if tool == "pi":
             rendered[".pi/gentle-ai/persona.json"] = render_package_template("persona.json.tpl", ctx)
+            rendered[".pi/extensions/refuse-offpath-push.js"] = render_package_template(
+                "pi-extension.js.tpl", ctx)
         if tool == "pi" and pi_agents:
             for agent in pi_agents:
                 rendered[f".pi/agents/{agent['name']}.md"] = agent["text"]

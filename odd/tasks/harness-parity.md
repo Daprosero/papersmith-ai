@@ -26,7 +26,7 @@ TDD strict (source: user config + project), runner: focused `.micromamba/envs/pa
 - [x] T0 external verification matrix with cited sources, committed as docs
 - [x] T3 OpenCode agents translator + wiring (TOOL_OUTPUTS, audit _EXTRA_STATIC, synchronized_paths, PROJECTION) + pinned-test updates in the same commit
 - [x] T4 Antigravity agents (sourced; no commands/workflows) + Pi DYNAMIC_PREFIXES gap fix
-- [ ] T5 guard/hook parity (no settings.json write; Pi only if sourced; fail-safe + tests)
+- [x] T5 guard/hook parity (no settings.json write; Pi only if sourced; fail-safe + tests)
 - [ ] T7 per-harness wiring summary in init/upgrade + e2e + health_inspector structural check covers agents/plugins (no gen-claude.py)
 - [ ] T8 docs (README, PI.md, OPENCODE.md, rules) + CHANGELOG Unreleased
 
@@ -45,5 +45,7 @@ TDD strict (source: user config + project), runner: focused `.micromamba/envs/pa
 
 - T4 (86e7a95) gate passed: tools from https://antigravity.google/docs/hooks, schema from /docs/subagents (model optional, default inherit; policy values off/auto/eager/sandbox, semantics undefined). RED: `pytest tests/test_papersmith_generators.py` -> collection ImportError (`collect_antigravity_agents`); e2e `-k antigravity_agents` -> 1 failed. Then 3 failed (unquoted `off` parses as bool; pinned expected-path set) -> fixed by quoting + updating set. GREEN: generators+e2e 104 passed; `test_harness_parity`+`test_sync_repo_harness` 12 passed; `npm run test:fast` 268 passed; sync synced 19 files, `--check` clean (91). Pi gap (599e503): RED `-k stale_pi_agents` failed (`.pi/agents/zz-ghost.md` not in removed), GREEN 60 passed, test:fast 180 passed. `PI_TOOL_MAP` untouched (mcp/mcpScript unsourced). Decision for user: `.antigravity/rules.md` unsupported by docs; AGENTS.md/GEMINI.md not created. Route: delegated writer.
 
+- T5 (a813ee2, 4f5b850) Pi sourced from raw extensions.md (`.pi/extensions`, JS + default factory, `tool_call` -> `{block:true,reason}`, throwing handler blocks) + upstream permission-gate.ts (`event.input.command`); generated `.pi/extensions/refuse-offpath-push.js` from `pi-extension.js.tpl` (same Python guard, fail-open, anchored on own file). Claude: `docs/guard-hooks.md` opt-in snippet only (no settings.json). Antigravity: unsupported, documented (schema only seen via page summary). Static output like the OpenCode plugin: `_EXTRA_STATIC["pi"]` added, not DYNAMIC_PREFIXES, not TOOL_OUTPUTS. RED: generators+e2e pi tests -> 4 failed (FileNotFoundError `.pi/extensions/refuse-offpath-push.js`); the template file was written before the tests (unwired, inert), the node tests skipped (init unavailable) until wiring. GREEN: generators+e2e 108 passed; sync_repo_harness 6 passed; `node --test tests/pi-extension.test.mjs tests/opencode-plugin.test.mjs` 17 pass; `npm run test:fast` 3338 passed, 6 skipped; sync synced 1 file, `--check` clean (92). Pinned: generators expected-path set. Route: delegated writer.
+
 ## Next step
-Slice 2 done (T0, T3), T4 done. Next: T5.
+T5 done. Next: T7.
