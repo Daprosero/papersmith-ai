@@ -15,46 +15,64 @@ number is `0`, breaking changes can still arrive without a major bump.
 
 ### Added
 
+Harness parity: skills, commands, agents and guards in each harness, wired by
+`init` and `upgrade`, with an honest report of what is not.
+
 - **Per-harness wiring summary.** `init` and `upgrade` print one line per active
   harness (`skills`, `commands`, `agents`, `plugins` as `wired`, `unsupported`,
   `failed` or `blocked`) and add a `wiring` key to their results. The support
   matrix lives in `generators.HARNESS_CAPABILITIES`, derived from the constants
   `render_files` writes through; exit codes and existing keys are unchanged.
   The health inspector's structural fallback also checks agents and the
-  plugin/extension.
-- **Pi off-path push guard.** `init` and `upgrade` now generate
+  plugin/extension. The README table of what each harness wires is tested
+  against that matrix.
+- **README support matrix and Antigravity note.** The README now carries the
+  sourced per-harness support matrix (with source URLs and the 2026-10-02 date)
+  and states why Antigravity gets no command files (workflows are deprecated in
+  favour of skills); its commands cell reads "unsupported — vía skills". Nothing
+  generated changes.
+- **Link-failure warnings.** Skill-link failures (an `OSError`, or a real
+  directory at a link path) are reported by `init` and `upgrade` instead of
+  being skipped silently.
+- **OpenCode agents.** `init` and `upgrade` project each `.claude/agents/*.md`
+  definition into `.opencode/agents/<name>.md` with `mode: subagent` and a
+  least-privilege `permission` block mapped from the Claude `tools:` list
+  (unknown tools are never granted and are reported). `upgrade` removes agents
+  whose source disappeared.
+- **Antigravity agents.** `init` and `upgrade` generate `.agents/agents/<name>.md`
+  from the `.claude/agents/` sources (explicit `tools` allow-list mapped to
+  Antigravity tool names, `commandExecutionPolicy` `off` unless the agent has a
+  shell tool). Stale ones are removed on upgrade. Sourced from
+  https://antigravity.google/docs/subagents and /docs/hooks.
+- **Pi prompt templates.** `init` and `upgrade` project one prompt template per
+  skill under `.pi/prompts/<name>.md` (the same body as the Claude Code and
+  OpenCode commands, with `$ARGUMENTS`), and `upgrade` removes the ones whose
+  skill disappeared.
+- **Pi off-path push guard.** `init` and `upgrade` generate
   `.pi/extensions/refuse-offpath-push.js` for workspaces that declare `pi`: a
   `tool_call` extension that shells out to the same Python guard as the OpenCode
   plugin (a tripwire, not a gate) and fails open when the guard, python, or the
   event is unusable. `docs/guard-hooks.md` documents an opt-in Claude Code hook
   snippet (never written to `.claude/settings.json`) and records that an
   Antigravity guard is unsupported until its hook input schema is verified.
-- **Antigravity agents.** `init` and `upgrade` now generate `.agents/agents/<name>.md`
-  from the `.claude/agents/` sources (explicit `tools` allow-list mapped to
-  Antigravity tool names, `commandExecutionPolicy` `off` unless the agent has a
-  shell tool). Stale ones are removed on upgrade. Sourced from
-  https://antigravity.google/docs/subagents and /docs/hooks.
-
-- **OpenCode agents.** `papersmith init` and `upgrade` now project each
-  `.claude/agents/*.md` definition into `.opencode/agents/<name>.md` with
-  `mode: subagent` and a least-privilege `permission` block mapped from the
-  Claude `tools:` list (unknown tools are never granted and are reported).
-  `upgrade` removes agents whose source disappeared.
-- **Pi prompt templates.** `papersmith init` and `upgrade` now project one
-  prompt template per skill under `.pi/prompts/<name>.md` (the same body as the
-  Claude Code and OpenCode commands, with `$ARGUMENTS`), and `upgrade` removes
-  the ones whose skill disappeared.
 - **Antigravity `.agents/skills` link.** `init`, `upgrade` and
   `scripts/setup-harnesses.sh` link `.agents/skills` to `skills/`, so skills can
   be invoked as `/name`. Antigravity still gets no command files.
+- **Docs.** `docs/harness-support-matrix.md` (sourced per-harness support) and
+  `docs/guard-hooks.md`; the README now states per harness what is wired,
+  unsupported or opt-in.
 
 ### Changed
 
 - **The health check is per enabled tool.** It requires each harness link and
   commands directory only for the tools the workspace enables, instead of
   reporting drift for every known harness.
-- `.antigravity/skills` is kept for now. Removing it is a follow-up once the
-  `.agents/skills` path is confirmed in real Antigravity.
+- `.antigravity/skills` and `.antigravity/rules.md` are kept for compatibility;
+  neither is in Antigravity's documented locations, and moving them is a pending
+  user decision.
+- `upgrade` also removes stale `.pi/agents` files whose source disappeared.
+- Pi agents need the third-party `pi-subagents` package; Pi core has no
+  sub-agents.
 - Unverified before release: that real Antigravity lists `.agents/skills/<name>`
   as `/name`, and whether Pi shows a trust prompt for project `.pi/prompts`. If
   the Antigravity premise fails, ship the Pi part alone.

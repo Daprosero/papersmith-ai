@@ -32,3 +32,10 @@ has exactly one authority. It refuses — with a thrown error naming the matched
 surface — a command that names a service's push surface without also invoking
 `remote_cli.py`, and it degrades loudly rather than silently allowing when the
 guard cannot be loaded. It is a tripwire, not a gate.
+
+## Agents
+
+`.opencode/agents/<name>.md` files are projected from `.claude/agents/` by
+`python scripts/sync-repo-harness.py` (`mode: subagent`, with a `permission`
+block mapped from each source `tools:` list). Edit the source in
+`.claude/agents/`, never the projection.

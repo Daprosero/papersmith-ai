@@ -155,6 +155,16 @@ class Capability:
 
     supported: bool
     artifact: str | None = None  # directory (commands, agents) or file (plugins)
+    #: Documented caveat for an unsupported cell; never changes what is generated.
+    note: str | None = None
+
+
+#: Antigravity's only slash-command mechanism (workflows) is deprecated in favour
+#: of skills and its workspace path is unverified, so no command files are
+#: generated; skills already work as `/<skill-name>`.
+CAPABILITY_NOTES = {
+    ("antigravity", "commands"): "vía skills (workflows deprecados)",
+}
 
 
 def _build_capabilities() -> dict[str, dict[str, Capability]]:
@@ -167,7 +177,11 @@ def _build_capabilities() -> dict[str, dict[str, Capability]]:
     for tool in ALL_TOOLS:
         matrix[tool] = {
             "skills": Capability(True),
-            "commands": Capability(tool in COMMAND_TOOLS, COMMAND_PREFIXES.get(tool)),
+            "commands": Capability(
+                tool in COMMAND_TOOLS,
+                COMMAND_PREFIXES.get(tool),
+                CAPABILITY_NOTES.get((tool, "commands")),
+            ),
             "agents": Capability(tool in AGENT_DIRS, AGENT_DIRS.get(tool)),
             "plugins": Capability(tool in PLUGIN_FILES, PLUGIN_FILES.get(tool)),
         }

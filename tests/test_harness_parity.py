@@ -186,3 +186,56 @@ class HarnessParityTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReadmeCapabilityTableTests(unittest.TestCase):
+    """The README's per-harness table must say what HARNESS_CAPABILITIES says."""
+
+    ROWS = {
+        "Claude Code": "claude",
+        "OpenCode": "opencode",
+        "Pi": "pi",
+        "Google Antigravity": "antigravity",
+    }
+    COLUMNS = ("skills", "commands", "agents", "plugins")
+
+    def _table(self):
+        text = (FORGE_ROOT / "README.md").read_text(encoding="utf-8")
+        start = text.index("<!-- harness-capabilities:start -->")
+        end = text.index("<!-- harness-capabilities:end -->")
+        rows = {}
+        for line in text[start:end].splitlines():
+            cells = [c.strip() for c in line.strip().strip("|").split("|")]
+            if line.startswith("|") and cells[0] in self.ROWS:
+                rows[self.ROWS[cells[0]]] = cells[1:]
+        return rows
+
+    def test_table_matches_harness_capabilities(self):
+        from papersmith.generators import HARNESS_CAPABILITIES
+
+        rows = self._table()
+        self.assertEqual(set(rows), set(HARNESS_CAPABILITIES))
+        for tool, cells in rows.items():
+            self.assertEqual(len(cells), len(self.COLUMNS))
+            for column, cell in zip(self.COLUMNS, cells):
+                entry = HARNESS_CAPABILITIES[tool][column]
+                with self.subTest(tool=tool, capability=column):
+                    if entry.supported:
+                        self.assertTrue(cell.startswith("wired"), cell)
+                        if entry.artifact:
+                            self.assertIn(f"`{entry.artifact}`", cell)
+                    elif (tool, column) == ("claude", "plugins"):
+                        # Documented opt-in only; the code writes nothing.
+                        self.assertTrue(cell.startswith("opt-in"), cell)
+                        self.assertIn("guard-hooks", cell)
+                    else:
+                        self.assertTrue(cell.startswith("unsupported"), cell)
+                        if entry.note:
+                            self.assertIn(entry.note, cell)
+
+    def test_antigravity_commands_carry_the_skills_note(self):
+        from papersmith.generators import HARNESS_CAPABILITIES
+
+        entry = HARNESS_CAPABILITIES["antigravity"]["commands"]
+        self.assertFalse(entry.supported)
+        self.assertEqual(entry.note, "vía skills (workflows deprecados)")

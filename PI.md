@@ -22,3 +22,18 @@ in `.pi/prompts/<name>.md`, so it can be invoked as `/<name>`. Each template
 loads that skill's `SKILL.md` and passes your text through as `$ARGUMENTS`. The
 directory is a framework artifact: regenerate it with `python scripts/sync-repo-harness.py`
 (`--check` reports drift), so do not edit it by hand.
+
+## Agents
+
+Subagent definitions are projected from `.claude/agents/` into `.pi/agents/` by
+`python scripts/sync-repo-harness.py`. Pi core has no sub-agents: those files are
+read only when the third-party `pi-subagents` package is installed. Edit the
+source in `.claude/agents/`, never the projection.
+
+## Safety extension
+
+`.pi/extensions/refuse-offpath-push.js` is generated. It registers a `tool_call`
+handler that relays `bash` commands to
+`skills/remote-execution/scripts/hooks/refuse_offpath_push.py` and blocks only
+when the guard exits with status `2`; it fails open when the guard, python or
+the event is unusable. It is a tripwire, not a gate. See `docs/guard-hooks.md`.

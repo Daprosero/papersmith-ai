@@ -28,7 +28,7 @@ TDD strict (source: user config + project), runner: focused `.micromamba/envs/pa
 - [x] T4 Antigravity agents (sourced; no commands/workflows) + Pi DYNAMIC_PREFIXES gap fix
 - [x] T5 guard/hook parity (no settings.json write; Pi only if sourced; fail-safe + tests)
 - [x] T7 per-harness wiring summary in init/upgrade + e2e + health_inspector structural check covers agents/plugins (no gen-claude.py)
-- [ ] T8 docs (README, PI.md, OPENCODE.md, rules) + CHANGELOG Unreleased
+- [x] T8 docs (README, PI.md, OPENCODE.md, rules) + CHANGELOG Unreleased
 
 ## Progress / evidence
 (branch feat/harness-parity created from main e1feb9b)
@@ -49,5 +49,9 @@ TDD strict (source: user config + project), runner: focused `.micromamba/envs/pa
 
 - T7 (43e2a14, 8ac0de6) matrix in `generators.HARNESS_CAPABILITIES` (derived from COMMAND_TOOLS/COMMAND_PREFIXES + new AGENT_DIRS/PLUGIN_FILES that `render_files` writes through); `core/wiring.py` summarizes (wired|unsupported|failed|blocked) and `init`/`upgrade` print one line per active harness and add a `wiring` result key. Inspector structural fallback checks projected agents (when `.claude/agents` has sources) and plugin/extension, with `_FALLBACK_AGENT_DIRS/_PLUGIN_FILES` pinned to the real tables. RED: `pytest tests/test_harness_matrix.py -q` -> collection ImportError (`cannot import name 'wiring'`); `pytest tests/test_harness_parity.py tests/test_command_center_health.py -q` -> 5 failed (no `_FALLBACK_AGENT_DIRS`, no `agent_dir`). GREEN: matrix file 15 passed; parity+health 23 passed; `npm run test:fast` -> 3118 passed, 3 skipped (both commits). Pinned tests updated: health pi structural test and `_wire_all_harnesses` fixture (agents/plugins). Route: delegated writer.
 
+- T8 (887d3de) docs only plus one pinning test: README per-harness table (between `harness-capabilities` markers) compared to `HARNESS_CAPABILITIES` by `ReadmeCapabilityTableTests` in tests/test_harness_parity.py (no RED: prose; the test passed against the table). Edited README.md (kept Spanish), PI.md, OPENCODE.md, .pi/README.md, .agents/README.md, .antigravity/rules.md, CHANGELOG Unreleased consolidated. Counts recomputed: 19 agents (each of .claude/.pi/.opencode/.agents), 11 skills, 11 commands, 12 CLI commands; README counts already correct. Stale and left alone: openspec/config.yaml says 52 .mjs / 18 test_*.py (now 83 / 74). Checks: harness_parity+workspace_agents_e2e+sync_repo_harness 22 passed; sync `--check` clean (92); `npm run test:fast` 191 passed. Route: delegated writer.
+
+- README support matrix + Antigravity note (follow-up): README gains a sourced "Matriz de soporte verificada" (URLs + 2026-10-02) and an Antigravity commands note; `Capability.note` added (antigravity commands, supported stays False, no generator output changes); `ReadmeCapabilityTableTests` requires `unsupported` and the note when present. RED: `pytest tests/test_harness_parity.py -q` -> 3 failed (no `note` attribute). GREEN: focused trio 23 passed; `npm run test:fast` 290 passed.
+
 ## Next step
-T7 done. Next: T8 (docs).
+T8 done. Feature complete locally; push/PR is the user's decision.
