@@ -23,8 +23,8 @@ TDD strict (source: user config + project), runner: focused `.micromamba/envs/pa
 - [x] T1 link report + init/upgrade warnings; wrapper keeps callers/tests unchanged (route: delegated writer)
 - [x] T2 `.pi/agents` in sync-repo-harness PROJECTION + pytest for `_expected/_orphans/--check` exit 3 (route: delegated writer)
 - [x] T6 extend tests/test_harness_parity.py across shell array, HARNESS_SKILL_LINKS, inspector fallback (route: delegated writer)
-- [ ] T0 external verification matrix with cited sources, committed as docs
-- [ ] T3 OpenCode agents translator + wiring (TOOL_OUTPUTS, audit _EXTRA_STATIC, synchronized_paths, PROJECTION) + pinned-test updates in the same commit
+- [x] T0 external verification matrix with cited sources, committed as docs
+- [x] T3 OpenCode agents translator + wiring (TOOL_OUTPUTS, audit _EXTRA_STATIC, synchronized_paths, PROJECTION) + pinned-test updates in the same commit
 - [ ] T4 Antigravity commands/agents only if sourced, else correct docs wording
 - [ ] T5 guard/hook parity (no settings.json write; Pi only if sourced; fail-safe + tests)
 - [ ] T7 per-harness wiring summary in init/upgrade + e2e + health_inspector structural check covers agents/plugins (no gen-claude.py)
@@ -38,5 +38,10 @@ TDD strict (source: user config + project), runner: focused `.micromamba/envs/pa
 - T2 (6ab5173) RED: `pytest tests/test_sync_repo_harness.py -q` -> 4 failed, 2 passed (PROJECTION lacked `.pi/agents`; `_expected`/`_orphans`/`--check` exit 3 tests). GREEN: after PROJECTION + `python scripts/sync-repo-harness.py` (19 files synced) -> 6 passed; `--check` clean (53 files). `npm run test:fast` -> 166 passed. Route: delegated writer.
 - T6 (d5f52b9) RED: roster already agreed, so RED is by mutation, not a natural failure: deleting the `pi` row from `health_inspector._FALLBACK_SKILL_LINKS` -> roster test failed (`missing: [('pi', '.pi/skills')]`); adding an unmapped shell label -> failed with "no row in LABEL_TO_TOOL". Mutations reverted. GREEN: `pytest tests/test_harness_parity.py -q` -> 6 passed, 13 subtests. `npm run test:fast` -> 166 passed. Route: delegated writer.
 
+### Slice 2 - T0 writer evidence
+- T0: `docs/harness-support-matrix.md` written from primary vendor docs read 2026-10-02 (OpenCode, Pi raw docs, Antigravity, Claude Code). Key verdicts: OpenCode agents `.opencode/agents/` + `permission` (supported); Antigravity agents `.agents/agents/` and hooks `.agents/hooks.json` supported, workflows deprecated 2026-11-01 with path unverified, `.antigravity/*` unsupported (no source); Pi core has no sub-agents (`.pi/agents` needs third-party pi-subagents), `tool_call` extension can block, `mcp`/`mcpScript` tool names unsourced. Docs only, no tests. Route: delegated writer.
+
+- T3 (%s) RED: `pytest tests/test_papersmith_generators.py -q` -> collection ImportError (`cannot import name 'collect_opencode_agents'`); e2e `pytest tests/test_workspace_commands_e2e.py -k opencode_agents` -> 1 failed (AssertionError: no `.opencode/agents/zz-ghost.md`). GREEN: both files -> 94 passed. `npm run test:fast` -> 3324 passed, 6 skipped. `sync-repo-harness.py` synced 19 files, `--check` clean (72). Route: delegated writer. Decisions: `.opencode/agents/*` is dynamic like `.pi/agents`, so not in `TOOL_OUTPUTS`/`_EXTRA_STATIC` (static-only by contract); upgrade stale removal via `DYNAMIC_PREFIXES`. Known gap, not fixed: `.pi/agents/` is absent from `DYNAMIC_PREFIXES`. Note: `PI_TOOL_MAP` websearch->mcpScript / webfetch->mcp have no Pi source (T0).
+
 ## Next step
-Slice 1 done (T1, T2, T6). Next: slice 2 (T0, T3).
+Slice 2 done (T0, T3). Next: T4, T5.

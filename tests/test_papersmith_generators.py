@@ -20,12 +20,14 @@ from papersmith.generators import (
     check_generated,
     collect_agents,
     collect_commands,
+    collect_opencode_agents,
     collect_pi_agents,
     context_for_workspace,
     derive_command_description,
     render_files,
     workspace_tools,
     yaml_double_quote,
+    _translate_agent_for_opencode,
 )
 from papersmith.kit import resolve_and_validate
 
@@ -126,6 +128,7 @@ class GeneratorsTests(unittest.TestCase):
         expected |= {f".claude/commands/{name}.md" for name in COMMAND_NAMES}
         expected |= {f".pi/prompts/{name}.md" for name in COMMAND_NAMES}
         expected |= {f".pi/agents/{name}.md" for name in AGENT_NAMES}
+        expected |= {f".opencode/agents/{name}.md" for name in AGENT_NAMES}
         assert set(render_files(workspace, tools=ALL_TOOLS)) == expected
         agents = collect_agents(workspace)
         assert any(agent["name"] == "paper-ingestion" for agent in agents)
@@ -173,6 +176,113 @@ class GeneratorsTests(unittest.TestCase):
             path.startswith(".pi/agents/")
             for path in render_files(workspace, tools=("opencode",))
         )
+
+    def test_opencode_agent_projection_is_scoped_to_opencode(self) -> None:
+        workspace = _workspace(self.new_tmp())
+        assert [a["name"] for a in collect_opencode_agents(workspace, warnings=[])] == list(AGENT_NAMES)
+        opencode = render_files(workspace, tools=("opencode",))
+        assert sum(1 for path in opencode if path.startswith(".opencode/agents/")) == 19
+        assert ".opencode/agents/sota-scout.md" in opencode
+        for tool in ("claude", "pi", "antigravity"):
+            assert not any(
+                path.startswith(".opencode/agents/")
+                for path in render_files(workspace, tools=(tool,))
+            ), tool
+
+    def test_opencode_agent_translation_emits_permission_not_tools(self) -> None:
+        workspace = _workspace(self.new_tmp())
+        by_name = {a["name"]: a["text"] for a in collect_opencode_agents(workspace, warnings=[])}
+        scout = by_name["sota-scout"]
+        head, _, body = scout.partition("\n---\n")
+        meta = yaml.safe_load(head.removeprefix("---\n"))
+        assert set(meta) == {"description", "mode", "permission"}
+        assert meta["mode"] == "subagent"
+        assert meta["permission"]["websearch"] == "allow"
+        assert meta["permission"]["webfetch"] == "allow"
+        assert meta["permission"]["bash"] == "allow"
+        assert meta["permission"]["edit"] == "allow"  # Write is granted to sota-scout
+        assert ".claude/" not in scout
+        assert "skills/plausibility/SKILL.md" in body
+
+    def test_opencode_read_only_agents_get_no_edit_or_bash(self) -> None:
+        workspace = _workspace(self.new_tmp())
+        by_name = {a["name"]: a["text"] for a in collect_opencode_agents(workspace, warnings=[])}
+        # redactor is declared `tools: Read, Glob, Grep` in the source.
+        meta = yaml.safe_load(by_name["redactor"].split("\n---\n")[0].removeprefix("---\n"))
+        permission = meta["permission"]
+        assert permission["read"] == "allow"
+        assert permission["glob"] == "allow" and permission["grep"] == "allow"
+        for key in ("edit", "bash", "webfetch", "websearch", "task"):
+            assert permission[key] == "deny", key
+
+    def test_opencode_translation_maps_each_tool_least_privilege(self) -> None:
+        def perms(tools: str) -> tuple[dict, list[str]]:
+            source = f"---\nname: a\ndescription: d\ntools: {tools}\n---\nbody\n"
+            entry, reason, notes = _translate_agent_for_opencode(source)
+            assert reason is None and entry is not None
+            head = entry["text"].split("\n---\n")[0].removeprefix("---\n")
+            return yaml.safe_load(head)["permission"], notes
+
+        permission, notes = perms("Read")
+        assert permission["read"] == "allow" and notes == []
+        assert {k for k, v in permission.items() if v == "allow"} == {"read"}
+        permission, _ = perms("Edit")
+        assert {k for k, v in permission.items() if v == "allow"} == {"edit"}
+        permission, _ = perms("Write")
+        assert {k for k, v in permission.items() if v == "allow"} == {"edit"}
+        permission, _ = perms("Bash")
+        assert {k for k, v in permission.items() if v == "allow"} == {"bash"}
+        permission, _ = perms("WebFetch, WebSearch")
+        assert {k for k, v in permission.items() if v == "allow"} == {"webfetch", "websearch"}
+        permission, _ = perms("Glob")
+        assert {k for k, v in permission.items() if v == "allow"} == {"glob", "list"}
+
+    def test_opencode_unknown_tool_is_not_granted_and_warns(self) -> None:
+        source = "---\nname: a\ndescription: d\ntools: Read, NotebookEdit\n---\nbody\n"
+        entry, reason, notes = _translate_agent_for_opencode(source)
+        assert reason is None and entry is not None
+        assert any("NotebookEdit" in note for note in notes)
+        head = entry["text"].split("\n---\n")[0].removeprefix("---\n")
+        permission = yaml.safe_load(head)["permission"]
+        assert {k for k, v in permission.items() if v == "allow"} == {"read"}
+        assert "tools:" not in head and "notebookedit" not in head.lower()
+
+    def test_opencode_unknown_tool_warning_reaches_the_sink(self) -> None:
+        workspace = _workspace(self.new_tmp())
+        path = workspace / ".claude" / "agents" / "extra.md"
+        path.write_text("---\nname: extra\ndescription: d\ntools: Read, Mystery\n---\nb\n",
+                        encoding="utf-8")
+        sink: list[str] = []
+        names = [a["name"] for a in collect_opencode_agents(workspace, warnings=sink)]
+        assert "extra" in names
+        assert any("extra" in w and "Mystery" in w for w in sink), sink
+
+    def test_opencode_agent_projection_skips_unusable_definitions(self) -> None:
+        workspace = _workspace(self.new_tmp())
+        agents = workspace / ".claude" / "agents"
+        (agents / "broken.md").write_text("no frontmatter\n", encoding="utf-8")
+        (agents / "unclosed.md").write_text("---\nname: unclosed\n", encoding="utf-8")
+        (agents / "nameless.md").write_text("---\ndescription: d\n---\nb\n", encoding="utf-8")
+        (agents / "undescribed.md").write_text("---\nname: undescribed\n---\nb\n", encoding="utf-8")
+        (agents / "unsafe.md").write_text("---\nname: ../evil\ndescription: d\n---\nb\n",
+                                          encoding="utf-8")
+        (agents / "binary.md").write_bytes(b"\xff\xfe\x00bad")
+        (agents / "dir.md").mkdir()
+        sink: list[str] = []
+        names = [a["name"] for a in collect_opencode_agents(workspace, warnings=sink)]
+        assert len(names) == 19
+        for stem in ("broken", "unclosed", "nameless", "undescribed", "unsafe", "binary", "dir"):
+            assert any(f"'{stem}'" in w for w in sink), (stem, sink)
+
+    def test_opencode_agents_drift_and_regeneration(self) -> None:
+        from papersmith.generators import apply_generated
+        workspace = _workspace(self.new_tmp())
+        target = workspace / ".opencode" / "agents" / "redactor.md"
+        assert target.is_file()
+        target.write_text("drift\n", encoding="utf-8")
+        assert ".opencode/agents/redactor.md" in check_generated(workspace, tools=ALL_TOOLS)
+        assert ".opencode/agents/redactor.md" in apply_generated(workspace, tools=ALL_TOOLS)
+        assert check_generated(workspace, tools=ALL_TOOLS) == []
 
     def test_pi_agent_translation_maps_tools_and_skill_paths(self) -> None:
         workspace = _workspace(self.new_tmp())

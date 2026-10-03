@@ -15,6 +15,11 @@ number is `0`, breaking changes can still arrive without a major bump.
 
 ### Added
 
+- **OpenCode agents.** `papersmith init` and `upgrade` now project each
+  `.claude/agents/*.md` definition into `.opencode/agents/<name>.md` with
+  `mode: subagent` and a least-privilege `permission` block mapped from the
+  Claude `tools:` list (unknown tools are never granted and are reported).
+  `upgrade` removes agents whose source disappeared.
 - **Pi prompt templates.** `papersmith init` and `upgrade` now project one
   prompt template per skill under `.pi/prompts/<name>.md` (the same body as the
   Claude Code and OpenCode commands, with `$ARGUMENTS`), and `upgrade` removes

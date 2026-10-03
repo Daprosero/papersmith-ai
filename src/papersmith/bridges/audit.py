@@ -30,7 +30,7 @@ def _surplus_static_files(root: Path, active: tuple[str, ...]) -> list[str]:
 
     A workspace created with a wider tool set keeps those files: they are
     ``reported`` here and never deleted. Dynamic outputs such as
-    ``.claude/commands/`` and ``.pi/prompts/`` are deliberately excluded — a never-baselined command
+    ``.claude/commands/``, ``.pi/prompts/`` and ``.opencode/agents/`` are deliberately excluded — a never-baselined command
     file is user data, and a baselined one is handled by ``upgrade``'s orphan
     rule.
     """

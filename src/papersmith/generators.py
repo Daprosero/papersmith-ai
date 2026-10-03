@@ -148,6 +148,31 @@ PI_TOOL_MAP = {
     "webfetch": "mcp",
 }
 
+#: Claude tool names to the OpenCode permission keys that gate them, for the
+#: `.opencode/agents/` projection. OpenCode has no `tools:` allow-list any more
+#: (documented as deprecated); a subagent is restricted through `permission`
+#: keys with `allow`/`deny` values. `Write` and `Edit` share the single `edit`
+#: key, which OpenCode applies to every file modification. `Glob` also grants
+#: `list` (directory listing), which is no wider than globbing. A tool absent
+#: from this map is never granted: it is skipped with a warning.
+OPENCODE_TOOL_PERMISSIONS = {
+    "read": ("read",),
+    "glob": ("glob", "list"),
+    "grep": ("grep",),
+    "write": ("edit",),
+    "edit": ("edit",),
+    "bash": ("bash",),
+    "websearch": ("websearch",),
+    "webfetch": ("webfetch",),
+}
+
+#: Every permission key the projection decides explicitly. A key no source tool
+#: grants is written as `deny`, so a read-only agent can never inherit edit,
+#: bash, network or sub-agent access from OpenCode's permissive defaults.
+OPENCODE_PERMISSION_KEYS = (
+    "read", "glob", "grep", "list", "edit", "bash", "webfetch", "websearch", "task",
+)
+
 
 def derive_command_description(source: str) -> str:
     """Collapse whitespace, then keep the first sentence.
@@ -259,6 +284,35 @@ def _pi_agent_name(metadata: dict[str, str], fallback: str) -> str | None:
     return name
 
 
+def _split_agent_source(
+    source: str,
+) -> tuple[dict[str, str], list[str], list[str], str | None]:
+    """Split a Claude agent definition into ``(metadata, meta_lines, body_lines, reason)``.
+
+    ``reason`` is a skip reason when the front matter is missing, unclosed, or
+    lacks a ``name``; the other fields are then empty. Never raises.
+    """
+    lines = source.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return {}, [], [], "malformed front matter"
+    metadata: dict[str, str] = {}
+    meta_lines: list[str] = []
+    rest: list[str] | None = None
+    for index, line in enumerate(lines[1:]):
+        if line.strip() == "---":
+            rest = lines[index + 2:]
+            break
+        meta_lines.append(line)
+        if ":" in line:
+            key, value = line.split(":", 1)
+            metadata[key.strip()] = _frontmatter_value(value)
+    if rest is None:
+        return {}, [], [], "malformed front matter"
+    if "name" not in metadata:
+        return {}, [], [], "missing name"
+    return metadata, meta_lines, rest, None
+
+
 def _translate_agent_for_pi(source: str) -> tuple[dict[str, str] | None, str | None]:
     """Project one Claude agent definition onto the Pi agent shape.
 
@@ -268,26 +322,9 @@ def _translate_agent_for_pi(source: str) -> tuple[dict[str, str] | None, str | N
     body travels verbatim except `.claude/skills/` references, which
     become harness-neutral `skills/` (a symlink in every workspace).
     """
-    lines = source.splitlines()
-    if not lines or lines[0].strip() != "---":
-        return None, "malformed front matter"
-    metadata: dict[str, str] = {}
-    meta_lines: list[str] = []
-    closed = False
-    rest: list[str] = []
-    for index, line in enumerate(lines[1:]):
-        if line.strip() == "---":
-            closed = True
-            rest = lines[index + 2:]
-            break
-        meta_lines.append(line)
-        if ":" in line:
-            key, value = line.split(":", 1)
-            metadata[key.strip()] = _frontmatter_value(value)
-    if not closed:
-        return None, "malformed front matter"
-    if "name" not in metadata:
-        return None, "missing name"
+    metadata, meta_lines, rest, reason = _split_agent_source(source)
+    if reason:
+        return None, reason
     out_lines = []
     for line in meta_lines:
         if ":" in line and line.split(":", 1)[0].strip().lower() == "tools":
@@ -301,13 +338,66 @@ def _translate_agent_for_pi(source: str) -> tuple[dict[str, str] | None, str | N
     return {"name": metadata["name"], "text": text}, None
 
 
-def collect_pi_agents(workspace: Path, *,
-                      warnings: list[str] | None = None) -> list[dict[str, str]]:
-    """Project every `.claude/agents/*.md` definition onto Pi shape.
+def _translate_agent_for_opencode(
+    source: str,
+) -> tuple[dict[str, str] | None, str | None, list[str]]:
+    """Project one Claude agent definition onto the OpenCode agent shape.
 
-    Fail-soft by contract, like :func:`collect_commands`: a definition whose
-    front matter is missing or malformed, whose name is absent or unsafe, or
-    whose file is unreadable is skipped with a warning, never raised on.
+    Returns ``(entry, None, notes)`` or ``(None, skip_reason, [])`` -- never
+    raises. Only ``description`` travels from the source front matter; the
+    output adds ``mode: subagent`` and a ``permission`` block derived from the
+    source ``tools:`` line through :data:`OPENCODE_TOOL_PERMISSIONS`. Every key
+    in :data:`OPENCODE_PERMISSION_KEYS` is written explicitly (``allow`` only
+    when a source tool grants it, else ``deny``), and a tool with no mapping is
+    never granted and is named in ``notes``. A source with no ``tools:`` line
+    inherits every tool in Claude Code, so it gets no ``permission`` block and
+    inherits OpenCode's defaults the same way.
+    """
+    metadata, meta_lines, rest, reason = _split_agent_source(source)
+    if reason:
+        return None, reason, []
+    description = metadata.get("description", "").strip()
+    if not description:
+        return None, "missing description", []
+    notes: list[str] = []
+    out = [f"description: {yaml_double_quote(description)}", "mode: subagent"]
+    tools_value = next(
+        (line.split(":", 1)[1] for line in meta_lines
+         if ":" in line and line.split(":", 1)[0].strip().lower() == "tools"),
+        None,
+    )
+    if tools_value is not None:
+        granted: set[str] = set()
+        for item in tools_value.split(","):
+            tool = item.strip()
+            if not tool:
+                continue
+            keys = OPENCODE_TOOL_PERMISSIONS.get(tool.lower())
+            if keys is None:
+                notes.append(f"tool '{tool}' has no OpenCode permission; not granted")
+                continue
+            granted.update(keys)
+        out.append("permission:")
+        out.extend(
+            f"  {key}: {'allow' if key in granted else 'deny'}"
+            for key in OPENCODE_PERMISSION_KEYS
+        )
+    body = "\n".join(rest).replace(".claude/skills/", "skills/")
+    text = "---\n" + "\n".join(out) + "\n---\n" + body
+    if not text.endswith("\n"):
+        text += "\n"
+    return {"name": metadata["name"], "text": text}, None, notes
+
+
+def _collect_projected_agents(
+    workspace: Path, translate: Any, *, warnings: list[str] | None,
+) -> list[dict[str, str]]:
+    """Project every `.claude/agents/*.md` definition through ``translate``.
+
+    ``translate`` returns ``(entry, skip_reason, notes)``. Fail-soft by
+    contract, like :func:`collect_commands`: a definition that is not a regular
+    file, is unreadable, has missing or malformed front matter, or whose name is
+    absent or unsafe is skipped with a warning, never raised on.
     """
     agents: list[dict[str, str]] = []
     agent_dir = workspace / ".claude" / "agents"
@@ -327,7 +417,7 @@ def collect_pi_agents(workspace: Path, *,
         except (OSError, UnicodeDecodeError):
             skipped.append(f"skipping agent '{path.stem}': unreadable")
             continue
-        entry, reason = _translate_agent_for_pi(source)
+        entry, reason, notes = translate(source)
         if entry is None:
             skipped.append(f"skipping agent '{path.stem}': {reason}")
             continue
@@ -335,14 +425,30 @@ def collect_pi_agents(workspace: Path, *,
         if name is None:
             skipped.append(f"skipping agent '{path.stem}': unsafe name")
             continue
+        skipped.extend(f"agent '{path.stem}': {note}" for note in notes)
         agents.append({"name": name, "text": entry["text"]})
     if skipped:
         if warnings is not None:
             warnings.extend(skipped)
         else:
-            _warnings.warn("\n".join(skipped), UserWarning, stacklevel=2)
+            _warnings.warn("\n".join(skipped), UserWarning, stacklevel=3)
     agents.sort(key=lambda item: item["name"])
     return agents
+
+
+def collect_pi_agents(workspace: Path, *,
+                      warnings: list[str] | None = None) -> list[dict[str, str]]:
+    """Project every `.claude/agents/*.md` definition onto Pi shape."""
+    def translate(source: str) -> tuple[dict[str, str] | None, str | None, list[str]]:
+        entry, reason = _translate_agent_for_pi(source)
+        return entry, reason, []
+    return _collect_projected_agents(workspace, translate, warnings=warnings)
+
+
+def collect_opencode_agents(workspace: Path, *,
+                            warnings: list[str] | None = None) -> list[dict[str, str]]:
+    """Project every `.claude/agents/*.md` definition onto OpenCode shape."""
+    return _collect_projected_agents(workspace, _translate_agent_for_opencode, warnings=warnings)
 
 
 def context_for_workspace(workspace: Path) -> dict[str, Any]:
@@ -412,6 +518,9 @@ def render_files(workspace: Path, context: dict[str, Any] | None = None,
     pi_agents: list[dict[str, str]] | None = None
     if "pi" in tools:
         pi_agents = collect_pi_agents(workspace, warnings=warnings)
+    opencode_agents: list[dict[str, str]] | None = None
+    if "opencode" in tools:
+        opencode_agents = collect_opencode_agents(workspace, warnings=warnings)
     for tool in tools:
         if tool not in TOOL_OUTPUTS:
             raise UserError(f"unsupported runtime generator: {tool}")
@@ -422,6 +531,9 @@ def render_files(workspace: Path, context: dict[str, Any] | None = None,
         if tool == "pi" and pi_agents:
             for agent in pi_agents:
                 rendered[f".pi/agents/{agent['name']}.md"] = agent["text"]
+        if tool == "opencode" and opencode_agents:
+            for agent in opencode_agents:
+                rendered[f".opencode/agents/{agent['name']}.md"] = agent["text"]
         if tool == "opencode":
             rendered["opencode.json"] = render_package_template("opencode.json.tpl", ctx)
             rendered[".opencode/plugins/refuse-offpath-push.js"] = render_package_template(

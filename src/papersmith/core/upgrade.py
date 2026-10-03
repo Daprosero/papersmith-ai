@@ -20,7 +20,9 @@ from . import config, fs, manifest
 #: Dynamic rendered outputs — one file per discovered skill, so their membership
 #: cannot be enumerated by a static list. Only paths under these prefixes that
 #: were previously baselined are ever removed (see :func:`_orphaned`).
-DYNAMIC_PREFIXES = (".opencode/commands/", ".claude/commands/", ".pi/prompts/")
+DYNAMIC_PREFIXES = (
+    ".opencode/commands/", ".opencode/agents/", ".claude/commands/", ".pi/prompts/",
+)
 
 
 def _contained(relpath: str) -> bool:

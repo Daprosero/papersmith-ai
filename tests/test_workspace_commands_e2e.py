@@ -347,6 +347,30 @@ class RenderedSetLifecycleTests(unittest.TestCase):
                 self.assertTrue(set(self.KIT_COMMAND_NAMES) <= set(survivors))
         self.assertTrue(note.is_file(), "a never-baselined command file is user data")
 
+    def test_subset_init_emits_no_opencode_agents_and_stale_ones_are_removed(self) -> None:
+        workspace = self._init_subset(new_tmp(self), "claude")
+        self.assertFalse((workspace / ".opencode/agents").exists(),
+                         "claude-only init must not emit OpenCode agents")
+
+        full = make_workspace(new_tmp(self))
+        agents = full / ".opencode/agents"
+        self.assertTrue((agents / "redactor.md").is_file())
+        ghost = full / ".claude/agents/zz-ghost.md"
+        ghost.write_text("---\nname: zz-ghost\ndescription: d\ntools: Read\n---\nb\n",
+                         encoding="utf-8")
+        rc, _, _ = capture(["upgrade", str(full)])
+        self.assertEqual(rc, SUCCESS)
+        self.assertTrue((agents / "zz-ghost.md").is_file())
+
+        ghost.unlink()
+        note = agents / "user-note.md"
+        note.write_text("hand written, never baselined\n", encoding="utf-8")
+        result = upgrade_module.upgrade(full)
+        self.assertIn(".opencode/agents/zz-ghost.md", result["removed"])
+        self.assertFalse((agents / "zz-ghost.md").exists())
+        self.assertTrue((agents / "redactor.md").is_file())
+        self.assertTrue(note.is_file(), "a never-baselined agent file is user data")
+
     def test_command_drift_is_visible_to_audit_and_status_then_restored(self) -> None:
         """Criterion 7: the CA-2 reconciliation, detection and restoration agreeing."""
         workspace = make_workspace(new_tmp(self))
