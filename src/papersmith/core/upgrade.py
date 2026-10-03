@@ -21,7 +21,8 @@ from . import config, fs, manifest
 #: cannot be enumerated by a static list. Only paths under these prefixes that
 #: were previously baselined are ever removed (see :func:`_orphaned`).
 DYNAMIC_PREFIXES = (
-    ".opencode/commands/", ".opencode/agents/", ".claude/commands/", ".pi/prompts/",
+    ".opencode/commands/", ".opencode/agents/", ".agents/agents/", ".claude/commands/", ".pi/prompts/",
+    ".pi/agents/",
 )
 
 

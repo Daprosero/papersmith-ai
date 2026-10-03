@@ -103,3 +103,26 @@ Compared against files read on 2026-10-02.
 WebFetch summaries come from a small model, so quoted strings were not
 re-checked against raw HTML except for the Pi docs, which were read as raw
 Markdown. context7 was not used; primary vendor pages were reachable directly.
+
+## T4 outcome (Antigravity agents, 2026-10-02)
+
+Gate passed; `.agents/agents/<name>.md` is generated. Sources:
+https://antigravity.google/docs/subagents (frontmatter: `tools` string[] default
+`[]`; `model` default `inherit`, values `inherit`/`flash`/`pro`;
+`commandExecutionPolicy` default `sandbox`, values `off`/`auto`/`eager`/`sandbox`)
+and https://antigravity.google/docs/hooks (tool names `view_file`,
+`write_to_file`, `replace_file_content`, `multi_replace_file_content`,
+`list_dir`, `find_by_name`, `grep_search`, `search_web`, `read_url_content`,
+`run_command`). Mapping: Read to `view_file`; Glob to `find_by_name` +
+`list_dir`; Grep to `grep_search`; Write to `write_to_file`; Edit to the two
+replace tools; Bash to `run_command`; WebSearch to `search_web`; WebFetch to
+`read_url_content`. `model` is omitted (inherits).
+
+Caveats: the subagents page does not enumerate tools (the list comes from the
+hooks page) and does not define each `commandExecutionPolicy` value. `off` is
+used for agents without `run_command` as the most restrictive reading of
+"auto-execution policy" and is secondary to the `tools` allow-list; agents with
+`run_command` get the documented default `sandbox`. The value is quoted because
+an unquoted `off` is a YAML 1.1 boolean. Decision for the user: `.antigravity/rules.md`
+has no documented support; `AGENTS.md`/`GEMINI.md`/`.agents/rules/` are the
+documented entrypoints and were deliberately not created.

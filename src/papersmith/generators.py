@@ -174,6 +174,24 @@ OPENCODE_PERMISSION_KEYS = (
 )
 
 
+#: Claude tool names to the Antigravity tool names listed in its hooks docs
+#: (https://antigravity.google/docs/hooks), for the `.agents/agents/`
+#: projection. Antigravity's `tools:` is an explicit allow-list (default
+#: empty). `Write` and `Edit` map to the distinct file-write and file-replace
+#: tools; `Glob` also grants `list_dir`, which is no wider than globbing. A tool
+#: absent from this map is never granted: it is skipped with a note.
+ANTIGRAVITY_TOOL_MAP = {
+    "read": ("view_file",),
+    "glob": ("find_by_name", "list_dir"),
+    "grep": ("grep_search",),
+    "write": ("write_to_file",),
+    "edit": ("replace_file_content", "multi_replace_file_content"),
+    "bash": ("run_command",),
+    "websearch": ("search_web",),
+    "webfetch": ("read_url_content",),
+}
+
+
 def derive_command_description(source: str) -> str:
     """Collapse whitespace, then keep the first sentence.
 
@@ -389,6 +407,56 @@ def _translate_agent_for_opencode(
     return {"name": metadata["name"], "text": text}, None, notes
 
 
+def _translate_agent_for_antigravity(
+    source: str,
+) -> tuple[dict[str, str] | None, str | None, list[str]]:
+    """Project one Claude agent definition onto the Antigravity agent shape.
+
+    Returns ``(entry, None, notes)`` or ``(None, skip_reason, [])`` -- never
+    raises. The output carries ``name``, ``description``, an explicit ``tools``
+    allow-list mapped through :data:`ANTIGRAVITY_TOOL_MAP`, and
+    ``commandExecutionPolicy``: ``"sandbox"`` (the documented default) only when
+    the agent holds ``run_command``, else the most restrictive value, ``"off"`` (always quoted).
+    ``model`` is omitted so it inherits (documented default). A tool with no
+    mapping is never granted and is named in ``notes``; a source with no
+    ``tools:`` line gets no ``tools`` key, which Antigravity reads as empty.
+    """
+    metadata, meta_lines, rest, reason = _split_agent_source(source)
+    if reason:
+        return None, reason, []
+    description = metadata.get("description", "").strip()
+    if not description:
+        return None, "missing description", []
+    notes: list[str] = []
+    granted: list[str] = []
+    tools_value = next(
+        (line.split(":", 1)[1] for line in meta_lines
+         if ":" in line and line.split(":", 1)[0].strip().lower() == "tools"),
+        None,
+    )
+    for item in (tools_value or "").split(","):
+        tool = item.strip()
+        if not tool:
+            continue
+        names = ANTIGRAVITY_TOOL_MAP.get(tool.lower())
+        if names is None:
+            notes.append(f"tool '{tool}' has no Antigravity tool; not granted")
+            continue
+        granted.extend(name for name in names if name not in granted)
+    out = [f"name: {metadata['name']}", f"description: {yaml_double_quote(description)}"]
+    if granted:
+        out.append("tools:")
+        out.extend(f"  - {name}" for name in granted)
+    # Quoted: an unquoted `off` is a boolean in YAML 1.1 parsers.
+    policy = "sandbox" if "run_command" in granted else "off"
+    out.append(f"commandExecutionPolicy: {yaml_double_quote(policy)}")
+    body = "\n".join(rest).replace(".claude/skills/", "skills/")
+    text = "---\n" + "\n".join(out) + "\n---\n" + body
+    if not text.endswith("\n"):
+        text += "\n"
+    return {"name": metadata["name"], "text": text}, None, notes
+
+
 def _collect_projected_agents(
     workspace: Path, translate: Any, *, warnings: list[str] | None,
 ) -> list[dict[str, str]]:
@@ -449,6 +517,12 @@ def collect_opencode_agents(workspace: Path, *,
                             warnings: list[str] | None = None) -> list[dict[str, str]]:
     """Project every `.claude/agents/*.md` definition onto OpenCode shape."""
     return _collect_projected_agents(workspace, _translate_agent_for_opencode, warnings=warnings)
+
+
+def collect_antigravity_agents(workspace: Path, *,
+                               warnings: list[str] | None = None) -> list[dict[str, str]]:
+    """Project every `.claude/agents/*.md` definition onto Antigravity shape."""
+    return _collect_projected_agents(workspace, _translate_agent_for_antigravity, warnings=warnings)
 
 
 def context_for_workspace(workspace: Path) -> dict[str, Any]:
@@ -521,6 +595,9 @@ def render_files(workspace: Path, context: dict[str, Any] | None = None,
     opencode_agents: list[dict[str, str]] | None = None
     if "opencode" in tools:
         opencode_agents = collect_opencode_agents(workspace, warnings=warnings)
+    antigravity_agents: list[dict[str, str]] | None = None
+    if "antigravity" in tools:
+        antigravity_agents = collect_antigravity_agents(workspace, warnings=warnings)
     for tool in tools:
         if tool not in TOOL_OUTPUTS:
             raise UserError(f"unsupported runtime generator: {tool}")
@@ -534,6 +611,9 @@ def render_files(workspace: Path, context: dict[str, Any] | None = None,
         if tool == "opencode" and opencode_agents:
             for agent in opencode_agents:
                 rendered[f".opencode/agents/{agent['name']}.md"] = agent["text"]
+        if tool == "antigravity" and antigravity_agents:
+            for agent in antigravity_agents:
+                rendered[f".agents/agents/{agent['name']}.md"] = agent["text"]
         if tool == "opencode":
             rendered["opencode.json"] = render_package_template("opencode.json.tpl", ctx)
             rendered[".opencode/plugins/refuse-offpath-push.js"] = render_package_template(

@@ -19,6 +19,7 @@ from papersmith.generators import (
     ALL_TOOLS,
     check_generated,
     collect_agents,
+    collect_antigravity_agents,
     collect_commands,
     collect_opencode_agents,
     collect_pi_agents,
@@ -27,6 +28,7 @@ from papersmith.generators import (
     render_files,
     workspace_tools,
     yaml_double_quote,
+    _translate_agent_for_antigravity,
     _translate_agent_for_opencode,
 )
 from papersmith.kit import resolve_and_validate
@@ -129,6 +131,7 @@ class GeneratorsTests(unittest.TestCase):
         expected |= {f".pi/prompts/{name}.md" for name in COMMAND_NAMES}
         expected |= {f".pi/agents/{name}.md" for name in AGENT_NAMES}
         expected |= {f".opencode/agents/{name}.md" for name in AGENT_NAMES}
+        expected |= {f".agents/agents/{name}.md" for name in AGENT_NAMES}
         assert set(render_files(workspace, tools=ALL_TOOLS)) == expected
         agents = collect_agents(workspace)
         assert any(agent["name"] == "paper-ingestion" for agent in agents)
@@ -282,6 +285,111 @@ class GeneratorsTests(unittest.TestCase):
         target.write_text("drift\n", encoding="utf-8")
         assert ".opencode/agents/redactor.md" in check_generated(workspace, tools=ALL_TOOLS)
         assert ".opencode/agents/redactor.md" in apply_generated(workspace, tools=ALL_TOOLS)
+        assert check_generated(workspace, tools=ALL_TOOLS) == []
+
+    def test_antigravity_agent_projection_is_scoped_to_antigravity(self) -> None:
+        workspace = _workspace(self.new_tmp())
+        assert [a["name"] for a in collect_antigravity_agents(workspace, warnings=[])] == list(AGENT_NAMES)
+        rendered = render_files(workspace, tools=("antigravity",))
+        assert sum(1 for path in rendered if path.startswith(".agents/agents/")) == 19
+        assert ".agents/agents/sota-scout.md" in rendered
+        for tool in ("claude", "pi", "opencode"):
+            assert not any(
+                path.startswith(".agents/agents/")
+                for path in render_files(workspace, tools=(tool,))
+            ), tool
+
+    def test_antigravity_agent_translation_shape(self) -> None:
+        workspace = _workspace(self.new_tmp())
+        by_name = {a["name"]: a["text"] for a in collect_antigravity_agents(workspace, warnings=[])}
+        scout = by_name["sota-scout"]
+        head, _, body = scout.partition("\n---\n")
+        meta = yaml.safe_load(head.removeprefix("---\n"))
+        assert set(meta) == {"name", "description", "tools", "commandExecutionPolicy"}
+        assert "model" not in meta  # omitted: documented default is inherit
+        assert meta["name"] == "sota-scout"
+        assert {"search_web", "read_url_content", "run_command", "write_to_file"} <= set(meta["tools"])
+        assert meta["commandExecutionPolicy"] == "sandbox"
+        assert ".claude/" not in scout
+        assert "skills/plausibility/SKILL.md" in body
+
+    def test_antigravity_read_only_agents_get_no_edit_shell_or_off_policy(self) -> None:
+        workspace = _workspace(self.new_tmp())
+        by_name = {a["name"]: a["text"] for a in collect_antigravity_agents(workspace, warnings=[])}
+        # redactor is declared `tools: Read, Glob, Grep` in the source.
+        meta = yaml.safe_load(by_name["redactor"].split("\n---\n")[0].removeprefix("---\n"))
+        assert set(meta["tools"]) == {"view_file", "find_by_name", "list_dir", "grep_search"}
+        assert meta["commandExecutionPolicy"] == "off"
+
+    def test_antigravity_translation_maps_each_tool_least_privilege(self) -> None:
+        def tools(value: str) -> tuple[set[str], list[str]]:
+            source = f"---\nname: a\ndescription: d\ntools: {value}\n---\nbody\n"
+            entry, reason, notes = _translate_agent_for_antigravity(source)
+            assert reason is None and entry is not None
+            head = entry["text"].split("\n---\n")[0].removeprefix("---\n")
+            return set(yaml.safe_load(head)["tools"]), notes
+
+        assert tools("Read")[0] == {"view_file"}
+        assert tools("Glob")[0] == {"find_by_name", "list_dir"}
+        assert tools("Grep")[0] == {"grep_search"}
+        assert tools("Write")[0] == {"write_to_file"}
+        assert tools("Edit")[0] == {"replace_file_content", "multi_replace_file_content"}
+        assert tools("Bash")[0] == {"run_command"}
+        assert tools("WebSearch")[0] == {"search_web"}
+        assert tools("WebFetch")[0] == {"read_url_content"}
+
+    def test_antigravity_unknown_tool_is_not_granted_and_warns(self) -> None:
+        source = "---\nname: a\ndescription: d\ntools: Read, NotebookEdit\n---\nbody\n"
+        entry, reason, notes = _translate_agent_for_antigravity(source)
+        assert reason is None and entry is not None
+        assert any("NotebookEdit" in note for note in notes)
+        head = entry["text"].split("\n---\n")[0].removeprefix("---\n")
+        assert yaml.safe_load(head)["tools"] == ["view_file"]
+        assert "notebookedit" not in head.lower()
+
+    def test_antigravity_source_without_tools_line_grants_nothing(self) -> None:
+        entry, reason, _ = _translate_agent_for_antigravity(
+            "---\nname: a\ndescription: d\n---\nbody\n")
+        assert reason is None and entry is not None
+        meta = yaml.safe_load(entry["text"].split("\n---\n")[0].removeprefix("---\n"))
+        assert "tools" not in meta  # documented default is the empty list
+        assert meta["commandExecutionPolicy"] == "off"
+
+    def test_antigravity_unknown_tool_warning_reaches_the_sink(self) -> None:
+        workspace = _workspace(self.new_tmp())
+        path = workspace / ".claude" / "agents" / "extra.md"
+        path.write_text("---\nname: extra\ndescription: d\ntools: Read, Mystery\n---\nb\n",
+                        encoding="utf-8")
+        sink: list[str] = []
+        names = [a["name"] for a in collect_antigravity_agents(workspace, warnings=sink)]
+        assert "extra" in names
+        assert any("extra" in w and "Mystery" in w for w in sink), sink
+
+    def test_antigravity_agent_projection_skips_unusable_definitions(self) -> None:
+        workspace = _workspace(self.new_tmp())
+        agents = workspace / ".claude" / "agents"
+        (agents / "broken.md").write_text("no frontmatter\n", encoding="utf-8")
+        (agents / "unclosed.md").write_text("---\nname: unclosed\n", encoding="utf-8")
+        (agents / "nameless.md").write_text("---\ndescription: d\n---\nb\n", encoding="utf-8")
+        (agents / "undescribed.md").write_text("---\nname: undescribed\n---\nb\n", encoding="utf-8")
+        (agents / "unsafe.md").write_text("---\nname: ../evil\ndescription: d\n---\nb\n",
+                                          encoding="utf-8")
+        (agents / "binary.md").write_bytes(b"\xff\xfe\x00bad")
+        (agents / "dir.md").mkdir()
+        sink: list[str] = []
+        names = [a["name"] for a in collect_antigravity_agents(workspace, warnings=sink)]
+        assert len(names) == 19
+        for stem in ("broken", "unclosed", "nameless", "undescribed", "unsafe", "binary", "dir"):
+            assert any(f"'{stem}'" in w for w in sink), (stem, sink)
+
+    def test_antigravity_agents_drift_and_regeneration(self) -> None:
+        from papersmith.generators import apply_generated
+        workspace = _workspace(self.new_tmp())
+        target = workspace / ".agents" / "agents" / "redactor.md"
+        assert target.is_file()
+        target.write_text("drift\n", encoding="utf-8")
+        assert ".agents/agents/redactor.md" in check_generated(workspace, tools=ALL_TOOLS)
+        assert ".agents/agents/redactor.md" in apply_generated(workspace, tools=ALL_TOOLS)
         assert check_generated(workspace, tools=ALL_TOOLS) == []
 
     def test_pi_agent_translation_maps_tools_and_skill_paths(self) -> None:

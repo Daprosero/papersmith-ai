@@ -1,8 +1,11 @@
 # Papersmith AI — `.agents` directory (Google Antigravity)
 
-This directory looks almost empty in a fresh clone, and that is correct: the
-only thing Antigravity needs here is `skills`, and `skills` is **generated**,
-not versioned.
+This directory holds two things for Antigravity: `agents/`, which is generated
+from `.claude/agents/` and versioned, and `skills`, which is **generated**, not
+versioned.
+
+`agents/<name>.md` files are derived by `python scripts/sync-repo-harness.py`
+(`--check` reports drift). Edit `.claude/agents/`, never the generated files.
 
 ```
 npm run setup:harnesses

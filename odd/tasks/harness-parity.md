@@ -25,7 +25,7 @@ TDD strict (source: user config + project), runner: focused `.micromamba/envs/pa
 - [x] T6 extend tests/test_harness_parity.py across shell array, HARNESS_SKILL_LINKS, inspector fallback (route: delegated writer)
 - [x] T0 external verification matrix with cited sources, committed as docs
 - [x] T3 OpenCode agents translator + wiring (TOOL_OUTPUTS, audit _EXTRA_STATIC, synchronized_paths, PROJECTION) + pinned-test updates in the same commit
-- [ ] T4 Antigravity commands/agents only if sourced, else correct docs wording
+- [x] T4 Antigravity agents (sourced; no commands/workflows) + Pi DYNAMIC_PREFIXES gap fix
 - [ ] T5 guard/hook parity (no settings.json write; Pi only if sourced; fail-safe + tests)
 - [ ] T7 per-harness wiring summary in init/upgrade + e2e + health_inspector structural check covers agents/plugins (no gen-claude.py)
 - [ ] T8 docs (README, PI.md, OPENCODE.md, rules) + CHANGELOG Unreleased
@@ -43,5 +43,7 @@ TDD strict (source: user config + project), runner: focused `.micromamba/envs/pa
 
 - T3 (%s) RED: `pytest tests/test_papersmith_generators.py -q` -> collection ImportError (`cannot import name 'collect_opencode_agents'`); e2e `pytest tests/test_workspace_commands_e2e.py -k opencode_agents` -> 1 failed (AssertionError: no `.opencode/agents/zz-ghost.md`). GREEN: both files -> 94 passed. `npm run test:fast` -> 3324 passed, 6 skipped. `sync-repo-harness.py` synced 19 files, `--check` clean (72). Route: delegated writer. Decisions: `.opencode/agents/*` is dynamic like `.pi/agents`, so not in `TOOL_OUTPUTS`/`_EXTRA_STATIC` (static-only by contract); upgrade stale removal via `DYNAMIC_PREFIXES`. Known gap, not fixed: `.pi/agents/` is absent from `DYNAMIC_PREFIXES`. Note: `PI_TOOL_MAP` websearch->mcpScript / webfetch->mcp have no Pi source (T0).
 
+- T4 (86e7a95) gate passed: tools from https://antigravity.google/docs/hooks, schema from /docs/subagents (model optional, default inherit; policy values off/auto/eager/sandbox, semantics undefined). RED: `pytest tests/test_papersmith_generators.py` -> collection ImportError (`collect_antigravity_agents`); e2e `-k antigravity_agents` -> 1 failed. Then 3 failed (unquoted `off` parses as bool; pinned expected-path set) -> fixed by quoting + updating set. GREEN: generators+e2e 104 passed; `test_harness_parity`+`test_sync_repo_harness` 12 passed; `npm run test:fast` 268 passed; sync synced 19 files, `--check` clean (91). Pi gap (599e503): RED `-k stale_pi_agents` failed (`.pi/agents/zz-ghost.md` not in removed), GREEN 60 passed, test:fast 180 passed. `PI_TOOL_MAP` untouched (mcp/mcpScript unsourced). Decision for user: `.antigravity/rules.md` unsupported by docs; AGENTS.md/GEMINI.md not created. Route: delegated writer.
+
 ## Next step
-Slice 2 done (T0, T3). Next: T4, T5.
+Slice 2 done (T0, T3), T4 done. Next: T5.

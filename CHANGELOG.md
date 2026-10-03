@@ -15,6 +15,12 @@ number is `0`, breaking changes can still arrive without a major bump.
 
 ### Added
 
+- **Antigravity agents.** `init` and `upgrade` now generate `.agents/agents/<name>.md`
+  from the `.claude/agents/` sources (explicit `tools` allow-list mapped to
+  Antigravity tool names, `commandExecutionPolicy` `off` unless the agent has a
+  shell tool). Stale ones are removed on upgrade. Sourced from
+  https://antigravity.google/docs/subagents and /docs/hooks.
+
 - **OpenCode agents.** `papersmith init` and `upgrade` now project each
   `.claude/agents/*.md` definition into `.opencode/agents/<name>.md` with
   `mode: subagent` and a least-privilege `permission` block mapped from the
