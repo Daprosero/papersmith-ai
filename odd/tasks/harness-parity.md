@@ -27,7 +27,7 @@ TDD strict (source: user config + project), runner: focused `.micromamba/envs/pa
 - [x] T3 OpenCode agents translator + wiring (TOOL_OUTPUTS, audit _EXTRA_STATIC, synchronized_paths, PROJECTION) + pinned-test updates in the same commit
 - [x] T4 Antigravity agents (sourced; no commands/workflows) + Pi DYNAMIC_PREFIXES gap fix
 - [x] T5 guard/hook parity (no settings.json write; Pi only if sourced; fail-safe + tests)
-- [ ] T7 per-harness wiring summary in init/upgrade + e2e + health_inspector structural check covers agents/plugins (no gen-claude.py)
+- [x] T7 per-harness wiring summary in init/upgrade + e2e + health_inspector structural check covers agents/plugins (no gen-claude.py)
 - [ ] T8 docs (README, PI.md, OPENCODE.md, rules) + CHANGELOG Unreleased
 
 ## Progress / evidence
@@ -47,5 +47,7 @@ TDD strict (source: user config + project), runner: focused `.micromamba/envs/pa
 
 - T5 (a813ee2, 4f5b850) Pi sourced from raw extensions.md (`.pi/extensions`, JS + default factory, `tool_call` -> `{block:true,reason}`, throwing handler blocks) + upstream permission-gate.ts (`event.input.command`); generated `.pi/extensions/refuse-offpath-push.js` from `pi-extension.js.tpl` (same Python guard, fail-open, anchored on own file). Claude: `docs/guard-hooks.md` opt-in snippet only (no settings.json). Antigravity: unsupported, documented (schema only seen via page summary). Static output like the OpenCode plugin: `_EXTRA_STATIC["pi"]` added, not DYNAMIC_PREFIXES, not TOOL_OUTPUTS. RED: generators+e2e pi tests -> 4 failed (FileNotFoundError `.pi/extensions/refuse-offpath-push.js`); the template file was written before the tests (unwired, inert), the node tests skipped (init unavailable) until wiring. GREEN: generators+e2e 108 passed; sync_repo_harness 6 passed; `node --test tests/pi-extension.test.mjs tests/opencode-plugin.test.mjs` 17 pass; `npm run test:fast` 3338 passed, 6 skipped; sync synced 1 file, `--check` clean (92). Pinned: generators expected-path set. Route: delegated writer.
 
+- T7 (43e2a14, 8ac0de6) matrix in `generators.HARNESS_CAPABILITIES` (derived from COMMAND_TOOLS/COMMAND_PREFIXES + new AGENT_DIRS/PLUGIN_FILES that `render_files` writes through); `core/wiring.py` summarizes (wired|unsupported|failed|blocked) and `init`/`upgrade` print one line per active harness and add a `wiring` result key. Inspector structural fallback checks projected agents (when `.claude/agents` has sources) and plugin/extension, with `_FALLBACK_AGENT_DIRS/_PLUGIN_FILES` pinned to the real tables. RED: `pytest tests/test_harness_matrix.py -q` -> collection ImportError (`cannot import name 'wiring'`); `pytest tests/test_harness_parity.py tests/test_command_center_health.py -q` -> 5 failed (no `_FALLBACK_AGENT_DIRS`, no `agent_dir`). GREEN: matrix file 15 passed; parity+health 23 passed; `npm run test:fast` -> 3118 passed, 3 skipped (both commits). Pinned tests updated: health pi structural test and `_wire_all_harnesses` fixture (agents/plugins). Route: delegated writer.
+
 ## Next step
-T5 done. Next: T7.
+T7 done. Next: T8 (docs).

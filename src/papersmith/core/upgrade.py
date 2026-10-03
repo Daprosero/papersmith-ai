@@ -15,7 +15,7 @@ from ..generators import (
 )
 from ..kit import resolve_and_validate
 from ..schema import validate_tools
-from . import config, fs, manifest
+from . import config, fs, manifest, wiring
 
 #: Dynamic rendered outputs — one file per discovered skill, so their membership
 #: cannot be enumerated by a static list. Only paths under these prefixes that
@@ -289,6 +289,7 @@ def upgrade(workspace: str | Path = ".", *, tools: Sequence[str] | None = None,
         "stranded": stranded,
         "unsynchronized": unsynchronized,
         "link_warnings": manifest.link_warnings(link_report),
+        "wiring": wiring.summarize(root, active_tools, link_report, unsynchronized),
     }
 
 
@@ -312,6 +313,9 @@ def run_cli(args) -> int:
     print(f"Framework version: {result['version']}; changed files: {len(result['changed_files'])}")
     for relpath in result["unsynchronized"]:
         print(f"Warning: could not write '{relpath}'; it stays reported as drift")
+    print("Harness wiring:")
+    for line in wiring.format_summary(result["wiring"]):
+        print(f"  {line}")
     for warning in result["link_warnings"]:
         print(f"Warning: {warning}")
     return 0

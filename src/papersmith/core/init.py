@@ -21,7 +21,7 @@ from ..kit import resolve_and_validate
 from ..render import render_package_template
 from ..schema import REMOTE_CHOICES, REMOTE_TARGETS, validate_tools
 from . import config, fs
-from . import manifest
+from . import manifest, wiring
 
 DEFAULT_AGENT_MODELS = {
     "paper-ingestion": "sonnet",
@@ -297,6 +297,7 @@ def initialize(destination: str | Path, *, title: str = "Untitled Paper",
         "copied_files": copied,
         "generated_files": generated,
         "warnings": warnings,
+        "wiring": wiring.summarize(root, tools, link_report, unsynchronized),
     }
 
 
@@ -329,6 +330,9 @@ def run_cli(args) -> int:
     )
     print(f"Initialized papersmith workspace: {result['workspace']}")
     print(f"Framework version: {result['version']}; default target: {result['default_target']}")
+    print("Harness wiring:")
+    for line in wiring.format_summary(result["wiring"]):
+        print(f"  {line}")
     for warning in result["warnings"]:
         print(f"Warning: {warning}", file=__import__("sys").stderr)
     return 0

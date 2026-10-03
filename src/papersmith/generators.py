@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ast
 import warnings as _warnings
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -127,6 +128,53 @@ COMMAND_PREFIXES = {
     "claude": ".claude/commands",
     "pi": ".pi/prompts",
 }
+
+#: Where each tool reads subagent definitions from. Claude's are the kit's own
+#: source files (``.claude/agents``, copied not rendered); the other three are
+#: projections :func:`render_files` writes from them.
+AGENT_DIRS = {
+    "claude": ".claude/agents",
+    "opencode": ".opencode/agents",
+    "pi": ".pi/agents",
+    "antigravity": ".agents/agents",
+}
+
+#: The generated safety plugin/extension each tool loads, where it has one.
+#: Claude has none: its guard is a documented opt-in hook (docs/guard-hooks.md).
+PLUGIN_FILES = {
+    "opencode": ".opencode/plugins/refuse-offpath-push.js",
+    "pi": ".pi/extensions/refuse-offpath-push.js",
+}
+
+CAPABILITIES = ("skills", "commands", "agents", "plugins")
+
+
+@dataclass(frozen=True)
+class Capability:
+    """One cell of the support matrix: whether the harness gets it, and where."""
+
+    supported: bool
+    artifact: str | None = None  # directory (commands, agents) or file (plugins)
+
+
+def _build_capabilities() -> dict[str, dict[str, Capability]]:
+    """Derived from the same constants :func:`render_files` writes through, so
+    a generated output with no entry (or an entry with no output) is a test
+    failure rather than silent drift. Every tool in :data:`ALL_TOOLS` is served
+    by the ``skills`` symlink roster (``manifest.HARNESS_SKILL_LINKS``); a test
+    pins that agreement because ``manifest`` imports this module."""
+    matrix: dict[str, dict[str, Capability]] = {}
+    for tool in ALL_TOOLS:
+        matrix[tool] = {
+            "skills": Capability(True),
+            "commands": Capability(tool in COMMAND_TOOLS, COMMAND_PREFIXES.get(tool)),
+            "agents": Capability(tool in AGENT_DIRS, AGENT_DIRS.get(tool)),
+            "plugins": Capability(tool in PLUGIN_FILES, PLUGIN_FILES.get(tool)),
+        }
+    return matrix
+
+
+HARNESS_CAPABILITIES = _build_capabilities()
 
 #: Claude tool names to Pi tool names for the `.pi/agents/` projection.
 #: `WebSearch`/`WebFetch` have no direct Pi child-tool counterparts: they
@@ -605,20 +653,20 @@ def render_files(workspace: Path, context: dict[str, Any] | None = None,
         rendered[output] = render_package_template(template, ctx)
         if tool == "pi":
             rendered[".pi/gentle-ai/persona.json"] = render_package_template("persona.json.tpl", ctx)
-            rendered[".pi/extensions/refuse-offpath-push.js"] = render_package_template(
+            rendered[PLUGIN_FILES["pi"]] = render_package_template(
                 "pi-extension.js.tpl", ctx)
         if tool == "pi" and pi_agents:
             for agent in pi_agents:
-                rendered[f".pi/agents/{agent['name']}.md"] = agent["text"]
+                rendered[f"{AGENT_DIRS['pi']}/{agent['name']}.md"] = agent["text"]
         if tool == "opencode" and opencode_agents:
             for agent in opencode_agents:
-                rendered[f".opencode/agents/{agent['name']}.md"] = agent["text"]
+                rendered[f"{AGENT_DIRS['opencode']}/{agent['name']}.md"] = agent["text"]
         if tool == "antigravity" and antigravity_agents:
             for agent in antigravity_agents:
-                rendered[f".agents/agents/{agent['name']}.md"] = agent["text"]
+                rendered[f"{AGENT_DIRS['antigravity']}/{agent['name']}.md"] = agent["text"]
         if tool == "opencode":
             rendered["opencode.json"] = render_package_template("opencode.json.tpl", ctx)
-            rendered[".opencode/plugins/refuse-offpath-push.js"] = render_package_template(
+            rendered[PLUGIN_FILES["opencode"]] = render_package_template(
                 "opencode-plugin.js.tpl", ctx)
         if tool in COMMAND_TOOLS and commands:
             prefix = COMMAND_PREFIXES[tool]

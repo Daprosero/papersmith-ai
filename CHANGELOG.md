@@ -15,6 +15,13 @@ number is `0`, breaking changes can still arrive without a major bump.
 
 ### Added
 
+- **Per-harness wiring summary.** `init` and `upgrade` print one line per active
+  harness (`skills`, `commands`, `agents`, `plugins` as `wired`, `unsupported`,
+  `failed` or `blocked`) and add a `wiring` key to their results. The support
+  matrix lives in `generators.HARNESS_CAPABILITIES`, derived from the constants
+  `render_files` writes through; exit codes and existing keys are unchanged.
+  The health inspector's structural fallback also checks agents and the
+  plugin/extension.
 - **Pi off-path push guard.** `init` and `upgrade` now generate
   `.pi/extensions/refuse-offpath-push.js` for workspaces that declare `pi`: a
   `tool_call` extension that shells out to the same Python guard as the OpenCode

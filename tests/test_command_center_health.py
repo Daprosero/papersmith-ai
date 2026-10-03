@@ -137,6 +137,15 @@ class WiringInspectorTests(unittest.TestCase):
         for relpath in (".claude/skills", ".opencode/skills", ".pi/skills",
                         ".antigravity/skills", ".agents/skills"):
             self._link_skills(root, relpath)
+        # Projected agents and the generated plugin/extension, wherever the
+        # matrix says a tool has them (source agents are `.claude/agents`).
+        for tool in ("opencode", "pi", "antigravity"):
+            (root / health_inspector.agent_dir(tool)).mkdir(parents=True)
+            (root / health_inspector.agent_dir(tool) / "redactor.md").write_text("x", encoding="utf-8")
+        for tool in ("opencode", "pi"):
+            plugin = root / health_inspector.plugin_file(tool)
+            plugin.parent.mkdir(parents=True)
+            plugin.write_text("x", encoding="utf-8")
 
     def test_structural_drift_reports_a_missing_agents_skills_link_for_antigravity(self) -> None:
         root = self.new_workspace()
@@ -161,7 +170,57 @@ class WiringInspectorTests(unittest.TestCase):
 
         (root / ".pi" / "prompts").mkdir()
         (root / ".pi" / "prompts" / "paper-writing.md").write_text("x", encoding="utf-8")
+        (root / ".pi" / "extensions").mkdir()
+        (root / ".pi" / "extensions" / "refuse-offpath-push.js").write_text("x", encoding="utf-8")
         state, detail = health_inspector._structural_drift(root, "pi")
+        assert state == "IN_SYNC", detail
+
+    def _wired_structurally(self, root: Path, tool: str) -> None:
+        """A structurally complete projection for ``tool`` (links, commands,
+        agents, plugin) with one skill and one source agent."""
+        _skill(root, "paper-writing")
+        _agent(root, "redactor", skill="paper-writing")
+        for relpath in health_inspector.required_skill_links(tool):
+            self._link_skills(root, relpath)
+        commands = health_inspector.COMMAND_DIRS.get(tool)
+        if commands:
+            target = root / health_inspector.HARNESSES[tool] / commands
+            target.mkdir(parents=True, exist_ok=True)
+            (target / "paper-writing.md").write_text("x", encoding="utf-8")
+        agents = health_inspector.agent_dir(tool)
+        if agents and tool != "claude":
+            (root / agents).mkdir(parents=True, exist_ok=True)
+            (root / agents / "redactor.md").write_text("x", encoding="utf-8")
+        plugin = health_inspector.plugin_file(tool)
+        if plugin:
+            (root / plugin).parent.mkdir(parents=True, exist_ok=True)
+            (root / plugin).write_text("x", encoding="utf-8")
+
+    def test_structural_drift_requires_projected_agents_and_plugins(self) -> None:
+        for tool in ("opencode", "pi", "antigravity", "claude"):
+            with self.subTest(tool=tool):
+                root = self.new_workspace()
+                self._wired_structurally(root, tool)
+                state, detail = health_inspector._structural_drift(root, tool)
+                assert state == "IN_SYNC", detail
+                agents = health_inspector.agent_dir(tool)
+                if agents and tool != "claude":
+                    (root / agents / "redactor.md").unlink()
+                    state, detail = health_inspector._structural_drift(root, tool)
+                    assert state == "DRIFT_DETECTED" and agents in detail, detail
+                    (root / agents / "redactor.md").write_text("x", encoding="utf-8")
+                plugin = health_inspector.plugin_file(tool)
+                if plugin:
+                    (root / plugin).unlink()
+                    state, detail = health_inspector._structural_drift(root, tool)
+                    assert state == "DRIFT_DETECTED" and plugin in detail, detail
+
+    def test_structural_drift_ignores_agents_when_no_source_agents_exist(self) -> None:
+        root = self.new_workspace()
+        _skill(root, "paper-writing")
+        self._link_skills(root, ".agents/skills")
+        self._link_skills(root, ".antigravity/skills")
+        state, detail = health_inspector._structural_drift(root, "antigravity")
         assert state == "IN_SYNC", detail
 
     def test_harness_sync_does_not_penalise_a_tool_the_workspace_never_enabled(self) -> None:

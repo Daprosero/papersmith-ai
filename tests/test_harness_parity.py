@@ -74,6 +74,13 @@ def inspector_pairs() -> set[tuple[str, str]]:
     return set(module._FALLBACK_SKILL_LINKS)
 
 
+def inspector_module():
+    spec = importlib.util.spec_from_file_location("health_inspector_under_test", INSPECTOR)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def roster_drift(reference: set[tuple[str, str]],
                  other: set[tuple[str, str]]) -> dict[str, list[tuple[str, str]]]:
     """Pairs only in ``reference`` and pairs only in ``other``; both empty when equal."""
@@ -161,6 +168,20 @@ class HarnessParityTests(unittest.TestCase):
                             ("inspector", inspector_pairs())):
             with self.subTest(roster=name):
                 self.assertTrue(wanted <= pairs, f"{name} lost an Antigravity link")
+
+    def test_inspector_fallback_capabilities_match_the_real_matrix(self) -> None:
+        """The stdlib-only fallback restates agent dirs and plugin files; it
+        must equal the matrix `generators.HARNESS_CAPABILITIES` derives."""
+        from papersmith.generators import HARNESS_CAPABILITIES
+
+        module = inspector_module()
+        real_agents = {t: c["agents"].artifact for t, c in HARNESS_CAPABILITIES.items()
+                       if c["agents"].supported}
+        real_plugins = {t: c["plugins"].artifact for t, c in HARNESS_CAPABILITIES.items()
+                        if c["plugins"].supported}
+        self.assertEqual(dict(module._FALLBACK_AGENT_DIRS), real_agents)
+        self.assertEqual(dict(module._FALLBACK_PLUGIN_FILES), real_plugins)
+        self.assertEqual(set(module.HARNESSES), set(HARNESS_CAPABILITIES))
 
 
 if __name__ == "__main__":

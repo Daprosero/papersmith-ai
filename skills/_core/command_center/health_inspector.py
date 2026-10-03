@@ -75,6 +75,39 @@ def required_skill_links(tool: str) -> list[str]:
     return [relpath for owner, relpath in _skill_links() if owner == tool]
 
 
+#: Fallbacks for ``papersmith.generators.AGENT_DIRS`` / ``PLUGIN_FILES``, which
+#: derive the support matrix. Duplicated for the same stdlib-only reason as the
+#: skill links; tests/test_harness_parity.py pins them to the real tables.
+_FALLBACK_AGENT_DIRS: dict[str, str] = {
+    "claude": ".claude/agents",
+    "opencode": ".opencode/agents",
+    "pi": ".pi/agents",
+    "antigravity": ".agents/agents",
+}
+_FALLBACK_PLUGIN_FILES: dict[str, str] = {
+    "opencode": ".opencode/plugins/refuse-offpath-push.js",
+    "pi": ".pi/extensions/refuse-offpath-push.js",
+}
+
+
+def _generator_table(name: str, fallback: dict[str, str]) -> dict[str, str]:
+    try:
+        import papersmith.generators as generators  # type: ignore
+        return dict(getattr(generators, name))
+    except Exception:
+        return fallback
+
+
+def agent_dir(tool: str) -> str | None:
+    """Where ``tool`` reads subagent definitions, or None if it has none."""
+    return _generator_table("AGENT_DIRS", _FALLBACK_AGENT_DIRS).get(tool)
+
+
+def plugin_file(tool: str) -> str | None:
+    """The generated plugin/extension ``tool`` loads, or None if it has none."""
+    return _generator_table("PLUGIN_FILES", _FALLBACK_PLUGIN_FILES).get(tool)
+
+
 def enabled_tools(root: Path) -> list[str]:
     """Harnesses the workspace enabled, from ``.papersmith/config.json``.
 
@@ -291,6 +324,16 @@ def _structural_drift(root: Path, tool: str) -> tuple[str, str]:
                 f"{commands_dir} != skills: missing {sorted(expected - on_disk)}, "
                 f"extra {sorted(on_disk - expected)}"
             )
+    # Agents: `.claude/agents/*.md` is the source; every other tool that
+    # projects them must hold at least one. Skipped when there is no source.
+    agents = agent_dir(tool)
+    source = root / ".claude" / "agents"
+    if agents is not None and tool != "claude" and source.is_dir() \
+            and any(source.glob("*.md")) and not any((root / agents).glob("*.md")):
+        return "DRIFT_DETECTED", f"{agents} holds no projected agents"
+    plugin = plugin_file(tool)
+    if plugin is not None and not (root / plugin).is_file():
+        return "DRIFT_DETECTED", f"{plugin} is absent"
     return "IN_SYNC", f"{HARNESSES[tool]}/ resolves structurally"
 
 
