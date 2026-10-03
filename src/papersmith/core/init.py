@@ -242,11 +242,13 @@ def initialize(destination: str | Path, *, title: str = "Untitled Paper",
     name = root.name
     _create_topology(root)
     copied = _copy_kit(root, kit_root)
-    # Report a wired harness `skills` symlink the same way every other kit
-    # file is reported, so a filesystem that cannot create symlinks (no
-    # privilege, read-only mount, ELOOP) shows up as a gap here instead of
-    # a silent "success" the operator has no signal to go fix with `upgrade`.
-    copied.extend(manifest.link_harness_skills(root, tools=tools))
+    # A wired harness `skills` symlink is reported like every other kit file.
+    # A path that could not be linked (no symlink privilege, read-only mount,
+    # ELOOP) or that real content already occupies is surfaced as a warning
+    # below; init still succeeds and `upgrade` repairs it once the cause is
+    # fixed. Files are never copied in place of a link.
+    link_report = manifest.link_harness_skills_report(root, tools=tools)
+    copied.extend(link_report.linked)
     _write_workspace_seed(root, name=name, title=title.strip(), topic=topic.strip(),
                           target=target, version=version, tools=tools)
 
@@ -264,7 +266,7 @@ def initialize(destination: str | Path, *, title: str = "Untitled Paper",
     unsynchronized: list[str] = []
     context = context_for_workspace(root)
     generated = apply_generated(root, context, tools, skipped=unsynchronized)
-    warnings: list[str] = []
+    warnings: list[str] = manifest.link_warnings(link_report)
     if run_npm:
         warning = _run_npm_install(root)
         if warning:

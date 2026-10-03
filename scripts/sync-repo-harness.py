@@ -6,8 +6,8 @@ The generators cannot run at the repository root -- there is no
 ``generators.context_for_workspace``). This script therefore builds a throwaway
 workspace with the real ``papersmith init``, renders the projection there, and
 copies only the context-independent artifacts back into the checkout:
-``.opencode/commands/``, ``.opencode/plugins/``, ``.claude/commands/``, and
-``.pi/prompts/``.
+``.opencode/commands/``, ``.opencode/plugins/``, ``.claude/commands/``,
+``.pi/prompts/``, and ``.pi/agents/``.
 
 ``opencode.json`` and the root routing docs are deliberately NOT copied: they
 are context-dependent (they carry the workspace name/version) and at the root
@@ -43,6 +43,7 @@ PROJECTION = (
     (".opencode/plugins", ".opencode/plugins"),
     (".claude/commands", ".claude/commands"),
     (".pi/prompts", ".pi/prompts"),
+    (".pi/agents", ".pi/agents"),
 )
 GENERATED_TOOLS = ("opencode", "claude", "pi")
 

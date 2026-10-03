@@ -198,8 +198,9 @@ def upgrade(workspace: str | Path = ".", *, tools: Sequence[str] | None = None,
     # Repair a missing or stale harness `skills` symlink for the active
     # tools, the same way a missing kit file is repaired above, and report
     # it the same way. Never touches real, non-symlinked content at that
-    # path.
-    changed.extend(manifest.link_harness_skills(root, tools=active_tools))
+    # path; a failed or blocked path is returned as a warning instead.
+    link_report = manifest.link_harness_skills_report(root, tools=active_tools)
+    changed.extend(link_report.linked)
 
     if tools is not None:
         workspace_config["active_tools"] = active_tools
@@ -284,6 +285,7 @@ def upgrade(workspace: str | Path = ".", *, tools: Sequence[str] | None = None,
         "removed": removed,
         "stranded": stranded,
         "unsynchronized": unsynchronized,
+        "link_warnings": manifest.link_warnings(link_report),
     }
 
 
@@ -307,4 +309,6 @@ def run_cli(args) -> int:
     print(f"Framework version: {result['version']}; changed files: {len(result['changed_files'])}")
     for relpath in result["unsynchronized"]:
         print(f"Warning: could not write '{relpath}'; it stays reported as drift")
+    for warning in result["link_warnings"]:
+        print(f"Warning: {warning}")
     return 0

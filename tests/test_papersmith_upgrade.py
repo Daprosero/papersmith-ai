@@ -302,6 +302,19 @@ class UpgradeTests(unittest.TestCase):
             assert main(["upgrade", str(workspace), "--allow-downgrade"]) == 0
         assert (workspace / ".papersmith/version").read_text() == "0.4.0\n"
 
+    def test_cli_upgrade_warns_per_failed_or_blocked_link_and_exits_zero(self) -> None:
+        tmp_path = self.new_tmp()
+        workspace = _workspace(tmp_path)
+        report = manifest.LinkReport(linked=[], failed=[".pi/skills"], blocked=[".opencode/skills"])
+        buffer = io.StringIO()
+        with mock.patch.object(manifest, "link_harness_skills_report", return_value=report):
+            with contextlib.redirect_stdout(buffer):
+                assert main(["upgrade", str(workspace)]) == 0
+        output = buffer.getvalue()
+        assert output.count(".pi/skills") == 1
+        assert output.count(".opencode/skills") == 1
+        assert "Warning:" in output
+
     def test_cli_upgrade_routes_directory_and_flags(self) -> None:
         tmp_path = self.new_tmp()
         workspace = _workspace(tmp_path)

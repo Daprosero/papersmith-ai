@@ -15,6 +15,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Sequence
@@ -187,25 +188,38 @@ HARNESS_SKILL_LINKS: tuple[tuple[str, str], ...] = (
 )
 
 
-def link_harness_skills(root: Path, tools: Sequence[str] | None = None) -> list[str]:
+@dataclass(frozen=True)
+class LinkReport:
+    """Outcome of one :func:`link_harness_skills_report` pass, by relpath.
+
+    ``linked`` holds the links this call created or repaired; a link that was
+    already correct appears in no bucket. ``failed`` holds paths where creating
+    the link raised :class:`OSError` (no symlink privilege, read-only mount,
+    unwritable parent). ``blocked`` holds paths occupied by real, non-symlink
+    content that this call refuses to touch.
+    """
+
+    linked: list[str] = field(default_factory=list)
+    failed: list[str] = field(default_factory=list)
+    blocked: list[str] = field(default_factory=list)
+
+
+def link_harness_skills_report(root: Path, tools: Sequence[str] | None = None) -> LinkReport:
     """Create or repair the relative ``skills`` symlink for each selected harness.
 
     Mirrors ``scripts/setup-harnesses.sh``: relative (so the workspace stays
     relocatable) and idempotent (re-running converges to the same layout — a
     stale symlink with the wrong target is replaced, never nested into). A
-    path already holding real, non-symlinked content is left untouched and
-    omitted from the result, never deleted. ``tools`` narrows which harnesses
-    are linked; ``None`` links all of them. Returns only the relpaths this
-    call actually created or repaired, so a caller can report it the same
-    way it reports every other change it makes; a path already correct, or
-    one this could not (re)create because of a damaged or unwritable
-    parent, is silently omitted, the same fail-soft contract
-    :func:`copy_kit_file` already uses for the files it copies.
+    path already holding real, non-symlinked content is left untouched, never
+    deleted, and reported as ``blocked``. A path whose link could not be
+    created is reported as ``failed``. Files are never copied as a fallback:
+    the canonical ``skills/`` tree stays the single copy. ``tools`` narrows
+    which harnesses are linked; ``None`` links all of them.
     """
+    report = LinkReport()
     canonical = root / "skills"
     if not fs.is_dir(canonical):
-        return []
-    linked: list[str] = []
+        return report
     for tool, relpath in HARNESS_SKILL_LINKS:
         if tools is not None and tool not in tools:
             continue
@@ -217,6 +231,7 @@ def link_harness_skills(root: Path, tools: Sequence[str] | None = None) -> list[
                 if os.readlink(target) == want:
                     continue
             elif target.exists():
+                report.blocked.append(relpath)
                 continue
             # Build the replacement next to `target` and rename it into
             # place atomically, so a failed create never leaves `target`
@@ -227,9 +242,34 @@ def link_harness_skills(root: Path, tools: Sequence[str] | None = None) -> list[
             tmp.symlink_to(want)
             tmp.replace(target)
         except OSError:
+            report.failed.append(relpath)
             continue
-        linked.append(relpath)
-    return linked
+        report.linked.append(relpath)
+    return report
+
+
+def link_harness_skills(root: Path, tools: Sequence[str] | None = None) -> list[str]:
+    """Return only the relpaths :func:`link_harness_skills_report` linked.
+
+    Kept for callers that only need the created or repaired paths; those that
+    must tell an operator about failures use the report variant.
+    """
+    return link_harness_skills_report(root, tools).linked
+
+
+def link_warnings(report: LinkReport) -> list[str]:
+    """One operator-facing warning per failed or blocked link path."""
+    warnings = [
+        f"harness skills link '{relpath}' could not be created; skills are not "
+        "linked there (re-run `papersmith upgrade` once the cause is fixed)"
+        for relpath in report.failed
+    ]
+    warnings.extend(
+        f"harness skills link '{relpath}' not linked: real content occupies the "
+        "path and was left untouched (move it aside to wire the link)"
+        for relpath in report.blocked
+    )
+    return warnings
 
 
 def copy_kit_file(kit_root: Path, relpath: str, dest_root: Path) -> bool:

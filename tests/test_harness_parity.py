@@ -16,14 +16,29 @@ rather than restated here, because a fifth harness added to that array and not
 to this file is exactly the drift these assertions exist to catch.
 """
 
+import importlib.util
 import re
 import subprocess
 import unittest
 from pathlib import Path
 
+from papersmith.core import manifest
+
 FORGE_ROOT = Path(__file__).resolve().parent.parent
 SETUP = FORGE_ROOT / "scripts" / "setup-harnesses.sh"
 GITIGNORE = FORGE_ROOT / ".gitignore"
+INSPECTOR = FORGE_ROOT / "skills" / "_core" / "command_center" / "health_inspector.py"
+
+#: The shell array carries ``relpath:Label`` only, so the owning tool of each
+#: label is stated here, explicitly: a tool is never derived from a path or a
+#: label. A new shell label with no row below fails the roster test by name.
+LABEL_TO_TOOL = {
+    "Claude Code": "claude",
+    "Pi": "pi",
+    "OpenCode": "opencode",
+    "Google Antigravity": "antigravity",
+    "Antigravity (.agents)": "antigravity",
+}
 
 #: `  ".pi/skills:Pi"` -> ("\.pi/skills", "Pi"). Matched against the array the
 #: script actually iterates, so the test cannot pass over a roster nobody uses.
@@ -39,6 +54,30 @@ def declared_harnesses() -> list[tuple[str, str]]:
             f"no HARNESSES=( ... ) array found in {SETUP}; this test derives "
             "its roster from that array and has nothing to assert without it")
     return ENTRY.findall(block.group(1))
+
+
+def shell_pairs() -> set[tuple[str, str]]:
+    """``(tool, relpath)`` pairs of the shell array, via the explicit label table."""
+    unknown = [label for _, label in declared_harnesses() if label not in LABEL_TO_TOOL]
+    if unknown:
+        raise AssertionError(
+            f"setup-harnesses.sh labels {unknown} have no row in LABEL_TO_TOOL; "
+            "state which tool owns each new link")
+    return {(LABEL_TO_TOOL[label], rel) for rel, label in declared_harnesses()}
+
+
+def inspector_pairs() -> set[tuple[str, str]]:
+    """The inspector's stdlib-only fallback roster, imported by path."""
+    spec = importlib.util.spec_from_file_location("health_inspector_under_test", INSPECTOR)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return set(module._FALLBACK_SKILL_LINKS)
+
+
+def roster_drift(reference: set[tuple[str, str]],
+                 other: set[tuple[str, str]]) -> dict[str, list[tuple[str, str]]]:
+    """Pairs only in ``reference`` and pairs only in ``other``; both empty when equal."""
+    return {"missing": sorted(reference - other), "extra": sorted(other - reference)}
 
 
 class HarnessParityTests(unittest.TestCase):
@@ -88,6 +127,40 @@ class HarnessParityTests(unittest.TestCase):
                     f"a fresh clone and a collaborator has no sign {label} is "
                     "a supported harness. One tracked file is enough, and it "
                     "should say why the directory looks empty")
+
+    def test_roster_drift_names_missing_and_extra_pairs(self) -> None:
+        """Non-vacuity for the checker itself: a drifted roster must be seen."""
+        reference = {("claude", ".claude/skills"), ("pi", ".pi/skills")}
+        drifted = {("claude", ".claude/skills"), ("opencode", ".opencode/skills")}
+        self.assertEqual(roster_drift(reference, reference), {"missing": [], "extra": []})
+        self.assertEqual(
+            roster_drift(reference, drifted),
+            {"missing": [("pi", ".pi/skills")], "extra": [("opencode", ".opencode/skills")]})
+
+    def test_shell_manifest_and_inspector_agree_on_the_link_roster(self) -> None:
+        """One roster, stated three times by design (shell stays pure shell and
+        the inspector stays stdlib-only), so agreement is enforced here."""
+        shell = shell_pairs()
+        self.assertEqual(len(shell), len(declared_harnesses()), "duplicate shell entry")
+        canonical = set(manifest.HARNESS_SKILL_LINKS)
+        self.assertEqual(
+            roster_drift(canonical, shell), {"missing": [], "extra": []},
+            "setup-harnesses.sh HARNESSES disagrees with manifest.HARNESS_SKILL_LINKS")
+        self.assertEqual(
+            roster_drift(canonical, inspector_pairs()), {"missing": [], "extra": []},
+            "health_inspector._FALLBACK_SKILL_LINKS disagrees with "
+            "manifest.HARNESS_SKILL_LINKS")
+
+    def test_antigravity_keeps_its_documented_and_legacy_links(self) -> None:
+        """The two Antigravity links are deliberate (manifest.py): `.agents/skills`
+        is the documented path and `.antigravity/skills` stays so no existing
+        workspace loses a path it already uses."""
+        wanted = {("antigravity", ".agents/skills"), ("antigravity", ".antigravity/skills")}
+        for name, pairs in (("shell", shell_pairs()),
+                            ("manifest", set(manifest.HARNESS_SKILL_LINKS)),
+                            ("inspector", inspector_pairs())):
+            with self.subTest(roster=name):
+                self.assertTrue(wanted <= pairs, f"{name} lost an Antigravity link")
 
 
 if __name__ == "__main__":

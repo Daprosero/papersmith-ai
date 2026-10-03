@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from papersmith.cli import main
@@ -426,6 +427,68 @@ class InitTests(unittest.TestCase):
         linked = manifest.link_harness_skills(tmp_path, tools=("claude",))
         assert linked == [".claude/skills"]
         assert link.resolve() == (tmp_path / "skills").resolve()
+
+    def test_link_report_names_a_path_whose_link_creation_failed(self) -> None:
+        tmp_path = self.new_tmp()
+        (tmp_path / "skills").mkdir()
+        real_symlink_to = Path.symlink_to
+
+        def fail_for_pi(self_path, *args, **kwargs):
+            if ".pi" in self_path.parts:
+                raise PermissionError("simulated: symlinks not permitted")
+            return real_symlink_to(self_path, *args, **kwargs)
+
+        with mock.patch.object(Path, "symlink_to", fail_for_pi):
+            report = manifest.link_harness_skills_report(tmp_path, tools=("claude", "pi"))
+        assert report.linked == [".claude/skills"]
+        assert report.failed == [".pi/skills"]
+        assert report.blocked == []
+        assert not (tmp_path / ".pi/skills").exists()
+
+    def test_link_report_names_a_real_directory_occupying_the_link_path(self) -> None:
+        tmp_path = self.new_tmp()
+        (tmp_path / "skills").mkdir()
+        real = tmp_path / ".opencode" / "skills"
+        real.mkdir(parents=True)
+        (real / "keep.txt").write_text("mine")
+        report = manifest.link_harness_skills_report(tmp_path, tools=("opencode",))
+        assert report.blocked == [".opencode/skills"]
+        assert report.linked == [] and report.failed == []
+        assert (real / "keep.txt").read_text() == "mine"
+        assert not real.is_symlink()
+
+    def test_link_report_never_copies_files_as_a_fallback(self) -> None:
+        tmp_path = self.new_tmp()
+        (tmp_path / "skills").mkdir()
+        (tmp_path / "skills" / "one.txt").write_text("x")
+        with mock.patch.object(Path, "symlink_to", side_effect=OSError("no symlinks")):
+            report = manifest.link_harness_skills_report(tmp_path, tools=("claude",))
+        assert report.failed == [".claude/skills"]
+        assert not (tmp_path / ".claude/skills").exists()
+
+    def test_link_report_leaves_a_correct_link_out_of_every_bucket(self) -> None:
+        tmp_path = self.new_tmp()
+        (tmp_path / "skills").mkdir()
+        manifest.link_harness_skills_report(tmp_path, tools=("claude",))
+        again = manifest.link_harness_skills_report(tmp_path, tools=("claude",))
+        assert again == manifest.LinkReport(linked=[], failed=[], blocked=[])
+
+    def test_wrapper_still_returns_only_the_linked_paths(self) -> None:
+        tmp_path = self.new_tmp()
+        (tmp_path / "skills").mkdir()
+        (tmp_path / ".opencode" / "skills").mkdir(parents=True)
+        linked = manifest.link_harness_skills(tmp_path, tools=("claude", "opencode"))
+        assert linked == [".claude/skills"]
+
+    def test_init_warns_once_per_failed_or_blocked_link_and_still_succeeds(self) -> None:
+        tmp_path = self.new_tmp()
+        report = manifest.LinkReport(linked=[], failed=[".pi/skills"], blocked=[".opencode/skills"])
+        with mock.patch.object(manifest, "link_harness_skills_report", return_value=report):
+            result = init_module.initialize(tmp_path / "ws", run_npm=False, run_env=False)
+        joined = "\n".join(result["warnings"])
+        assert joined.count(".pi/skills") == 1
+        assert joined.count(".opencode/skills") == 1
+        assert "not linked" in joined
 
     def test_remote_selects_the_declared_default_target(self) -> None:
         tmp_path = self.new_tmp()
