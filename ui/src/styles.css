@@ -183,8 +183,14 @@ body {
   white-space: nowrap;
 }
 
+/* Wrapping is not decoration here. Uppercase micro-label tabs are wider than
+   the sentence-case ones they replaced, and a browser check caught them
+   spilling past an 820px viewport. Wrapping to a second row keeps every tab
+   reachable; horizontal scroll would have hidden the last ones behind a
+   gesture nobody is told about. */
 .tabs {
   display: flex;
+  flex-wrap: wrap;
   gap: 4px;
   padding: 8px 20px 0;
   border-bottom: 1px solid var(--border);
