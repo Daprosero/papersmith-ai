@@ -11,6 +11,60 @@ reader expects a kept one.
 Versions follow [semantic versioning](https://semver.org): while the first
 number is `0`, breaking changes can still arrive without a major bump.
 
+## 0.13.0
+
+### Changed
+
+- **The Paper Command Center speaks the architecture diagram's visual
+  language, in two themes.** A reader moving from
+  `docs/diagrams/papersmith-pi-flow.html` to `papersmith ui` crossed a visual
+  seam that carried no information: different type, different elevation,
+  different palette, for the same stages and the same gates. Light stays
+  `:root`, dark arrives as `[data-theme='dark']`, and the choice persists ---
+  the system preference decides the first visit, an explicit choice wins after
+  that, and `light` is the floor when storage cannot be read at all.
+  Archify publishes no stylesheet, so the signature is transcribed rather than
+  imported: elevation as glow instead of drop shadow, radius by opposition
+  (pills at 999px against structure at 1px), and tracking by opposition (tight
+  on headings, wide on uppercase micro-labels). Archify's infrastructure-role
+  hues are deliberately not adopted --- its frontend/backend/database taxonomy
+  says nothing about a paper pipeline, so stage, gate and section keep their
+  meaning and only their hues move. On the canvas a node's role is now a full
+  stroke over a translucent fill of the same hue, the way the diagram states
+  it, instead of an accent bar on one edge.
+
+### Added
+
+- **The style contract understands two themes, and still refuses literal
+  colour.** `ui/src/styles.test.ts` was generalized from a single `:root` to a
+  theme map: it reads both blocks, excises both from the text its
+  literal-colour rule inspects, resolves dark tokens through a light fallback
+  the way the cascade does, and runs every WCAG AA contrast assertion once per
+  theme. The contract was extended, never weakened; both themes pass on every
+  surface, badge fill, node, edge label and terminal.
+- **Browser checks for behaviour and layout.** 255 jsdom tests could not see a
+  clipped label or an overlapping control, because jsdom computes no layout.
+  Playwright now runs `ui`-local as `npm run test:e2e` against the real FastAPI
+  server serving the committed bundle --- not `vite preview`, which resolves
+  assets differently and skips the `Host` validation that has broken the
+  dashboard before. It waits on `body[data-ready]`, the signal `App.tsx`
+  already published. Functional: tab activation and singularity, deep links
+  surviving a reload, node selection opening an addressable detail panel, and
+  the theme switch actually repainting --- asserted through computed
+  `backgroundColor`, because an attribute that changes while the paint does not
+  is the failure worth catching. Layout: text clipped by its own box,
+  horizontal spill past the viewport, pairwise control overlap, a 24px minimum
+  hit target, and the element panel's geometry on both sides of the 900px
+  breakpoint.
+  It earned its place on the first run: the new uppercase tabs spilled past an
+  820px viewport. Bisecting against the pre-restyle stylesheet proved it was a
+  regression introduced by this work rather than a pre-existing defect, and the
+  tab strip now wraps. Horizontal scroll was rejected for hiding the last tabs
+  behind a gesture nobody announces.
+  It is deliberately not in `npm run test:all`, which does not run the vitest
+  suite either; wiring a browser suite into a gate that skips the unit suite
+  would be backwards.
+
 ## 0.12.0
 
 ### Added

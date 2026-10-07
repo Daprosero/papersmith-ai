@@ -6,33 +6,89 @@ import { composite, contrastRatio, parseColor, type Rgba } from './test/color';
 
 const css = readFileSync(join(process.cwd(), 'src', 'styles.css'), 'utf8');
 
-/** The text of the first `:root { ... }` block and everything outside it. */
-function splitRoot(source: string): { root: string; rest: string } {
-  const start = source.indexOf(':root');
+/**
+ * The dashboard ships two themes: light on `:root` and dark on
+ * `[data-theme='dark']`. Both are allowed to hold literal colours — they are
+ * where colour is *defined*. Everywhere else must go through `var()`, so the
+ * selectors are listed here once and excised from the text the literal-colour
+ * rule inspects.
+ */
+const THEME_SELECTORS = [':root', "[data-theme='dark']"] as const;
+type ThemeName = 'light' | 'dark';
+
+const THEME_OF: Record<(typeof THEME_SELECTORS)[number], ThemeName> = {
+  ':root': 'light',
+  "[data-theme='dark']": 'dark',
+};
+
+/** The body of the first block declared with `selector`, or null when absent. */
+function blockBody(source: string, selector: string): { body: string; start: number; end: number } | null {
+  const start = source.indexOf(selector);
+  if (start === -1) return null;
   const open = source.indexOf('{', start);
+  if (open === -1) return null;
   const close = source.indexOf('}', open);
-  return { root: source.slice(open + 1, close), rest: source.slice(0, start) + source.slice(close + 1) };
+  if (close === -1) return null;
+  return { body: source.slice(open + 1, close), start, end: close + 1 };
 }
 
 const stripped = css.replace(/\/\*[\s\S]*?\*\//g, '');
-const { root, rest } = splitRoot(stripped);
 
-const tokens = new Map<string, string>();
-for (const match of root.matchAll(/(--[\w-]+)\s*:\s*([^;]+);/g)) {
-  tokens.set(match[1], match[2].trim());
+/** Theme blocks keyed by theme, plus everything that is not a theme block. */
+function splitThemes(source: string): { themes: Map<ThemeName, string>; rest: string } {
+  const themes = new Map<ThemeName, string>();
+  const spans: Array<{ start: number; end: number }> = [];
+  for (const selector of THEME_SELECTORS) {
+    const found = blockBody(source, selector);
+    if (!found) continue;
+    themes.set(THEME_OF[selector], found.body);
+    spans.push({ start: found.start, end: found.end });
+  }
+  let rest = source;
+  for (const span of spans.sort((a, b) => b.start - a.start)) {
+    rest = rest.slice(0, span.start) + rest.slice(span.end);
+  }
+  return { themes, rest };
 }
 
-function token(name: string): string {
-  const value = tokens.get(name);
-  if (value === undefined) throw new Error(`missing token ${name}`);
-  return value;
+const { themes, rest } = splitThemes(stripped);
+
+function tokensOf(body: string): Map<string, string> {
+  const map = new Map<string, string>();
+  for (const match of body.matchAll(/(--[\w-]+)\s*:\s*([^;]+);/g)) {
+    map.set(match[1], match[2].trim());
+  }
+  return map;
 }
 
-/** Resolve a token to an opaque colour, compositing translucent values over `backdrop`. */
-function resolve(name: string, backdrop = '--bg-panel'): Rgba {
-  const color = parseColor(token(name));
-  return color.a < 1 ? composite(color, resolve(backdrop)) : color;
+/**
+ * A theme's tokens, falling back to light for anything the dark block does not
+ * override — which mirrors how the cascade actually resolves them.
+ */
+function themeTokens(theme: ThemeName): Map<string, string> {
+  const light = tokensOf(themes.get('light') ?? '');
+  if (theme === 'light') return light;
+  const merged = new Map(light);
+  for (const [name, value] of tokensOf(themes.get('dark') ?? '')) merged.set(name, value);
+  return merged;
 }
+
+function reader(theme: ThemeName) {
+  const map = themeTokens(theme);
+  const token = (name: string): string => {
+    const value = map.get(name);
+    if (value === undefined) throw new Error(`missing token ${name} in the ${theme} theme`);
+    return value;
+  };
+  /** Resolve a token to an opaque colour, compositing translucent values over `backdrop`. */
+  const resolve = (name: string, backdrop = '--bg-panel'): Rgba => {
+    const color = parseColor(token(name));
+    return color.a < 1 ? composite(color, resolve(backdrop)) : color;
+  };
+  return { has: (name: string) => map.has(name), token, resolve };
+}
+
+const THEMES: ThemeName[] = ['light', 'dark'];
 
 const NAMED_COLORS = new Set(
   (
@@ -62,8 +118,8 @@ function declarationValues(source: string): string[] {
   return values;
 }
 
-describe('light theme stylesheet', () => {
-  it('declares every colour only as a token inside :root', () => {
+describe('themed stylesheet', () => {
+  it('declares every colour only inside a theme block', () => {
     const offenders: string[] = [];
     for (const value of declarationValues(rest)) {
       if (/#[0-9a-f]{3,8}\b/i.test(value)) offenders.push(value.trim());
@@ -75,7 +131,13 @@ describe('light theme stylesheet', () => {
     expect(offenders).toEqual([]);
   });
 
-  it('defines the extra theme tokens', () => {
+  it('ships both themes', () => {
+    expect(themes.has('light')).toBe(true);
+    expect(themes.has('dark')).toBe(true);
+  });
+
+  it.each(THEMES)('the %s theme defines the extra theme tokens', (theme) => {
+    const { has } = reader(theme);
     for (const name of [
       '--graph-bg',
       '--node-bg',
@@ -91,12 +153,27 @@ describe('light theme stylesheet', () => {
       '--accent-border',
       '--sealed-border',
     ]) {
-      expect(tokens.has(name), name).toBe(true);
+      expect(has(name), `${name} in ${theme}`).toBe(true);
+    }
+  });
+
+  it.each(THEMES)('the %s theme carries the Archify signature tokens', (theme) => {
+    const { has } = reader(theme);
+    for (const name of ['--glow', '--glow-strong', '--ring', '--knockout', '--radius-pill', '--radius-edge']) {
+      expect(has(name), `${name} in ${theme}`).toBe(true);
+    }
+  });
+
+  it('overrides every colour surface in the dark theme', () => {
+    const dark = tokensOf(themes.get('dark') ?? '');
+    for (const name of ['--bg', '--bg-panel', '--bg-elevated', '--bg-input', '--border', '--text', '--graph-bg', '--node-bg']) {
+      expect(dark.has(name), `${name} must be redefined for dark`).toBe(true);
     }
   });
 });
 
-describe('contrast (WCAG AA)', () => {
+describe.each(THEMES)('contrast (WCAG AA) — %s theme', (theme) => {
+  const { resolve } = reader(theme);
   const ratio = (fg: string, bg: string, backdrop?: string) =>
     contrastRatio(resolve(fg, backdrop), resolve(bg, backdrop));
 

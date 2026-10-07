@@ -3,6 +3,7 @@ import { useWorkspaceEvents } from './hooks/useWorkspaceEvents';
 import { usePaperPreview } from './hooks/usePaperPreview';
 import { useAtlas } from './hooks/useAtlas';
 import { useDecisions } from './hooks/useDecisions';
+import { useTheme } from './hooks/useTheme';
 import PipelineGraph from './components/dag/PipelineGraph';
 import ElementDetailPanel from './components/dag/ElementDetailPanel';
 import { buildGraph } from './components/dag/graph';
@@ -16,6 +17,7 @@ import AtlasView from './components/atlas/AtlasView';
 import DecisionsView from './components/decisions/DecisionsView';
 import ArtifactViewer from './components/artifacts/ArtifactViewer';
 import { StatusBadge } from './components/StatusBadge';
+import { ThemeToggle } from './components/ThemeToggle';
 import { asText, formatCount, formatTime } from './lib/format';
 import { TABS, formatHash, parseHash, type HashRoute, type TabId } from './lib/hash';
 import type { WorkspaceState } from './types';
@@ -58,6 +60,7 @@ export default function App() {
   const atlas = useAtlas(tab === 'atlas');
   // Decision sources are not watched either: tab open and Refresh only.
   const decisions = useDecisions(tab === 'decisions');
+  const { theme, toggle: toggleTheme } = useTheme();
 
   useEffect(() => {
     const onHashChange = () => setRoute(readRoute());
@@ -129,6 +132,7 @@ export default function App() {
           </p>
         </div>
         <div className="topbar__status">
+          <ThemeToggle theme={theme} onToggle={toggleTheme} />
           <StatusBadge label={connected ? 'LIVE' : 'RECONNECTING'} tone={connected ? 'ok' : 'warn'} />
           {lastChanged.length > 0 ? (
             <span className="topbar__changed" title={lastChanged.join('\n')}>

@@ -140,3 +140,7 @@ _descartados/
 # Research content like guidance/*/* — the folder travels, never its content.
 sota-pool/*
 !sota-pool/.gitkeep
+
+# Playwright browser-check output (ui-local; see ui/playwright.config.ts)
+ui/test-results/
+ui/playwright-report/
