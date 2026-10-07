@@ -40,6 +40,7 @@ SKILL_NAMES = (
     "proposal-implementation",
     "remote-execution",
     "skill-audit",
+    "upgrade-project",
 )
 
 PAPER_WRITING_VERBS = (
