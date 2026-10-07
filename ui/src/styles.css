@@ -1,47 +1,113 @@
-/* Paper Command Center — light control-plane theme.
+/* Paper Command Center — a control plane in Archify's visual register.
    One stylesheet, no CSS framework: the dashboard ships inside a Python
-   workspace, so the bundle has to stay self-contained and offline-capable. */
+   workspace, so the bundle has to stay self-contained and offline-capable.
+
+   Two themes live here and nowhere else. Light is `:root`, dark is
+   `[data-theme='dark']`, and every literal colour in the bundle belongs to one
+   of those two blocks — `styles.test.ts` fails the build if one escapes.
+
+   The Archify signature this transcribes (its tokens are inline in
+   ~/.claude/skills/archify/assets/template.html, so there is nothing to import):
+     · elevation is glow, never drop shadow
+     · radius by opposition — pills at 999px, structure at 1px
+     · tracking by opposition — tight on headings, wide on uppercase micro-labels
+     · slate surfaces, with semantic hues in the cyan/emerald/amber/rose/violet
+       family rather than Archify's infrastructure-role taxonomy, which does not
+       map onto stage/gate/section. */
 
 :root {
-  --bg: #f3f5f9;
+  --bg: #f4f5f7;
   --bg-elevated: #ffffff;
   --bg-panel: #ffffff;
-  --bg-input: #f0f3f8;
-  --border: #d5dce6;
-  --border-strong: #75869b;
-  --text: #14202e;
-  --text-muted: #44546a;
-  --text-dim: #566679;
-  --accent: #0a5fc2;
-  --accent-soft: rgba(10, 95, 194, 0.1);
-  --accent-border: rgba(10, 95, 194, 0.4);
-  --ok: #0b7547;
-  --ok-soft: rgba(11, 117, 71, 0.11);
-  --ok-border: rgba(11, 117, 71, 0.4);
-  --warn: #855400;
-  --warn-soft: rgba(133, 84, 0, 0.11);
-  --warn-border: rgba(133, 84, 0, 0.4);
-  --bad: #b3261e;
-  --bad-soft: rgba(179, 38, 30, 0.1);
-  --bad-border: rgba(179, 38, 30, 0.4);
-  --sealed: #6a3bbd;
-  --sealed-soft: rgba(106, 59, 189, 0.1);
-  --sealed-border: rgba(106, 59, 189, 0.4);
-  --tint: rgba(20, 32, 46, 0.04);
-  --track: rgba(20, 32, 46, 0.1);
-  --graph-bg: #eef2f7;
+  --bg-input: #eef0f4;
+  --border: #e5e7eb;
+  --border-strong: #6b7a90;
+  --text: #111827;
+  --text-muted: #46556b;
+  --text-dim: #5b6a7f;
+  --accent: #0e6d91;
+  --accent-soft: rgba(14, 109, 145, 0.1);
+  --accent-border: rgba(14, 109, 145, 0.4);
+  --ok: #046c4e;
+  --ok-soft: rgba(4, 108, 78, 0.11);
+  --ok-border: rgba(4, 108, 78, 0.4);
+  --warn: #8a4d0b;
+  --warn-soft: rgba(138, 77, 11, 0.11);
+  --warn-border: rgba(138, 77, 11, 0.4);
+  --bad: #b3123c;
+  --bad-soft: rgba(179, 18, 60, 0.1);
+  --bad-border: rgba(179, 18, 60, 0.4);
+  --sealed: #6327cf;
+  --sealed-soft: rgba(99, 39, 207, 0.1);
+  --sealed-border: rgba(99, 39, 207, 0.4);
+  --tint: rgba(17, 24, 39, 0.04);
+  --track: rgba(17, 24, 39, 0.1);
+  --graph-bg: #eef0f4;
   --node-bg: #ffffff;
-  --edge: #8696aa;
+  --edge: #7d8da3;
   --edge-label-bg: rgba(255, 255, 255, 0.92);
-  --overlay: rgba(20, 32, 46, 0.4);
-  --shadow: 0 4px 14px rgba(20, 32, 46, 0.12);
-  --shadow-drawer: -12px 0 32px rgba(20, 32, 46, 0.18);
-  --terminal-bg: #14202e;
-  --terminal-text: #c9f2dc;
+  --overlay: rgba(17, 24, 39, 0.4);
+  --shadow: 0 0 20px rgba(17, 24, 39, 0.1);
+  --shadow-drawer: -12px 0 32px rgba(17, 24, 39, 0.16);
+  --glow: 0 0 16px rgba(14, 109, 145, 0.12);
+  --glow-strong: 0 0 28px rgba(14, 109, 145, 0.2);
+  --ring: 0 0 0 4px rgba(14, 109, 145, 0.16);
+  --knockout: #ffffff;
+  --terminal-bg: #0f172a;
+  --terminal-text: #a7f3d0;
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
   --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --radius: 10px;
   --radius-sm: 6px;
+  --radius-pill: 999px;
+  --radius-edge: 1px;
+  --track-tight: -0.015em;
+  --track-wide: 0.12em;
+  --track-micro: 0.14em;
+}
+
+/* Archify's own default register: near-black slate, hues at 400-weight so they
+   glow against it rather than sit on it. */
+[data-theme='dark'] {
+  --bg: #020617;
+  --bg-elevated: #0f172a;
+  --bg-panel: #0f172a;
+  --bg-input: #1e293b;
+  --border: #1e293b;
+  --border-strong: #64748b;
+  --text: #ffffff;
+  --text-muted: #a2b2c6;
+  --text-dim: #8595ab;
+  --accent: #22d3ee;
+  --accent-soft: rgba(34, 211, 238, 0.14);
+  --accent-border: rgba(34, 211, 238, 0.45);
+  --ok: #34d399;
+  --ok-soft: rgba(52, 211, 153, 0.14);
+  --ok-border: rgba(52, 211, 153, 0.45);
+  --warn: #fbbf24;
+  --warn-soft: rgba(251, 191, 36, 0.14);
+  --warn-border: rgba(251, 191, 36, 0.45);
+  --bad: #fb7185;
+  --bad-soft: rgba(251, 113, 133, 0.14);
+  --bad-border: rgba(251, 113, 133, 0.45);
+  --sealed: #a78bfa;
+  --sealed-soft: rgba(167, 139, 250, 0.14);
+  --sealed-border: rgba(167, 139, 250, 0.45);
+  --tint: rgba(255, 255, 255, 0.04);
+  --track: rgba(255, 255, 255, 0.12);
+  --graph-bg: #020617;
+  --node-bg: #0f172a;
+  --edge: #64748b;
+  --edge-label-bg: rgba(15, 23, 42, 0.92);
+  --overlay: rgba(2, 6, 23, 0.7);
+  --shadow: 0 0 20px rgba(2, 6, 23, 0.6);
+  --shadow-drawer: -12px 0 32px rgba(2, 6, 23, 0.7);
+  --glow: 0 0 20px rgba(34, 211, 238, 0.12);
+  --glow-strong: 0 0 32px rgba(34, 211, 238, 0.22);
+  --ring: 0 0 0 4px rgba(34, 211, 238, 0.16);
+  --knockout: #020617;
+  --terminal-bg: #020617;
+  --terminal-text: #86efac;
 }
 
 * {
