@@ -36,7 +36,7 @@ from papersmith.kit import resolve_and_validate
 
 ROOT = Path(__file__).resolve().parents[1]
 
-#: The eleven command-bearing skills, in the deterministic order
+#: The twelve command-bearing skills, in the deterministic order
 #: ``collect_commands`` sorts them into. Pinned literally so a new or renamed
 #: top-level skill has to be acknowledged here.
 COMMAND_NAMES = (
@@ -51,6 +51,7 @@ COMMAND_NAMES = (
     "proposal-implementation",
     "remote-execution",
     "skill-audit",
+    "upgrade-project",
 )
 
 #: The nineteen agent definitions, in the deterministic order
@@ -139,14 +140,18 @@ class GeneratorsTests(unittest.TestCase):
 
     def test_command_derivation_is_scoped_to_the_command_tools(self) -> None:
         workspace = _workspace(self.new_tmp())
+        # Counted off COMMAND_NAMES rather than restated as a literal: the
+        # tuple above is the pin a new skill has to be acknowledged in, and a
+        # second copy of its length is just a second place to forget.
+        expected = len(COMMAND_NAMES)
         opencode = render_files(workspace, tools=("opencode",))
-        assert sum(1 for path in opencode if path.startswith(".opencode/commands/")) == 11
+        assert sum(1 for path in opencode if path.startswith(".opencode/commands/")) == expected
         assert ".claude/commands/paper-ingestion.md" not in opencode
         claude = render_files(workspace, tools=("claude",))
-        assert sum(1 for path in claude if path.startswith(".claude/commands/")) == 11
+        assert sum(1 for path in claude if path.startswith(".claude/commands/")) == expected
         assert ".opencode/commands/paper-ingestion.md" not in claude
         pi = render_files(workspace, tools=("pi",))
-        assert sum(1 for path in pi if path.startswith(".pi/prompts/")) == 11
+        assert sum(1 for path in pi if path.startswith(".pi/prompts/")) == expected
         assert ".pi/prompts/paper-ingestion.md" in pi
         assert not any(path.startswith((".opencode/commands/", ".claude/commands/")) for path in pi)
         # Antigravity reads the skills link and gets no command files of its own.

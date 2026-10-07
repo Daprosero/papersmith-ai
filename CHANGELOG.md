@@ -13,6 +13,24 @@ number is `0`, breaking changes can still arrive without a major bump.
 
 ## 0.13.0
 
+### Added
+
+- **`/upgrade-project` brings the upgrade inside the workspace.**
+  `papersmith upgrade` has existed since 0.12.0 and was reachable only from a
+  terminal, so an agent working inside a workspace could see that the workspace
+  was running an older release and could do nothing about it. The twelfth skill
+  closes that: `skills/upgrade-project/SKILL.md`, projected as a slash command
+  to `.claude/commands/`, `.opencode/commands/` and `.pi/prompts/`.
+  It delegates every write to `papersmith upgrade` and reimplements nothing ---
+  the upgrade is a kit copy, a symlink repair, a re-derivation of every
+  projection, an orphan sweep and an ordered migration run, with the version
+  marker written last, and a second implementation of that is a second answer
+  that can disagree with the first. What the skill adds is the two preflight
+  refusals that fail better before a write than during one (this is not a
+  workspace; the CLI is unreachable), the flag semantics including why
+  `--plan-migrations` must not be described as a dry run, and how to read a
+  non-zero exit instead of summarizing it as done.
+
 ### Changed
 
 - **The Paper Command Center speaks the architecture diagram's visual
