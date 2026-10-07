@@ -86,30 +86,30 @@ tokens), T3-T5 (visual language), T6-T7 (verification and bundle).
 
 ## Tasks
 
-- [ ] **T1 — The style contract learns about themes.** Generalize
+- [x] **T1 — The style contract learns about themes.** Generalize
   `styles.test.ts` from one `:root` to a theme map: `:root` (light) plus
   `[data-theme='dark']`. The literal-colour rule excludes both theme blocks and
   nothing else; every contrast assertion runs per theme via `it.each`. Expect
   RED: the dark theme does not exist, so token lookup throws.
-- [ ] **T2 — Both themes exist as tokens.** Move light surfaces toward Archify's
+- [x] **T2 — Both themes exist as tokens.** Move light surfaces toward Archify's
   register and add the dark theme block. Add the tokens the new signature needs
   (glow elevation, knockout ring, micro-label tracking). GREEN on T1 for both
   themes, with no literal colour outside the theme blocks.
-- [ ] **T3 — The reader can switch themes.** A control in the topbar, honouring
+- [x] **T3 — The reader can switch themes.** A control in the topbar, honouring
   `prefers-color-scheme` on first load and persisting the explicit choice.
   Covered by a vitest unit test.
-- [ ] **T4 — The chrome carries the signature.** Shell, topbar, tabs, panels,
+- [x] **T4 — The chrome carries the signature.** Shell, topbar, tabs, panels,
   badges, buttons and terminal adopt Archify's type scale, tracking, radius
   opposition and glow elevation.
-- [ ] **T5 — The canvas carries the signature.** Stage, gate and section nodes,
+- [x] **T5 — The canvas carries the signature.** Stage, gate and section nodes,
   edges and labels adopt the Archify register while keeping their semantic
   roles and the existing mutating/focus cues distinct.
-- [ ] **T6 — Playwright verifies behaviour and layout.** Install and configure
+- [x] **T6 — Playwright verifies behaviour and layout.** Install and configure
   it `ui`-local against the FastAPI server. Functional: tab navigation, node
   selection opens the detail panel, theme switch persists across reload.
   Layout: no text overflow or clipping, no overlapping controls, buttons meet a
   minimum hit target, the element panel becomes a bottom sheet under 900px.
-- [ ] **T7 — The shipped bundle matches the source.** Build the UI and re-sync
+- [x] **T7 — The shipped bundle matches the source.** Build the UI and re-sync
   `skills/_core/command_center/static/`, then confirm the served dashboard shows
   the restyle.
 
@@ -122,8 +122,54 @@ user, and no test in this cycle claims otherwise.
 
 ## Evidence
 
-(filled in per task as it closes)
+Branch `feat/dashboard-archify-restyle`, six work-unit commits:
+
+| Commit | Task | Outcome |
+| --- | --- | --- |
+| `b95001c` | T1+T2 | Theme contract generalized, both token blocks. RED first: 4 failed / 37 passed, then 41/41. |
+| `4a2f99b` | T3 | `useTheme` 7/7 (RED first on the missing module), `ThemeToggle` 5/5. |
+| `216d71b` | T4 | Chrome signature. 255/255. |
+| `c3f4d43` | T5 | Canvas signature. 255/255. |
+| `1191d60` | T6 | Playwright 29/29 across 1440px and 820px, plus the tab-wrap fix. |
+| `ba0ba22` | T7 | Bundle rebuilt into `skills/_core/command_center/static/`. |
+
+T1 and T2 share a commit deliberately: a RED test is observed, never committed.
+
+Final state: **255/255 vitest** across 23 files, **29/29 Playwright** across two
+viewports, `tsc` clean, both themes passing every WCAG AA assertion.
+
+### The regression Playwright caught
+
+The uppercase micro-label tabs from T4 spilled past an 820px viewport. This was
+bisected rather than guessed: rebuilding with the pre-T4 stylesheet passed the
+same assertion, which proves T4 introduced it and that it was not a pre-existing
+defect. Fixed by wrapping the tab strip. Horizontal scroll was the alternative
+and was rejected for hiding the last tabs behind an unannounced gesture.
+
+This is the whole argument for the task: 255 jsdom tests could not see it,
+because jsdom computes no layout.
+
+### Discovered during the work
+
+- **There is no re-sync step.** `vite.config.ts` points `outDir` straight at
+  `skills/_core/command_center/static` with `emptyOutDir`, so the build replaces
+  the served bundle directly. The task description assumed a manual copy.
+- **The minifier drops the quotes**, emitting `[data-theme=dark]`. Equivalent
+  selector; the Playwright repaint assertion verifies it rather than trusting it.
+
+## Not done, and why
+
+- **No CI wiring.** `.github/workflows/test.yml` is untouched. `npm run test:all`
+  still excludes both the vitest and the Playwright suites, so UI verification
+  remains a local command. Closing that gap means deciding whether CI installs a
+  browser and a Python venv, which is a separate decision with a real cost.
+- **No visual-regression snapshots.** Playwright asserts geometry and behaviour,
+  not appearance.
+- **JetBrains Mono not vendored**, per the decision above: the system mono stack
+  carries Archify's tracking, not its typeface.
 
 ## Next step
 
-T1.
+The user reviews the dashboard in both themes and decides whether this lands as
+one pull request or as the three chained slices described above. Nothing is
+pushed.
