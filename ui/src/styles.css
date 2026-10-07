@@ -815,10 +815,12 @@ body {
   gap: 12px;
   flex-wrap: wrap;
   padding: 6px 10px;
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-edge);
   border: 1px solid var(--border);
   background: var(--edge-label-bg);
-  font-size: 11px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: var(--track-wide);
   color: var(--text-muted);
 }
 
@@ -860,7 +862,7 @@ body {
   width: 100%;
   height: 100%;
   padding: 10px 12px;
-  border-radius: var(--radius);
+  border-radius: var(--radius-edge);
   border: 1px solid var(--border-strong);
   background: var(--node-bg);
   color: var(--text);
@@ -869,23 +871,33 @@ body {
   display: flex;
   flex-direction: column;
   gap: 7px;
-  box-shadow: var(--shadow);
+  box-shadow: var(--glow);
 }
 
+/* Archify states a node's role with a full stroke over a translucent fill of
+   the same hue, not with an accent bar on one side. The roles stay this
+   dashboard's own -- stage, gate, section -- because Archify's
+   frontend/backend/database taxonomy says nothing about a paper pipeline. */
 .dag-node--stage {
-  border-left: 3px solid var(--accent);
+  border-color: var(--accent-border);
+  background: linear-gradient(0deg, var(--accent-soft) 0%, var(--accent-soft) 100%), var(--node-bg);
 }
 
 .dag-node--gate {
-  border-left: 3px solid var(--warn);
+  border-color: var(--warn-border);
+  background: linear-gradient(0deg, var(--warn-soft) 0%, var(--warn-soft) 100%), var(--node-bg);
 }
 
 .dag-node--section {
-  border-left: 3px solid var(--sealed);
+  border-color: var(--sealed-border);
+  background: linear-gradient(0deg, var(--sealed-soft) 0%, var(--sealed-soft) 100%), var(--node-bg);
 }
 
+/* Stays 3px dashed at offset 4px: styles.test.ts asserts this differs from the
+   solid 2px/2px keyboard focus ring in both width and offset, so a mutating
+   node is never mistaken for a focused one. */
 .dag-node.is-mutating {
-  box-shadow: 0 6px 22px var(--accent-soft);
+  box-shadow: var(--glow-strong);
   border-color: var(--accent);
   outline: 3px dashed var(--accent);
   outline-offset: 4px;
@@ -899,8 +911,9 @@ body {
 }
 
 .dag-node__title {
-  font-weight: 600;
+  font-weight: 650;
   font-size: 14px;
+  letter-spacing: var(--track-tight);
 }
 
 .dag-node__detail,
@@ -1003,8 +1016,11 @@ body {
   stroke-width: 1.4;
 }
 
+/* Archify gives the live path an emphasis stroke rather than only a colour
+   change, so it reads as the active lane even at a glance. */
 .react-flow__edge.animated .react-flow__edge-path {
   stroke: var(--accent);
+  stroke-width: 1.8;
 }
 
 .react-flow__edge-text {
