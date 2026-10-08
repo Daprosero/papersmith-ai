@@ -1,0 +1,102 @@
+name: Publish
+
+# A published version cannot be replaced, only yanked, and its number is spent
+# forever. So this runs on a GitHub release rather than on a push: creating a
+# release is a deliberate act, and `workflow_dispatch` with a dry run exists for
+# rehearsing the whole path without touching the index.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build and verify the artifacts, publish nothing"
+        type: boolean
+        default: true
+
+jobs:
+  build:
+    name: Build and verify the artifacts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.x
+          cache: "npm"
+          cache-dependency-path: package-lock.json
+
+      - run: npm ci
+
+      # The Node suite before anything is packaged. CI already ran it on the
+      # merge commit, but a release can be cut from any tag, and a version that
+      # is about to become permanent is worth the four minutes.
+      - name: Run the Node suite
+        run: npm run test:node
+
+      # src/papersmith/_kit/ is generated and gitignored, while pyproject.toml
+      # declares it as package data. A runner checks out a tree without it, so
+      # skipping this step produces a wheel whose declared `_kit/**/*` matches
+      # nothing -- an archive that installs cleanly and then exits 2 with a
+      # kitless install. This step is why this workflow exists at all.
+      - name: Build the kit
+        run: python3 scripts/build-kit.py
+
+      - name: Build the wheel and the sdist
+        run: |
+          python3 -m pip install --upgrade build
+          python3 -m build
+
+      # The artifacts are inspected, not trusted. Asked of the archive, because
+      # a manifest that promises the kit and a tree where it is absent read the
+      # same in pyproject.toml.
+      - name: Verify the artifacts carry the kit
+        run: |
+          python3 -m pip install --upgrade pytest
+          python3 -m pytest tests/test_pypi_publishing.py -q
+
+      # The last check is the real one: install the built wheel into a clean
+      # environment and create a workspace with it. Everything above can pass
+      # on an artifact that still cannot do its job.
+      - name: Install the wheel and create a workspace with it
+        run: |
+          python3 -m venv /tmp/probe
+          /tmp/probe/bin/pip install --quiet dist/*.whl
+          /tmp/probe/bin/papersmith --version
+          /tmp/probe/bin/papersmith init /tmp/probe-ws --no-env --no-npm
+          test -f /tmp/probe-ws/.papersmith/version
+          test -d /tmp/probe-ws/skills/upgrade-project
+          test -f /tmp/probe-ws/.claude/commands/upgrade-project.md
+          echo "a wheel-installed CLI produced a complete workspace"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    name: Publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    # Skipped for a dry run, so the whole path above can be rehearsed without
+    # spending a version number.
+    if: github.event_name == 'release' || inputs.dry_run == false
+    environment:
+      name: pypi
+      url: https://pypi.org/p/papersmith-ai
+    permissions:
+      # Trusted Publishing: PyPI verifies a short-lived OIDC token naming this
+      # repository, this workflow and this environment. No durable credential
+      # lives in this repository, so there is none to leak or rotate.
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
