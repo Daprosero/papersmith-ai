@@ -36,6 +36,7 @@ import papersmith
 
 FORGE_ROOT = Path(__file__).resolve().parent.parent
 MANIFEST = FORGE_ROOT / "package.json"
+LOCKFILE = FORGE_ROOT / "package-lock.json"
 PYPROJECT = FORGE_ROOT / "pyproject.toml"
 CHANGELOG = FORGE_ROOT / "CHANGELOG.md"
 
@@ -59,6 +60,17 @@ DERIVED_FROM = "papersmith.__version__"
 #: dot-separated numbers" is enough to tell a version from an empty string
 #: or a placeholder, which is all the non-vacuity check needs.
 VERSION_SHAPE = re.compile(r"^\d+\.\d+(\.\d+)?([-.+].*)?$")
+
+
+def lockfile_versions() -> tuple[str, str]:
+    """The two places `package-lock.json` restates the root package's version.
+
+    npm writes it twice: once at the top level and once in `packages[""]`. A
+    bump that edits `package.json` by hand without running npm leaves both
+    behind, and nothing downstream notices -- `npm ci` does not compare them.
+    """
+    data = json.loads(LOCKFILE.read_text(encoding="utf-8"))
+    return data.get("version", ""), data.get("packages", {}).get("", {}).get("version", "")
 
 
 def manifest_version() -> str:
@@ -99,6 +111,32 @@ class VersionSourcesAgreeTests(unittest.TestCase):
             f"package.json says {node!r} and the distribution builds "
             f"{distribution!r}. One of them ships in an artifact that says "
             "the wrong thing, and which one depends only on who reads it")
+
+    def test_the_lockfile_matches_the_manifest_it_locks(self) -> None:
+        """`docs/releasing.md` has always named `package-lock.json` as one of the
+        places the version lives, and as enforced by this file. It was not: this
+        assertion is newer than that sentence, and 0.13.0 shipped with a lockfile
+        still saying 0.12.0 because nothing compared them.
+
+        That is the exact shape this file's own docstring describes -- a fact
+        written in several places with a mechanism holding only some of them --
+        and it had reproduced inside the guard written to prevent it.
+
+        npm restates the root version twice, so both copies are checked. Neither
+        is load-bearing for an install, which is why the drift is silent: the
+        cost is a lockfile that disagrees with the release it was committed
+        beside, and a reader who cannot tell which number to trust.
+        """
+        top, nested = lockfile_versions()
+        manifest = manifest_version()
+        self.assertEqual(
+            top, manifest,
+            f"package-lock.json says {top!r} at the top level and package.json "
+            f"says {manifest!r}; run `npm install --package-lock-only`")
+        self.assertEqual(
+            nested, manifest,
+            f"package-lock.json's packages[''] says {nested!r} and package.json "
+            f"says {manifest!r}; run `npm install --package-lock-only`")
 
     def test_pyproject_still_derives_instead_of_restating(self) -> None:
         """The agreement above is only maintainable while the Python side
