@@ -119,6 +119,35 @@ y su fuente y su receta están versionadas en
 
 Nada de esto requiere claves ni servicios externos: la forja corre localmente.
 
+### 0. Lo que tu máquina necesita tener
+
+Dos runtimes, y los dos son obligatorios. No es una recomendación: la forja usa
+Python para el CLI y Node para el motor de deliberación, y sin el segundo la
+mitad del framework no arranca.
+
+| Runtime | Versión | Para qué | Si falta |
+| --- | --- | --- | --- |
+| **Python** | ≥ 3.11 | el CLI `papersmith` y todas las skills de Python | no hay instalación posible |
+| **Node.js** | ≥ 21 | el motor de deliberación (`jiti`, `typebox`) y el tablero | `init` avisa y `deliberate` se niega |
+| `npm` | el que trae Node | instalar esas dos dependencias en el workspace | igual que arriba |
+
+Comprueba las dos de una vez:
+
+```bash
+python3 --version && node --version && npm --version
+```
+
+**Qué pasa exactamente si Node no está.** `papersmith init` no falla: avisa con
+`npm was not found; deliberate requires npm install for jiti/typebox` y sigue
+adelante, porque el resto del workspace sí se puede crear. Pero
+`proposal-deliberation` y `experimental-deliberation` —las dos skills que
+proponen y discuten antes de escribir— no corren sin esas dependencias. Si
+quieres crear el workspace a propósito sin ellas, `init --no-npm` lo dice
+explícitamente en lugar de dejarlo al azar.
+
+El runtime de ingestión del paso 2 es aparte y **sí es opcional**: solo hace
+falta para extraer PDFs con OCR.
+
 ### 1. Instala el CLI y prepara el entorno
 
 ```bash

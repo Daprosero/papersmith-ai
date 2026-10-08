@@ -3,6 +3,9 @@
   "version": "0.13.0",
   "private": true,
   "type": "module",
+  "engines": {
+    "node": ">=21"
+  },
   "description": "Papersmith AI — native Claude Code skills for paper ingestion and paper-proposal.",
   "scripts": {
     "test": "DELIBERATION_DOMAIN_PROFILE=$PWD/skills/proposal-deliberation/profile.ts node --test \"tests/**/*.mjs\"",
