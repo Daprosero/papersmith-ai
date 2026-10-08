@@ -39,10 +39,10 @@ classifiers = [
 dependencies = []
 
 [project.urls]
-Homepage = "https://github.com/Daprosero/papersmith-ai"
-Repository = "https://github.com/Daprosero/papersmith-ai"
-Changelog = "https://github.com/Daprosero/papersmith-ai/blob/main/CHANGELOG.md"
-Issues = "https://github.com/Daprosero/papersmith-ai/issues"
+Homepage = "https://github.com/LIAUNAL/papersmith-ai"
+Repository = "https://github.com/LIAUNAL/papersmith-ai"
+Changelog = "https://github.com/LIAUNAL/papersmith-ai/blob/main/CHANGELOG.md"
+Issues = "https://github.com/LIAUNAL/papersmith-ai/issues"
 
 [project.scripts]
 papersmith = "papersmith.cli:main"

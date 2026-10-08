@@ -2,7 +2,7 @@
 
 > **Una forja de papers**: convierte PDFs de referencia en Markdown de alta fidelidad y legible por un agente (ecuaciones en LaTeX, tablas como tablas, figuras como archivos), y conduce la deliberación formal —matemática y de diseño experimental— hasta el código que se prueba solo y el paper compilado.
 
-[![CI](https://github.com/Daprosero/papersmith-ai/actions/workflows/test.yml/badge.svg)](https://github.com/Daprosero/papersmith-ai/actions/workflows/test.yml)
+[![CI](https://github.com/LIAUNAL/papersmith-ai/actions/workflows/test.yml/badge.svg)](https://github.com/LIAUNAL/papersmith-ai/actions/workflows/test.yml)
 [![Node.js](https://img.shields.io/badge/Node.js-%3E%3D21-green.svg)](https://nodejs.org/)
 [![Python](https://img.shields.io/badge/Python-%3E%3D3.11-blue.svg)](https://www.python.org/)
 
@@ -123,20 +123,20 @@ Nada de esto requiere claves ni servicios externos: la forja corre localmente.
 
 ```bash
 # 1a. El CLI, siempre desde la última versión de la rama `main`
-pipx install git+https://github.com/Daprosero/papersmith-ai.git
+pipx install git+https://github.com/LIAUNAL/papersmith-ai.git
 #     lo mismo con pip, si no usas pipx
-pip install "papersmith-ai @ git+https://github.com/Daprosero/papersmith-ai.git"
+pip install "papersmith-ai @ git+https://github.com/LIAUNAL/papersmith-ai.git"
 
 # 1b. O desde un clon de `main` (si vas a desarrollar el framework)
-git clone https://github.com/Daprosero/papersmith-ai.git && cd papersmith-ai
+git clone https://github.com/LIAUNAL/papersmith-ai.git && cd papersmith-ai
 pipx install .            # con pip: pip install .
 
 # 1c. Actualizar el CLI cuando sale una release nueva
 pipx upgrade papersmith-ai
 #     si `upgrade` no ve el cambio, fuerza la reinstalación
-pipx install --force git+https://github.com/Daprosero/papersmith-ai.git
+pipx install --force git+https://github.com/LIAUNAL/papersmith-ai.git
 #     con pip, `--upgrade` sobre una URL de git no siempre vuelve a clonar
-pip install --upgrade --force-reinstall "papersmith-ai @ git+https://github.com/Daprosero/papersmith-ai.git"
+pip install --upgrade --force-reinstall "papersmith-ai @ git+https://github.com/LIAUNAL/papersmith-ai.git"
 
 # 1d. Y llevar a esa versión los workspaces que ya existen
 papersmith upgrade --plan-migrations ~/papers/sparse-ae  # qué artefactos faltan, sin escribir nada
@@ -162,7 +162,7 @@ recibe exactamente lo que `main` tiene hoy; la 1b toma el clon tal como está,
 incluidos cambios sin commitear, así que para reproducir un build usa 1a. Cada
 release queda además con su tag, así que si necesitas congelar un build exacto
 fíjalo en la URL — por ejemplo
-`pipx install --force "git+https://github.com/Daprosero/papersmith-ai@v0.12.0"`.
+`pipx install --force "git+https://github.com/LIAUNAL/papersmith-ai@v0.12.0"`.
 El historial de cambios está en [CHANGELOG.md](CHANGELOG.md).
 
 Actualizar son dos pasos y son dos objetos distintos. El **1c** reinstala el

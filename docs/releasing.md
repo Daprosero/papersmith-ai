@@ -89,7 +89,7 @@ working install is not a release:
 
 ```bash
 python3 -m venv /tmp/verify && /tmp/verify/bin/pip install \
-  "papersmith-ai @ git+https://github.com/Daprosero/papersmith-ai@vX.Y.Z"
+  "papersmith-ai @ git+https://github.com/LIAUNAL/papersmith-ai@vX.Y.Z"
 /tmp/verify/bin/papersmith --version
 ```
 

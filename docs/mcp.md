@@ -8,7 +8,7 @@ reimplemented and no new runtime dependency is added.
 ## Requirements
 
 - Python 3.11 or newer.
-- `papersmith` on `PATH` (`pipx install git+https://github.com/Daprosero/papersmith-ai.git`,
+- `papersmith` on `PATH` (`pipx install git+https://github.com/LIAUNAL/papersmith-ai.git`,
   always the latest `main`, or the workspace's own environment).
 - An initialized workspace. The server binds to one workspace root, and every
   path argument it accepts must resolve inside that root.

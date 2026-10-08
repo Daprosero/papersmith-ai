@@ -69,7 +69,7 @@ install and is not one. The entry point is `papersmith.cli:main`.
 If neither answers, refuse with the installation command rather than a guess:
 
 ```
-pipx install git+https://github.com/Daprosero/papersmith-ai.git
+pipx install git+https://github.com/LIAUNAL/papersmith-ai.git
 ```
 
 A workspace cannot upgrade itself from inside; saying that clearly is more
